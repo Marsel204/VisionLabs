@@ -85,12 +85,22 @@ if [[ "${SOURCE_DIR}" == "${INSTALL_DIR}" ]]; then
     die "run install.sh from the source checkout, not from the installed copy"
 fi
 
-printf 'Installing ${APP_NAME} ${VERSION} into %s...\n' "${INSTALL_DIR}"
+printf 'Installing %s %s into %s...\n' "${APP_NAME}" "${VERSION}" "${INSTALL_DIR}"
 rm -rf -- "${INSTALL_DIR}.new"
 mkdir -p "${INSTALL_DIR}.new"
 tar --exclude='./.venv' --exclude='./.git' --exclude='__pycache__' \
     -C "${SOURCE_DIR}" -cf - . | tar -C "${INSTALL_DIR}.new" -xf -
-mv -- "${INSTALL_DIR}.new" "${INSTALL_DIR}"
+if [[ -e "${INSTALL_DIR}" ]]; then
+    rm -rf -- "${INSTALL_DIR}.previous"
+    mv -- "${INSTALL_DIR}" "${INSTALL_DIR}.previous"
+fi
+if ! mv -- "${INSTALL_DIR}.new" "${INSTALL_DIR}"; then
+    if [[ -e "${INSTALL_DIR}.previous" ]]; then
+        mv -- "${INSTALL_DIR}.previous" "${INSTALL_DIR}"
+    fi
+    die "could not replace ${INSTALL_DIR}"
+fi
+rm -rf -- "${INSTALL_DIR}.previous"
 
 if [[ "${JETSON}" -eq 1 ]]; then
     printf 'Jetson/L4T detected; keeping the system CUDA-enabled PyTorch.\n'
