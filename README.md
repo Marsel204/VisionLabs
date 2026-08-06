@@ -22,8 +22,10 @@ It installs the application under `~/.local/share/traffic-annotator`, adds a
 `~/.local/bin/traffic-annotator` command, and creates an application-menu entry.
 The installer supports Ubuntu 24.04 on x86_64 and ARM64. On Jetson systems with
 `nvidia-l4t-core` installed, it preserves the system CUDA-enabled PyTorch instead
-of downloading an incompatible generic PyTorch wheel. Use `--cpu-only` to force
-the normal PyPI installation. Remove the application with:
+of downloading an incompatible generic PyTorch wheel. Jetson CUDA-enabled PyTorch
+must already be installed for the same Python interpreter as `python3`; otherwise
+the installer stops and explains how to correct it. Use `--cpu-only` to force the
+normal PyPI installation. Remove the application with:
 
 ```bash
 ~/.local/share/traffic-annotator/uninstall.sh

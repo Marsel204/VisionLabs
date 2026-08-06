@@ -94,12 +94,23 @@ mv -- "${INSTALL_DIR}.new" "${INSTALL_DIR}"
 
 if [[ "${JETSON}" -eq 1 ]]; then
     printf 'Jetson/L4T detected; keeping the system CUDA-enabled PyTorch.\n'
+    if ! "${PYTHON_BIN}" -c 'import torch; raise SystemExit(0 if torch.cuda.is_available() else 1)' >/dev/null 2>&1; then
+        die "Jetson mode requires CUDA-enabled PyTorch importable by ${PYTHON_BIN}; install the NVIDIA Jetson PyTorch wheel for this JetPack/Python version or rerun with --cpu-only"
+    fi
     uv venv --python "${PYTHON_BIN}" --system-site-packages "${INSTALL_DIR}/.venv"
     uv sync --directory "${INSTALL_DIR}" --locked --no-dev --no-install-package torch
 else
     uv sync --directory "${INSTALL_DIR}" --locked --no-dev
 fi
 
+if [[ "${JETSON}" -eq 1 ]]; then
+    TORCH_CHECK='import torch; raise SystemExit(0 if torch.cuda.is_available() else 1)'
+else
+    TORCH_CHECK='import torch'
+fi
+if ! "${INSTALL_DIR}/.venv/bin/python" -c "${TORCH_CHECK}" >/dev/null 2>&1; then
+    die "PyTorch is not importable in ${INSTALL_DIR}/.venv; on Jetson, verify that the NVIDIA PyTorch wheel matches ${PYTHON_VERSION}"
+fi
 "${INSTALL_DIR}/.venv/bin/python" -c 'import PySide6, torch; print(f"PySide6 {PySide6.__version__}; PyTorch {torch.__version__}; CUDA {torch.cuda.is_available()}")'
 
 mkdir -p "${BIN_DIR}" "${APPLICATIONS_DIR}"
