@@ -1,0 +1,1 @@
+"""Replaceable AI model adapters."""

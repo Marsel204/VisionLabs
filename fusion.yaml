@@ -1,0 +1,9 @@
+# Label Fusion defaults. Values can be overridden in application configuration.
+iou_threshold: 0.60
+confidence_difference: 0.25
+minimum_box_area: 0.001
+merge_same_class: true
+enable_duplicate_removal: true
+overlap_removal_iou_threshold: 0.50
+overlap_removal_containment_threshold: 0.80
+overlap_removal_same_class_only: true

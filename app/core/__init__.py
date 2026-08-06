@@ -1,0 +1,1 @@
+"""Application-wide core abstractions."""

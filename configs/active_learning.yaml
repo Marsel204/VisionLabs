@@ -1,0 +1,15 @@
+confidence_weight: 0.20
+density_weight: 0.20
+occlusion_weight: 0.15
+disagreement_weight: 0.10
+conflict_weight: 0.15
+small_object_weight: 0.10
+missing_detection_weight: 0.10
+duplicate_weight: 0.05
+motorcycle_weight: 0.05
+density_reference: 50
+small_object_area: 0.001
+motorcycle_threshold: 20
+motorcycle_small_ratio: 0.30
+hard_threshold: 60.0
+extreme_threshold: 81.0
