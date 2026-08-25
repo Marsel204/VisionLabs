@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -450,6 +451,50 @@ class CherryPickDialog(QDialog):
         self.count_label.setText(f"Selected: {len(self.selected_images)} / 4")
 
 
+_THUMBNAIL_BASE_CACHE: dict[Path, QPixmap] = {}
+
+
+def _get_base_thumbnail_pixmap(path: Path, target_size: int = 60) -> QPixmap:
+    """Retrieve or compute a cached 60x60 cropped pixmap for lightning-fast rendering with zero redundant disk reads."""
+    cached = _THUMBNAIL_BASE_CACHE.get(path)
+    if cached is not None:
+        return cached
+
+    base = QPixmap(target_size, target_size)
+    base.fill(Qt.GlobalColor.transparent)
+    reader_image = QPixmap(str(path))
+    painter = QPainter(base)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+    if not reader_image.isNull():
+        scaled = reader_image.scaled(
+            target_size,
+            target_size,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        x_off = max(0, (scaled.width() - target_size) // 2)
+        y_off = max(0, (scaled.height() - target_size) // 2)
+        cropped = scaled.copy(x_off, y_off, target_size, target_size)
+
+        painter.setBrush(QBrush(cropped))
+        painter.setPen(QColor("#2c2f3b"))
+        painter.drawRoundedRect(1, 1, target_size - 2, target_size - 2, 6, 6)
+    else:
+        painter.setBrush(QBrush(QColor("#1e2230")))
+        painter.setPen(QColor("#2c2f3b"))
+        painter.drawRoundedRect(1, 1, target_size - 2, target_size - 2, 6, 6)
+        painter.setPen(QColor("#697082"))
+        font = QFont("sans-serif", 16)
+        painter.setFont(font)
+        painter.drawText(base.rect(), Qt.AlignmentFlag.AlignCenter, "🖼")
+
+    painter.end()
+    _THUMBNAIL_BASE_CACHE[path] = base
+    return base
+
+
 class AutoLabelDialog(QDialog):
     """Roboflow-style Auto Label modal with clean unified top bar, direct 4-sample grid, and approved batch application."""
 
@@ -516,18 +561,9 @@ class AutoLabelDialog(QDialog):
         header_layout.setContentsMargins(20, 0, 20, 0)
         header_layout.setSpacing(12)
 
-        batch_label = QLabel(f"← Batch: dataset ({len(self.image_paths)})")
-        batch_label.setObjectName("BreadcrumbLabel")
-        batch_label.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        sep = QLabel("/")
-        sep.setObjectName("BreadcrumbSep")
-
         title_label = QLabel("Auto Label")
         title_label.setObjectName("HeaderTitle")
 
-        header_layout.addWidget(batch_label)
-        header_layout.addWidget(sep)
         header_layout.addWidget(title_label)
         header_layout.addStretch(1)
 
@@ -620,6 +656,7 @@ class AutoLabelDialog(QDialog):
         prev_header_row.setSpacing(6)
 
         prev_header = QLabel("Preview Samples (4)")
+        prev_header = QLabel("Preview Samples (4)")
         prev_header.setObjectName("SectionTitle")
 
         self.shuffle_btn = QPushButton("🎲 Random 4")
@@ -628,16 +665,9 @@ class AutoLabelDialog(QDialog):
         self.shuffle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.shuffle_btn.clicked.connect(self._randomize_preview_samples)
 
-        self.cherry_pick_btn = QPushButton("🔍 Pick...")
-        self.cherry_pick_btn.setObjectName("PreviewActionBtn")
-        self.cherry_pick_btn.setToolTip("Cherry-pick specific images from the batch")
-        self.cherry_pick_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.cherry_pick_btn.clicked.connect(self._open_cherry_pick_dialog)
-
         prev_header_row.addWidget(prev_header)
         prev_header_row.addStretch(1)
         prev_header_row.addWidget(self.shuffle_btn)
-        prev_header_row.addWidget(self.cherry_pick_btn)
         left_layout.addLayout(prev_header_row)
 
         self.search_input = QLineEdit()
@@ -648,8 +678,17 @@ class AutoLabelDialog(QDialog):
 
         self.image_list = QListWidget()
         self.image_list.setObjectName("PreviewImageList")
-        self.image_list.setMinimumHeight(140)
+        self.image_list.setViewMode(QListView.ViewMode.IconMode)
+        self.image_list.setIconSize(QSize(62, 62))
+        self.image_list.setGridSize(QSize(74, 74))
+        self.image_list.setResizeMode(QListView.ResizeMode.Adjust)
+        self.image_list.setMovement(QListView.Movement.Static)
+        self.image_list.setSpacing(4)
+        self.image_list.setWordWrap(False)
+        self.image_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.image_list.setMinimumHeight(150)
         self._populate_image_list()
+        self.image_list.itemClicked.connect(self._on_preview_image_clicked)
         self.image_list.itemSelectionChanged.connect(self._on_preview_image_selected)
         left_layout.addWidget(self.image_list, 1)
 
@@ -941,22 +980,75 @@ class AutoLabelDialog(QDialog):
             self.preview_canvas.set_image(self.current_image_path)
         self._update_sample_tabs_ui()
 
+    @staticmethod
+    def _create_thumbnail_icon(path: Path, is_preview: bool = False, slot_num: int = 0) -> QIcon:
+        """Create a thumbnail preview card from in-memory cached pixmap instantly."""
+        target_size = 60
+        base_pixmap = _get_base_thumbnail_pixmap(path, target_size)
+        pixmap = QPixmap(base_pixmap)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        if is_preview:
+            # Highlight border
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor("#818cf8"), 2))
+            painter.drawRoundedRect(1, 1, target_size - 2, target_size - 2, 6, 6)
+
+            # Checked checkbox: vibrant indigo background with white checkmark
+            cb_rect = QRectF(4, 4, 15, 15)
+            painter.setBrush(QBrush(QColor("#6366f1")))
+            painter.setPen(QPen(QColor("#a5b4fc"), 1))
+            painter.drawRoundedRect(cb_rect, 3, 3)
+
+            painter.setPen(
+                QPen(QColor("#ffffff"), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+            )
+            painter.drawLine(int(cb_rect.left() + 3), int(cb_rect.top() + 7), int(cb_rect.left() + 6), int(cb_rect.bottom() - 3))
+            painter.drawLine(int(cb_rect.left() + 6), int(cb_rect.bottom() - 3), int(cb_rect.right() - 3), int(cb_rect.top() + 4))
+
+            # Sample slot badge (top-right) if slot number available
+            if slot_num > 0:
+                badge_rect = QRectF(target_size - 24, 4, 20, 14)
+                painter.setBrush(QBrush(QColor("#4338ca")))
+                painter.setPen(QPen(QColor("#c7d2fe"), 1))
+                painter.drawRoundedRect(badge_rect, 3, 3)
+                painter.setPen(QColor("#ffffff"))
+                font = QFont("sans-serif", 8, QFont.Weight.Bold)
+                painter.setFont(font)
+                painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, f"S{slot_num}")
+        else:
+            # Unchecked checkbox: sleek dark translucent box with subtle border
+            cb_rect = QRectF(4, 4, 15, 15)
+            painter.setBrush(QBrush(QColor(15, 23, 42, 190)))
+            painter.setPen(QPen(QColor("#64748b"), 1.2))
+            painter.drawRoundedRect(cb_rect, 3, 3)
+
+        painter.end()
+        return QIcon(pixmap)
+
     def _populate_image_list(self, filter_text: str = "") -> None:
         self.image_list.blockSignals(True)
         self.image_list.clear()
         filter_lower = filter_text.lower()
         selected_idx = 0
         visible_idx = 0
-        for img_path in self.image_paths:
+
+        # Pin selected preview images at the top, followed by remaining batch images
+        pinned_selected = [p for p in self.preview_image_paths if p in self.image_paths]
+        remaining = [p for p in self.image_paths if p not in self.preview_image_paths]
+        ordered_paths = pinned_selected + remaining
+
+        for img_path in ordered_paths:
             if filter_lower and filter_lower not in img_path.name.lower():
                 continue
-            if img_path in self.preview_image_paths:
-                slot = self.preview_image_paths.index(img_path) + 1
-                item = QListWidgetItem(f"★ [Sample {slot}] {img_path.name}")
-                item.setForeground(QBrush(QColor("#a5b4fc")))
-            else:
-                item = QListWidgetItem(f"  {img_path.name}")
-                item.setForeground(QBrush(QColor("#cbd5e1")))
+            is_preview = img_path in self.preview_image_paths
+            slot = (self.preview_image_paths.index(img_path) + 1) if is_preview else 0
+            item = QListWidgetItem()
+            item.setIcon(self._create_thumbnail_icon(img_path, is_preview, slot))
+            prefix = f"★ [Sample {slot}] " if is_preview else ""
+            item.setToolTip(f"{prefix}{img_path.name}")
             item.setData(Qt.ItemDataRole.UserRole, str(img_path))
             self.image_list.addItem(item)
             if self.current_image_path and img_path == self.current_image_path:
@@ -970,21 +1062,36 @@ class AutoLabelDialog(QDialog):
     def _filter_image_list(self, text: str) -> None:
         self._populate_image_list(text)
 
+    def _on_preview_image_clicked(self, item: QListWidgetItem) -> None:
+        if item is None:
+            return
+        path_str = item.data(Qt.ItemDataRole.UserRole)
+        if not path_str:
+            return
+        p = Path(path_str)
+        self.current_image_path = p
+        if p in self.preview_image_paths:
+            if len(self.preview_image_paths) > 1:
+                self.preview_image_paths.remove(p)
+                self.current_image_path = self.preview_image_paths[0]
+        else:
+            if len(self.preview_image_paths) >= 4:
+                self.preview_image_paths.pop(0)
+            self.preview_image_paths.append(p)
+
+        self._populate_image_list(self.search_input.text() if hasattr(self, "search_input") else "")
+        self._render_initial_images()
+        self._update_sample_tabs_ui()
+
     def _on_preview_image_selected(self) -> None:
         item = self.image_list.currentItem()
         if item is not None:
             path_str = item.data(Qt.ItemDataRole.UserRole)
-            p = Path(path_str)
-            self.current_image_path = p
-            if p not in self.preview_image_paths:
-                if len(self.preview_image_paths) >= 4:
-                    self.preview_image_paths[0] = p
-                else:
-                    self.preview_image_paths.append(p)
-                self._populate_image_list(self.search_input.text() if hasattr(self, "search_input") else "")
-                self._render_initial_images()
-            else:
-                self._on_card_zoomed(p)
+            if path_str:
+                p = Path(path_str)
+                self.current_image_path = p
+                if p in self.preview_image_paths:
+                    self._on_card_zoomed(p)
 
     def _randomize_preview_samples(self) -> None:
         if not self.image_paths:
@@ -1254,28 +1361,27 @@ class AutoLabelDialog(QDialog):
                 color: #ef4444;
             }
 
-            /* --- Preview List --- */
+            /* --- Preview List / Thumbnail Grid --- */
             QListWidget#PreviewImageList {
                 background-color: #0c1120;
                 border: 1px solid #1e293b;
                 border-radius: 8px;
-                color: #c8d2e0;
-                font-size: 10px;
-                padding: 4px;
+                padding: 6px;
+                outline: none;
             }
             QListWidget#PreviewImageList::item {
-                padding: 5px 8px;
-                border-radius: 4px;
-                color: #8b9dc3;
+                border-radius: 8px;
+                margin: 3px;
+                padding: 2px;
+                border: 2px solid transparent;
             }
             QListWidget#PreviewImageList::item:hover {
                 background-color: #1a2236;
-                color: #e2e8f0;
+                border: 2px solid #4338ca;
             }
             QListWidget#PreviewImageList::item:selected {
-                background-color: #312e81;
-                border: 1px solid #4338ca;
-                color: #ffffff;
+                background-color: #2e2a72;
+                border: 2px solid #818cf8;
             }
 
             /* --- Right Stage Panel & Unified Command Bar --- */
