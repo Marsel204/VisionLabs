@@ -5,10 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QRect, QSize, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QIcon,
+    QImageReader,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import QListView, QListWidget, QListWidgetItem
 
 _IMAGE_BROWSER_CACHE: dict[tuple[Path, int], QPixmap] = {}
+_MAX_IMAGE_BROWSER_CACHE_SIZE = 300
 
 
 class ImageBrowser(QListWidget):
@@ -42,28 +52,40 @@ class ImageBrowser(QListWidget):
         pixmap = QPixmap(target_size, target_size)
         pixmap.fill(Qt.GlobalColor.transparent)
 
-        reader_image = QPixmap(str(path))
+        reader = QImageReader(str(path))
+        reader.setAutoTransform(True)
+        orig_size = reader.size()
+
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
-        if not reader_image.isNull():
-            scaled = reader_image.scaled(
-                target_size,
-                target_size,
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            x_off = max(0, (scaled.width() - target_size) // 2)
-            y_off = max(0, (scaled.height() - target_size) // 2)
-            cropped = scaled.copy(x_off, y_off, target_size, target_size)
+        if orig_size.isValid() and orig_size.width() > 0 and orig_size.height() > 0:
+            scale_ratio = max(target_size / orig_size.width(), target_size / orig_size.height())
+            scaled_w = max(1, int(round(orig_size.width() * scale_ratio)))
+            scaled_h = max(1, int(round(orig_size.height() * scale_ratio)))
+            reader.setScaledSize(QSize(scaled_w, scaled_h))
+            qimg = reader.read()
+            if not qimg.isNull():
+                reader_image = QPixmap.fromImage(qimg)
+                x_off = max(0, (reader_image.width() - target_size) // 2)
+                y_off = max(0, (reader_image.height() - target_size) // 2)
+                cropped = reader_image.copy(x_off, y_off, target_size, target_size)
 
-            painter.setBrush(QBrush(cropped))
-            if count > 0:
-                painter.setPen(QPen(QColor("#059669"), 1.8))
+                painter.setBrush(QBrush(cropped))
+                if count > 0:
+                    painter.setPen(QPen(QColor("#059669"), 1.8))
+                else:
+                    painter.setPen(QColor("#2c2f3b"))
+                painter.drawRoundedRect(1, 1, target_size - 2, target_size - 2, 6, 6)
             else:
+                painter.setBrush(QBrush(QColor("#20222a")))
                 painter.setPen(QColor("#2c2f3b"))
-            painter.drawRoundedRect(1, 1, target_size - 2, target_size - 2, 6, 6)
+                painter.drawRoundedRect(1, 1, target_size - 2, target_size - 2, 6, 6)
+                painter.setPen(QColor("#697082"))
+                font = QFont("sans-serif", 16)
+                painter.setFont(font)
+                painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "🖼")
         else:
             painter.setBrush(QBrush(QColor("#20222a")))
             painter.setPen(QColor("#2c2f3b"))
@@ -88,6 +110,10 @@ class ImageBrowser(QListWidget):
             painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, badge_text)
 
         painter.end()
+
+        if len(_IMAGE_BROWSER_CACHE) >= _MAX_IMAGE_BROWSER_CACHE_SIZE:
+            _IMAGE_BROWSER_CACHE.clear()
+
         _IMAGE_BROWSER_CACHE[cache_key] = pixmap
         return QIcon(pixmap)
 

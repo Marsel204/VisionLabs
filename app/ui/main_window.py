@@ -1755,9 +1755,11 @@ class MainWindow(QMainWindow):
             from transformers import AutoProcessor, GroundingDinoForObjectDetection
 
             device = "cuda" if detect_gpu().device == "cuda" else "cpu"
+            dtype = torch.float32
             self._grounding_processor = AutoProcessor.from_pretrained(self._grounding_model_id)
             self._grounding_model = GroundingDinoForObjectDetection.from_pretrained(
-                self._grounding_model_id
+                self._grounding_model_id,
+                torch_dtype=dtype,
             ).to(torch.device(device))
             self._grounding_model.eval()
             self.statusBar().showMessage(f"Loaded Grounding DINO: {self._grounding_model_id}")
@@ -1774,10 +1776,12 @@ class MainWindow(QMainWindow):
             from transformers import Sam2Model, Sam2Processor
 
             device = "cuda" if detect_gpu().device == "cuda" else "cpu"
+            dtype = torch.float32
             self._sam2_processor = Sam2Processor.from_pretrained(self._sam2_model_id)
-            self._sam2_model = Sam2Model.from_pretrained(self._sam2_model_id).to(
-                torch.device(device)
-            )
+            self._sam2_model = Sam2Model.from_pretrained(
+                self._sam2_model_id,
+                torch_dtype=dtype,
+            ).to(torch.device(device))
             self._sam2_model.eval()
             self.statusBar().showMessage(f"Loaded SAM2: {self._sam2_model_id}")
         except Exception as error:
@@ -2129,12 +2133,24 @@ class MainWindow(QMainWindow):
                 return_tensors="pt",
             )
             device = next(self._grounding_model.parameters()).device
-            inputs = {
-                key: value.to(device) if hasattr(value, "to") else value
-                for key, value in inputs.items()
-            }
-            with torch.no_grad():
-                outputs = self._grounding_model(**inputs)
+            model_dtype = getattr(self._grounding_model, "dtype", None)
+            inputs_device = {}
+            for key, value in inputs.items():
+                if hasattr(value, "to"):
+                    if (
+                        model_dtype is not None
+                        and hasattr(value, "dtype")
+                        and value.dtype in (torch.float32, torch.float64)
+                        and model_dtype in (torch.float16, torch.bfloat16)
+                    ):
+                        inputs_device[key] = value.to(device=device, dtype=model_dtype)
+                    else:
+                        inputs_device[key] = value.to(device)
+                else:
+                    inputs_device[key] = value
+
+            with torch.inference_mode():
+                outputs = self._grounding_model(**inputs_device)
             try:
                 results = self._grounding_processor.post_process_grounded_object_detection(
                     outputs,
@@ -2237,12 +2253,24 @@ class MainWindow(QMainWindow):
                 return_tensors="pt",
             )
             device = next(self._grounding_model.parameters()).device
-            inputs = {
-                key: value.to(device) if hasattr(value, "to") else value
-                for key, value in inputs.items()
-            }
-            with torch.no_grad():
-                outputs = self._grounding_model(**inputs)
+            model_dtype = getattr(self._grounding_model, "dtype", None)
+            inputs_device = {}
+            for key, value in inputs.items():
+                if hasattr(value, "to"):
+                    if (
+                        model_dtype is not None
+                        and hasattr(value, "dtype")
+                        and value.dtype in (torch.float32, torch.float64)
+                        and model_dtype in (torch.float16, torch.bfloat16)
+                    ):
+                        inputs_device[key] = value.to(device=device, dtype=model_dtype)
+                    else:
+                        inputs_device[key] = value.to(device)
+                else:
+                    inputs_device[key] = value
+
+            with torch.inference_mode():
+                outputs = self._grounding_model(**inputs_device)
             try:
                 results = self._grounding_processor.post_process_grounded_object_detection(
                     outputs,
@@ -2332,16 +2360,28 @@ class MainWindow(QMainWindow):
                 return
 
             sam_device = next(self._sam2_model.parameters()).device
+            sam_dtype = getattr(self._sam2_model, "dtype", None)
             pixel_boxes = [candidate_boxes]
             sam_inputs = self._sam2_processor(
                 images=image, input_boxes=pixel_boxes, return_tensors="pt"
             )
-            sam_inputs = {
-                k: v.to(sam_device) if hasattr(v, "to") else v
-                for k, v in sam_inputs.items()
-            }
-            with torch.no_grad():
-                sam_outputs = self._sam2_model(**sam_inputs, multimask_output=False)
+            sam_inputs_device = {}
+            for k, v in sam_inputs.items():
+                if hasattr(v, "to"):
+                    if (
+                        sam_dtype is not None
+                        and hasattr(v, "dtype")
+                        and v.dtype in (torch.float32, torch.float64)
+                        and sam_dtype in (torch.float16, torch.bfloat16)
+                    ):
+                        sam_inputs_device[k] = v.to(device=sam_device, dtype=sam_dtype)
+                    else:
+                        sam_inputs_device[k] = v.to(sam_device)
+                else:
+                    sam_inputs_device[k] = v
+
+            with torch.inference_mode():
+                sam_outputs = self._sam2_model(**sam_inputs_device, multimask_output=False)
             masks = self._sam2_processor.post_process_masks(
                 sam_outputs.pred_masks.cpu(), sam_inputs["original_sizes"]
             )

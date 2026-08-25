@@ -243,11 +243,13 @@ class GroundingDinoDetector:
         else:
             device = self._device_str
 
-        LOGGER.info("Loading Grounding DINO model '%s' on %s", self.model_id, device)
+        dtype = torch.float32
+        LOGGER.info("Loading Grounding DINO model '%s' on %s (dtype: %s)", self.model_id, device, dtype)
         self._processor = AutoProcessor.from_pretrained(self.model_id)
-        self._model = GroundingDinoForObjectDetection.from_pretrained(self.model_id).to(
-            torch.device(device)
-        )
+        self._model = GroundingDinoForObjectDetection.from_pretrained(
+            self.model_id,
+            torch_dtype=dtype,
+        ).to(torch.device(device))
         self._model.eval()
 
     def detect(
@@ -278,14 +280,25 @@ class GroundingDinoDetector:
 
         try:
             device = next(self._model.parameters()).device
-            device_inputs = {
-                key: value.to(device) if hasattr(value, "to") else value
-                for key, value in inputs.items()
-            }
+            model_dtype = getattr(self._model, "dtype", None)
+            device_inputs = {}
+            for key, value in inputs.items():
+                if hasattr(value, "to"):
+                    if (
+                        model_dtype is not None
+                        and hasattr(value, "dtype")
+                        and value.dtype in (torch.float32, torch.float64)
+                        and model_dtype in (torch.float16, torch.bfloat16)
+                    ):
+                        device_inputs[key] = value.to(device=device, dtype=model_dtype)
+                    else:
+                        device_inputs[key] = value.to(device)
+                else:
+                    device_inputs[key] = value
         except (StopIteration, AttributeError):
             device_inputs = dict(inputs)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             outputs = self._model(**device_inputs)
 
         input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
@@ -389,18 +402,25 @@ class SamSegmenter:
         else:
             device = self._device_str
 
-        LOGGER.info("Loading SAM model '%s' on %s", self.model_id, device)
+        dtype = torch.float32
+        LOGGER.info("Loading SAM model '%s' on %s (dtype: %s)", self.model_id, device, dtype)
 
         if "sam2" in self.model_id.lower():
             from transformers import Sam2Model, Sam2Processor
 
             self._processor = Sam2Processor.from_pretrained(self.model_id)
-            self._model = Sam2Model.from_pretrained(self.model_id).to(torch.device(device))
+            self._model = Sam2Model.from_pretrained(
+                self.model_id,
+                torch_dtype=dtype,
+            ).to(torch.device(device))
         else:
             from transformers import SamModel, SamProcessor
 
             self._processor = SamProcessor.from_pretrained(self.model_id)
-            self._model = SamModel.from_pretrained(self.model_id).to(torch.device(device))
+            self._model = SamModel.from_pretrained(
+                self.model_id,
+                torch_dtype=dtype,
+            ).to(torch.device(device))
 
         self._model.eval()
 
@@ -427,14 +447,25 @@ class SamSegmenter:
 
         try:
             device = next(self._model.parameters()).device
-            device_inputs = {
-                key: value.to(device) if hasattr(value, "to") else value
-                for key, value in inputs.items()
-            }
+            model_dtype = getattr(self._model, "dtype", None)
+            device_inputs = {}
+            for key, value in inputs.items():
+                if hasattr(value, "to"):
+                    if (
+                        model_dtype is not None
+                        and hasattr(value, "dtype")
+                        and value.dtype in (torch.float32, torch.float64)
+                        and model_dtype in (torch.float16, torch.bfloat16)
+                    ):
+                        device_inputs[key] = value.to(device=device, dtype=model_dtype)
+                    else:
+                        device_inputs[key] = value.to(device)
+                else:
+                    device_inputs[key] = value
         except (StopIteration, AttributeError):
             device_inputs = dict(inputs)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             outputs = self._model(**device_inputs, multimask_output=False)
 
         orig_sizes = (
@@ -491,14 +522,25 @@ class SamSegmenter:
             )
             try:
                 device = next(self._model.parameters()).device
-                device_inputs = {
-                    key: value.to(device) if hasattr(value, "to") else value
-                    for key, value in inputs.items()
-                }
+                model_dtype = getattr(self._model, "dtype", None)
+                device_inputs = {}
+                for key, value in inputs.items():
+                    if hasattr(value, "to"):
+                        if (
+                            model_dtype is not None
+                            and hasattr(value, "dtype")
+                            and value.dtype in (torch.float32, torch.float64)
+                            and model_dtype in (torch.float16, torch.bfloat16)
+                        ):
+                            device_inputs[key] = value.to(device=device, dtype=model_dtype)
+                        else:
+                            device_inputs[key] = value.to(device)
+                    else:
+                        device_inputs[key] = value
             except (StopIteration, AttributeError):
                 device_inputs = dict(inputs)
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 outputs = self._model(**device_inputs, multimask_output=False)
 
             orig_sizes = (

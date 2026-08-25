@@ -104,14 +104,14 @@ def test_auto_label_dialog_lifecycle(sample_images: list[Path], qapp: QApplicati
     assert dialog.model_badge.text() == "Box labels"
     assert not dialog.yolo_weights_btn.isHidden()
 
-    # Test Locate Anything option
-    locate_idx = [
+    # Test Florence-2 VLM option
+    vlm_idx = [
         i for i in range(dialog.model_combo.count())
-        if dialog.model_combo.itemData(i) == AutoLabelPipelineMode.LOCATE_ANYTHING_SAM2_MASKS.value
+        if dialog.model_combo.itemData(i) == AutoLabelPipelineMode.VLM_SAM2_MASKS.value
     ][0]
-    dialog.model_combo.setCurrentIndex(locate_idx)
+    dialog.model_combo.setCurrentIndex(vlm_idx)
     assert dialog.model_badge.text() == "Mask labels"
-    assert "Locate Anything" in dialog.model_combo.currentText()
+    assert "Florence-2" in dialog.model_combo.currentText()
 
     # Test custom weights picker
     with patch("PySide6.QtWidgets.QFileDialog.getOpenFileName", return_value=("/path/to/custom_weights.pt", "All")):
@@ -129,14 +129,14 @@ def test_auto_label_dialog_lifecycle(sample_images: list[Path], qapp: QApplicati
     # Test Ensemble checkboxes toggling
     dialog.dino_chk.setChecked(True)
     dialog.yolo_chk.setChecked(True)
-    dialog.locate_chk.setChecked(True)
+    dialog.florence_chk.setChecked(True)
     assert "Fused (3 models)" in dialog.model_badge.text()
     assert dialog.model_combo.currentData() == AutoLabelPipelineMode.ENSEMBLE_FUSION_SAM2_MASKS.value
 
     config = dialog._get_current_config()
     assert config.enable_grounding_dino is True
     assert config.enable_yolo is True
-    assert config.enable_locate_anything is True
+    assert config.enable_florence2 is True
     assert config.mode == AutoLabelPipelineMode.ENSEMBLE_FUSION_SAM2_MASKS
 
     # Test Clear All

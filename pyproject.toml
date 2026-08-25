@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "AI-assisted annotation application for Indonesian traffic datasets"
 requires-python = ">=3.12"
 dependencies = [
+    "bitsandbytes>=0.50.1",
     "decord>=0.6.0",
     "einops>=0.8.2",
     "lmdb>=2.3.0",

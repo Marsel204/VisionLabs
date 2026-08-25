@@ -51,7 +51,6 @@ class AutoLabelEngine:
     _grounding_detector: Any | None = None
     _sam_segmenter: Any | None = None
     _vlm_helper: Any | None = None
-    _locate_anything_helper: Any | None = None
     _polygon_processor: Any | None = None
     _yolo_detector: Any | None = None
     _yolo_model_name: str = "yolo11n.pt"
@@ -62,7 +61,6 @@ class AutoLabelEngine:
         grounding_detector: Any | None = None,
         sam_segmenter: Any | None = None,
         vlm_helper: Any | None = None,
-        locate_anything_helper: Any | None = None,
         polygon_processor: Any | None = None,
         yolo_detector: Any | None = None,
         yolo_model_name: str = "yolo11n.pt",
@@ -71,7 +69,6 @@ class AutoLabelEngine:
         self._grounding_detector = grounding_detector
         self._sam_segmenter = sam_segmenter
         self._vlm_helper = vlm_helper
-        self._locate_anything_helper = locate_anything_helper
         self._polygon_processor = polygon_processor
         self._yolo_detector = yolo_detector
         self._yolo_model_name = yolo_model_name
@@ -97,13 +94,6 @@ class AutoLabelEngine:
 
             self._vlm_helper = Florence2VLM(device=self._device)
         return self._vlm_helper
-
-    def _get_locate_anything_helper(self) -> Any:
-        if self._locate_anything_helper is None:
-            from src.vlm_helper import LocateAnything3BVLM
-
-            self._locate_anything_helper = LocateAnything3BVLM(device=self._device)
-        return self._locate_anything_helper
 
     def _get_polygon_processor(self) -> Any:
         if self._polygon_processor is None:
@@ -292,12 +282,10 @@ class AutoLabelEngine:
         run_dino = False
         run_yolo = False
         run_florence2 = False
-        run_locate_anything = False
 
         if config.mode.is_ensemble:
             run_dino = config.enable_grounding_dino
             run_yolo = config.enable_yolo
-            run_locate_anything = config.enable_locate_anything
             run_florence2 = config.enable_florence2
         elif config.mode in (
             AutoLabelPipelineMode.DINO_SAM2_MASKS,
@@ -314,11 +302,6 @@ class AutoLabelEngine:
             AutoLabelPipelineMode.VLM_BOXES,
         ):
             run_florence2 = True
-        elif config.mode in (
-            AutoLabelPipelineMode.LOCATE_ANYTHING_SAM2_MASKS,
-            AutoLabelPipelineMode.LOCATE_ANYTHING_BOXES,
-        ):
-            run_locate_anything = True
 
         prompt_str, token_map = self.build_prompt_mapping(active_classes)
 
@@ -420,43 +403,6 @@ class AutoLabelEngine:
                 if matched_cls is None:
                     for cls_obj in active_classes:
                         if cls_obj.name.lower() in raw_label.lower():
-                            matched_cls = cls_obj
-                            break
-
-                if matched_cls is not None:
-                    candidate_boxes_px.append(box_px)
-                    candidate_classes.append(matched_cls)
-                    candidate_scores.append(score)
-
-        # 4. Locate Anything 3B VLM
-        if run_locate_anything:
-            locate_vlm = self._get_locate_anything_helper()
-            locate_detections = locate_vlm.detect_objects(
-                image=image,
-                classes=active_classes,
-                confidence_threshold=config.confidence_threshold,
-            )
-            for det in locate_detections:
-                raw_label = det.get("label", "")
-                box_px = det.get("box", [])
-                score = float(det.get("score", 0.88))
-                if len(box_px) != 4:
-                    continue
-
-                matched_cls = None
-                for cls_obj in active_classes:
-                    if (
-                        cls_obj.name.lower() == raw_label.lower()
-                        or cls_obj.effective_prompt.lower() == raw_label.lower()
-                    ):
-                        matched_cls = cls_obj
-                        break
-                if matched_cls is None:
-                    for cls_obj in active_classes:
-                        if (
-                            cls_obj.name.lower() in raw_label.lower()
-                            or raw_label.lower() in cls_obj.name.lower()
-                        ):
                             matched_cls = cls_obj
                             break
 

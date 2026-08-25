@@ -9,8 +9,18 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QThread, Signal
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QIcon,
+    QImageReader,
+    QPainter,
+    QPen,
+    QPixmap,
+    QPolygonF,
+)
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -452,6 +462,7 @@ class CherryPickDialog(QDialog):
 
 
 _THUMBNAIL_BASE_CACHE: dict[Path, QPixmap] = {}
+_MAX_THUMBNAIL_CACHE_SIZE = 300
 
 
 def _get_base_thumbnail_pixmap(path: Path, target_size: int = 60) -> QPixmap:
@@ -462,25 +473,37 @@ def _get_base_thumbnail_pixmap(path: Path, target_size: int = 60) -> QPixmap:
 
     base = QPixmap(target_size, target_size)
     base.fill(Qt.GlobalColor.transparent)
-    reader_image = QPixmap(str(path))
+
+    reader = QImageReader(str(path))
+    reader.setAutoTransform(True)
+    orig_size = reader.size()
+
     painter = QPainter(base)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
-    if not reader_image.isNull():
-        scaled = reader_image.scaled(
-            target_size,
-            target_size,
-            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        x_off = max(0, (scaled.width() - target_size) // 2)
-        y_off = max(0, (scaled.height() - target_size) // 2)
-        cropped = scaled.copy(x_off, y_off, target_size, target_size)
-
-        painter.setBrush(QBrush(cropped))
-        painter.setPen(QColor("#2c2f3b"))
-        painter.drawRoundedRect(1, 1, target_size - 2, target_size - 2, 6, 6)
+    if orig_size.isValid() and orig_size.width() > 0 and orig_size.height() > 0:
+        scale_ratio = max(target_size / orig_size.width(), target_size / orig_size.height())
+        scaled_w = max(1, int(round(orig_size.width() * scale_ratio)))
+        scaled_h = max(1, int(round(orig_size.height() * scale_ratio)))
+        reader.setScaledSize(QSize(scaled_w, scaled_h))
+        qimg = reader.read()
+        if not qimg.isNull():
+            reader_pixmap = QPixmap.fromImage(qimg)
+            x_off = max(0, (reader_pixmap.width() - target_size) // 2)
+            y_off = max(0, (reader_pixmap.height() - target_size) // 2)
+            cropped = reader_pixmap.copy(x_off, y_off, target_size, target_size)
+            painter.setBrush(QBrush(cropped))
+            painter.setPen(QColor("#2c2f3b"))
+            painter.drawRoundedRect(1, 1, target_size - 2, target_size - 2, 6, 6)
+        else:
+            painter.setBrush(QBrush(QColor("#1e2230")))
+            painter.setPen(QColor("#2c2f3b"))
+            painter.drawRoundedRect(1, 1, target_size - 2, target_size - 2, 6, 6)
+            painter.setPen(QColor("#697082"))
+            font = QFont("sans-serif", 16)
+            painter.setFont(font)
+            painter.drawText(base.rect(), Qt.AlignmentFlag.AlignCenter, "🖼")
     else:
         painter.setBrush(QBrush(QColor("#1e2230")))
         painter.setPen(QColor("#2c2f3b"))
@@ -491,8 +514,93 @@ def _get_base_thumbnail_pixmap(path: Path, target_size: int = 60) -> QPixmap:
         painter.drawText(base.rect(), Qt.AlignmentFlag.AlignCenter, "🖼")
 
     painter.end()
+
+    if len(_THUMBNAIL_BASE_CACHE) >= _MAX_THUMBNAIL_CACHE_SIZE:
+        _THUMBNAIL_BASE_CACHE.clear()
+
     _THUMBNAIL_BASE_CACHE[path] = base
     return base
+
+
+class AutoLabelPreviewThread(QThread):
+    """Background worker generating preview detections without freezing Qt GUI."""
+
+    sample_processed = Signal(int, int, Path, object)
+    preview_finished = Signal(object)
+    preview_failed = Signal(str)
+
+    def __init__(
+        self,
+        engine: AutoLabelEngine,
+        images: list[Path],
+        config: AutoLabelConfig,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.engine = engine
+        self.images = images
+        self.config = config
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+
+    def run(self) -> None:
+        try:
+            results: dict[Path, AutoLabelResult] = {}
+            for idx, img_path in enumerate(self.images):
+                if self._cancel_requested:
+                    break
+                res = self.engine.run_preview(img_path, self.config)
+                results[img_path] = res
+                self.sample_processed.emit(idx + 1, len(self.images), img_path, res)
+            self.preview_finished.emit(results)
+        except Exception as err:
+            LOGGER.exception("AutoLabel preview thread error")
+            self.preview_failed.emit(str(err))
+
+
+class AutoLabelBatchThread(QThread):
+    """Background worker executing dataset batch auto-annotation."""
+
+    batch_progress = Signal(int, int, Path, object)
+    batch_finished = Signal(object)
+    batch_failed = Signal(str)
+
+    def __init__(
+        self,
+        engine: AutoLabelEngine,
+        documents: list[AnnotationDocument],
+        config: AutoLabelConfig,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.engine = engine
+        self.documents = documents
+        self.config = config
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+
+    def run(self) -> None:
+        try:
+            def _progress(cur: int, tot: int, p: Path, res: AutoLabelResult) -> None:
+                self.batch_progress.emit(cur, tot, p, res)
+
+            def _is_cancelled() -> bool:
+                return self._cancel_requested
+
+            updated = self.engine.run_batch(
+                self.documents,
+                self.config,
+                progress_callback=_progress,
+                is_cancelled=_is_cancelled,
+            )
+            self.batch_finished.emit(updated)
+        except Exception as err:
+            LOGGER.exception("AutoLabel batch thread error")
+            self.batch_failed.emit(str(err))
 
 
 class AutoLabelDialog(QDialog):
@@ -561,6 +669,8 @@ class AutoLabelDialog(QDialog):
         self._latest_result: AutoLabelResult | None = None
         self._latest_results: dict[Path, AutoLabelResult] = {}
         self._is_previewing = False
+        self._preview_thread: AutoLabelPreviewThread | None = None
+        self._batch_thread: AutoLabelBatchThread | None = None
 
         self._init_ui()
         self._render_initial_images()
@@ -830,11 +940,6 @@ class AutoLabelDialog(QDialog):
         self.yolo_chk.setChecked(False)
         self.yolo_chk.toggled.connect(self._on_detector_toggled)
 
-        self.locate_chk = QCheckBox("Locate Anything 3B")
-        self.locate_chk.setObjectName("EnsembleCheck")
-        self.locate_chk.setChecked(False)
-        self.locate_chk.toggled.connect(self._on_detector_toggled)
-
         self.florence_chk = QCheckBox("Florence-2 VLM")
         self.florence_chk.setObjectName("EnsembleCheck")
         self.florence_chk.setChecked(False)
@@ -852,7 +957,6 @@ class AutoLabelDialog(QDialog):
         row2.addWidget(detector_title, 0)
         row2.addWidget(self.dino_chk, 0)
         row2.addWidget(self.yolo_chk, 0)
-        row2.addWidget(self.locate_chk, 0)
         row2.addWidget(self.florence_chk, 0)
         row2.addWidget(ensemble_sep, 0)
         row2.addWidget(self.sam2_chk, 0)
@@ -1736,14 +1840,6 @@ class AutoLabelDialog(QDialog):
                     self.yolo_chk.setChecked(
                         mode in (AutoLabelPipelineMode.YOLO_SAM2_MASKS, AutoLabelPipelineMode.YOLO_BOXES)
                     )
-                if hasattr(self, "locate_chk"):
-                    self.locate_chk.setChecked(
-                        mode
-                        in (
-                            AutoLabelPipelineMode.LOCATE_ANYTHING_SAM2_MASKS,
-                            AutoLabelPipelineMode.LOCATE_ANYTHING_BOXES,
-                        )
-                    )
                 if hasattr(self, "florence_chk"):
                     self.florence_chk.setChecked(
                         mode in (AutoLabelPipelineMode.VLM_SAM2_MASKS, AutoLabelPipelineMode.VLM_BOXES)
@@ -1751,7 +1847,7 @@ class AutoLabelDialog(QDialog):
             else:
                 active_count = sum(
                     1
-                    for chk in (self.dino_chk, self.yolo_chk, self.locate_chk, self.florence_chk)
+                    for chk in (self.dino_chk, self.yolo_chk, self.florence_chk)
                     if hasattr(self, "dino_chk") and chk.isChecked()
                 )
                 if active_count < 2 and hasattr(self, "dino_chk") and hasattr(self, "yolo_chk"):
@@ -1776,7 +1872,7 @@ class AutoLabelDialog(QDialog):
         try:
             enabled_detectors = sum(
                 1
-                for chk in (self.dino_chk, self.yolo_chk, self.locate_chk, self.florence_chk)
+                for chk in (self.dino_chk, self.yolo_chk, self.florence_chk)
                 if chk.isChecked()
             )
             if enabled_detectors == 0:
@@ -1807,12 +1903,6 @@ class AutoLabelDialog(QDialog):
                         AutoLabelPipelineMode.YOLO_SAM2_MASKS
                         if sam2_enabled
                         else AutoLabelPipelineMode.YOLO_BOXES
-                    )
-                elif self.locate_chk.isChecked():
-                    target_mode = (
-                        AutoLabelPipelineMode.LOCATE_ANYTHING_SAM2_MASKS
-                        if sam2_enabled
-                        else AutoLabelPipelineMode.LOCATE_ANYTHING_BOXES
                     )
                 else:
                     target_mode = (
@@ -1910,7 +2000,6 @@ class AutoLabelDialog(QDialog):
 
         dino_enabled = self.dino_chk.isChecked() if hasattr(self, "dino_chk") else True
         yolo_enabled = self.yolo_chk.isChecked() if hasattr(self, "yolo_chk") else False
-        locate_enabled = self.locate_chk.isChecked() if hasattr(self, "locate_chk") else False
         florence_enabled = self.florence_chk.isChecked() if hasattr(self, "florence_chk") else False
         sam2_enabled = self.sam2_chk.isChecked() if hasattr(self, "sam2_chk") else True
 
@@ -1922,12 +2011,11 @@ class AutoLabelDialog(QDialog):
             classes=self.classes,
             enable_grounding_dino=dino_enabled,
             enable_yolo=yolo_enabled,
-            enable_locate_anything=locate_enabled,
             enable_florence2=florence_enabled,
             enable_sam2_masks=sam2_enabled,
         )
 
-    def _run_single_preview(self) -> None:
+    def _run_single_preview(self, wait: bool = False) -> None:
         """Run preview across the active sample images (all 4 in Grid View, or current image only in Focused View)."""
         if self._is_previewing:
             return
@@ -1958,69 +2046,87 @@ class AutoLabelDialog(QDialog):
         self.inline_progress.setValue(0)
         self.result_stats_label.setText(f"⚡ Running preview on {len(target_images)} image(s)...")
 
-        total_detections = 0
-        total_time = 0.0
+        self._preview_thread = AutoLabelPreviewThread(
+            engine=self.engine,
+            images=target_images,
+            config=config,
+            parent=self,
+        )
+        self._preview_thread.sample_processed.connect(self._on_preview_sample_processed)
+        self._preview_thread.preview_finished.connect(self._on_preview_finished)
+        self._preview_thread.preview_failed.connect(self._on_preview_failed)
+        self._preview_thread.start()
+
+        if wait or not self.isVisible():
+            self._preview_thread.wait(15000)
+            from PySide6.QtWidgets import QApplication
+
+            QApplication.processEvents()
+
+    def _on_preview_sample_processed(
+        self, cur: int, total: int, img_path: Path, result: AutoLabelResult
+    ) -> None:
+        self._latest_results[img_path] = result
+        if img_path in self.preview_image_paths:
+            card_idx = self.preview_image_paths.index(img_path)
+            if card_idx < len(self.preview_cards):
+                self.preview_cards[card_idx].set_data(img_path, result)
+        self.inline_progress.setValue(cur)
+        if total == 1:
+            self.result_stats_label.setText(
+                f"⚡ Running {self.model_combo.currentText()} on {img_path.name[:24]}..."
+            )
+        else:
+            self.result_stats_label.setText(
+                f"⚡ Processed sample {cur}/{total}: {img_path.name[:20]}..."
+            )
+
+    def _on_preview_finished(self, results: dict[Path, AutoLabelResult]) -> None:
+        self._latest_results.update(results)
+        is_focused_view = self.preview_views_stack.currentIndex() == 1
+
+        total_detections = sum(r.count for r in results.values())
+        total_time = sum(r.elapsed_seconds for r in results.values())
         class_counts: dict[str, int] = {}
+        for r in results.values():
+            for det in r.detections:
+                class_counts[det.class_name] = class_counts.get(det.class_name, 0) + 1
 
-        try:
-            for idx, img_path in enumerate(target_images):
-                if len(target_images) == 1:
-                    self.result_stats_label.setText(
-                        f"⚡ Running {self.model_combo.currentText()} on {img_path.name[:24]}..."
-                    )
-                else:
-                    self.result_stats_label.setText(
-                        f"⚡ Running {self.model_combo.currentText()} on sample {idx + 1}/{len(target_images)}: {img_path.name[:20]}..."
-                    )
-                QDialog.repaint(self)
+        if self.current_image_path and self.current_image_path in self._latest_results:
+            self._latest_result = self._latest_results[self.current_image_path]
+        elif self.preview_image_paths:
+            self.current_image_path = self.preview_image_paths[0]
+            self._latest_result = self._latest_results.get(self.current_image_path)
 
-                result = self.engine.run_preview(img_path, config)
-                self._latest_results[img_path] = result
-                total_detections += result.count
-                total_time += result.elapsed_seconds
-                for det in result.detections:
-                    class_counts[det.class_name] = class_counts.get(det.class_name, 0) + 1
+        if self.current_image_path and self._latest_result:
+            self.preview_canvas.set_result(self.current_image_path, self._latest_result)
 
-                if img_path in self.preview_image_paths:
-                    card_idx = self.preview_image_paths.index(img_path)
-                    if card_idx < len(self.preview_cards):
-                        self.preview_cards[card_idx].set_data(img_path, result)
-
-                self.inline_progress.setValue(idx + 1)
-
-            if self.current_image_path and self.current_image_path in self._latest_results:
-                self._latest_result = self._latest_results[self.current_image_path]
-            elif self.preview_image_paths:
-                self.current_image_path = self.preview_image_paths[0]
-                self._latest_result = self._latest_results.get(self.current_image_path)
-
-            if self.current_image_path and self._latest_result:
-                self.preview_canvas.set_result(self.current_image_path, self._latest_result)
-
-            if class_counts:
-                breakdown = ", ".join(
-                    f"{count} {c}{'s' if count > 1 else ''}" for c, count in class_counts.items()
-                )
-                if is_focused_view and self.current_image_path:
-                    summary_str = f"Found {total_detections} objects ({breakdown}) on {self.current_image_path.name[:20]} in {total_time:.2f}s"
-                else:
-                    summary_str = f"Found {total_detections} objects ({breakdown}) in {total_time:.2f}s"
+        if class_counts:
+            breakdown = ", ".join(
+                f"{count} {c}{'s' if count > 1 else ''}" for c, count in class_counts.items()
+            )
+            if is_focused_view and self.current_image_path:
+                summary_str = f"Found {total_detections} objects ({breakdown}) on {self.current_image_path.name[:20]} in {total_time:.2f}s"
             else:
-                if is_focused_view and self.current_image_path:
-                    summary_str = f"Found 0 objects on {self.current_image_path.name[:20]} ({total_time:.2f}s)"
-                else:
-                    summary_str = f"Found 0 objects across {len(target_images)} samples ({total_time:.2f}s)"
+                summary_str = f"Found {total_detections} objects ({breakdown}) in {total_time:.2f}s"
+        else:
+            if is_focused_view and self.current_image_path:
+                summary_str = f"Found 0 objects on {self.current_image_path.name[:20]} ({total_time:.2f}s)"
+            else:
+                summary_str = f"Found 0 objects across {len(results)} samples ({total_time:.2f}s)"
 
-            self.result_stats_label.setText(f"⚡ {summary_str}")
-            self._update_sample_tabs_ui()
-            self._populate_image_list(self.search_input.text() if hasattr(self, "search_input") else "")
-        except Exception as err:
-            LOGGER.exception("Preview generation failed")
-            QMessageBox.critical(self, "Preview Error", f"Failed to generate preview: {err}")
-            self.result_stats_label.setText("⚡ Preview error occurred.")
-        finally:
-            self._is_previewing = False
-            self.inline_progress.setVisible(False)
+        self.result_stats_label.setText(f"⚡ {summary_str}")
+        self._update_sample_tabs_ui()
+        self._populate_image_list(self.search_input.text() if hasattr(self, "search_input") else "")
+        self._is_previewing = False
+        self.inline_progress.setVisible(False)
+
+    def _on_preview_failed(self, error_msg: str) -> None:
+        self._is_previewing = False
+        self.inline_progress.setVisible(False)
+        LOGGER.exception("Preview generation failed: %s", error_msg)
+        QMessageBox.critical(self, "Preview Error", f"Failed to generate preview: {error_msg}")
+        self.result_stats_label.setText("⚡ Preview error occurred.")
 
     def _open_ai_tuner_dialog(self) -> None:
         """Open the interactive AI Auto-Tuner modal."""
@@ -2172,7 +2278,7 @@ class AutoLabelDialog(QDialog):
                 "These samples are now stored as Ground Truth references for AI Auto-Tuning.",
             )
 
-    def _run_batch_auto_label(self) -> None:
+    def _run_batch_auto_label(self, wait: bool = False) -> None:
         """Run full batch auto-annotation across every image in the dataset."""
         if not self.image_paths:
             QMessageBox.warning(self, "Empty Batch", "No images in current batch.")
@@ -2206,24 +2312,38 @@ class AutoLabelDialog(QDialog):
             except Exception:
                 docs.append(AnnotationDocument(image_path=p, image_width=640, image_height=640))
 
-        try:
-            def _on_batch_progress(cur: int, tot: int, p: Path, res: AutoLabelResult) -> None:
-                self.inline_progress.setValue(cur)
-                self.result_stats_label.setText(f"⚡ Processing {cur}/{tot}: {p.name[:20]}...")
-                QDialog.repaint(self)
+        self._batch_thread = AutoLabelBatchThread(
+            engine=self.engine,
+            documents=docs,
+            config=config,
+            parent=self,
+        )
+        self._batch_thread.batch_progress.connect(self._on_batch_progress_update)
+        self._batch_thread.batch_finished.connect(self._on_batch_finished)
+        self._batch_thread.batch_failed.connect(self._on_batch_failed)
+        self._batch_thread.start()
 
-            updated_docs = self.engine.run_batch(
-                docs, config, progress_callback=_on_batch_progress
-            )
-            self.batch_completed.emit(updated_docs)
-            QMessageBox.information(
-                self,
-                "Auto Label Complete",
-                f"Successfully annotated {len(updated_docs)} images with {self.model_combo.currentText()}.",
-            )
-            self.accept()
-        except Exception as err:
-            LOGGER.exception("Batch Auto Label failed")
-            QMessageBox.critical(self, "Batch Error", f"Failed to run batch auto label: {err}")
-        finally:
-            self.inline_progress.setVisible(False)
+        if wait or not self.isVisible():
+            self._batch_thread.wait(60000)
+            from PySide6.QtWidgets import QApplication
+
+            QApplication.processEvents()
+
+    def _on_batch_progress_update(self, cur: int, tot: int, p: Path, res: AutoLabelResult) -> None:
+        self.inline_progress.setValue(cur)
+        self.result_stats_label.setText(f"⚡ Processing {cur}/{tot}: {p.name[:20]}...")
+
+    def _on_batch_finished(self, updated_docs: dict[Path, AnnotationDocument]) -> None:
+        self.inline_progress.setVisible(False)
+        self.batch_completed.emit(updated_docs)
+        QMessageBox.information(
+            self,
+            "Auto Label Complete",
+            f"Successfully annotated {len(updated_docs)} images with {self.model_combo.currentText()}.",
+        )
+        self.accept()
+
+    def _on_batch_failed(self, error_msg: str) -> None:
+        self.inline_progress.setVisible(False)
+        LOGGER.exception("Batch Auto Label failed: %s", error_msg)
+        QMessageBox.critical(self, "Batch Error", f"Failed to run batch auto label: {error_msg}")

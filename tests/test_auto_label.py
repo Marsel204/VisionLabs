@@ -77,18 +77,6 @@ def test_auto_label_pipeline_mode_properties() -> None:
     assert mode_vlm_boxes.produces_masks is False
     assert mode_vlm_boxes.uses_vlm is True
 
-    mode_locate_masks = AutoLabelPipelineMode.LOCATE_ANYTHING_SAM2_MASKS
-    assert mode_locate_masks.produces_masks is True
-    assert mode_locate_masks.uses_locate_anything is True
-    assert mode_locate_masks.uses_vlm is True
-    assert mode_locate_masks.display_name == "Locate Anything 3B + SAM 2 (Masks)"
-
-    mode_locate_boxes = AutoLabelPipelineMode.LOCATE_ANYTHING_BOXES
-    assert mode_locate_boxes.produces_masks is False
-    assert mode_locate_boxes.uses_locate_anything is True
-    assert mode_locate_boxes.uses_vlm is True
-    assert mode_locate_boxes.display_name == "Locate Anything 3B (Bounding Boxes)"
-
     mode_ensemble_masks = AutoLabelPipelineMode.ENSEMBLE_FUSION_SAM2_MASKS
     assert mode_ensemble_masks.produces_masks is True
     assert mode_ensemble_masks.is_ensemble is True
@@ -375,43 +363,8 @@ def test_auto_label_engine_yolo_anti_duplication(sample_image: Path) -> None:
     assert all(d.class_name == "car" for d in result.detections)
 
 
-def test_auto_label_engine_locate_anything_preview(sample_image: Path) -> None:
-    """Test Locate Anything 3B VLM localization prompting and SAM 2 segmentation."""
-    mock_locate = MagicMock()
-    mock_locate.detect_objects.return_value = [
-        {"label": "bus", "box": [50.0, 60.0, 400.0, 350.0], "score": 0.91},
-        {"label": "motorcycle", "box": [450.0, 200.0, 580.0, 400.0], "score": 0.86},
-    ]
-
-    mock_sam = MagicMock()
-    m1 = np.zeros((480, 640), dtype=np.uint8)
-    m1[60:350, 50:400] = 1
-    m2 = np.zeros((480, 640), dtype=np.uint8)
-    m2[200:400, 450:580] = 1
-    mock_sam.segment_boxes.return_value = [m1, m2]
-
-    engine = AutoLabelEngine(
-        locate_anything_helper=mock_locate,
-        sam_segmenter=mock_sam,
-    )
-
-    config = AutoLabelConfig(
-        mode=AutoLabelPipelineMode.LOCATE_ANYTHING_SAM2_MASKS,
-        confidence_threshold=0.30,
-        classes=[
-            AutoLabelClass(name="bus", prompt="city bus"),
-            AutoLabelClass(name="motorcycle", prompt="motorbike"),
-        ],
-    )
-
-    result = engine.run_preview(sample_image, config)
-    assert result.count == 2
-    assert {d.class_name for d in result.detections} == {"bus", "motorcycle"}
-    assert all(len(d.polygon_pixels) >= 3 for d in result.detections)
-
-
 def test_auto_label_engine_multi_model_ensemble_fusion(sample_image: Path) -> None:
-    """Test multi-model ensemble fusing Grounding DINO + YOLO + Locate Anything 3B + SAM 2."""
+    """Test multi-model ensemble fusing Grounding DINO + YOLO + Florence-2 VLM + SAM 2."""
     # Mock Grounding DINO detecting truck
     mock_dino = MagicMock()
     mock_dino.detect.return_value = [
@@ -435,9 +388,9 @@ def test_auto_label_engine_multi_model_ensemble_fusion(sample_image: Path) -> No
     mock_yolo.return_value = [mock_res]
     mock_yolo.names = {0: "car", 1: "truck"}
 
-    # Mock Locate Anything 3B detecting motorcycle
-    mock_locate = MagicMock()
-    mock_locate.detect_objects.return_value = [
+    # Mock Florence-2 VLM detecting motorcycle
+    mock_vlm = MagicMock()
+    mock_vlm.detect_objects.return_value = [
         {"label": "motorcycle", "box": [450.0, 200.0, 600.0, 420.0], "score": 0.88},
     ]
 
@@ -451,7 +404,7 @@ def test_auto_label_engine_multi_model_ensemble_fusion(sample_image: Path) -> No
     engine = AutoLabelEngine(
         grounding_detector=mock_dino,
         yolo_detector=mock_yolo,
-        locate_anything_helper=mock_locate,
+        vlm_helper=mock_vlm,
         sam_segmenter=mock_sam,
     )
 
@@ -460,8 +413,7 @@ def test_auto_label_engine_multi_model_ensemble_fusion(sample_image: Path) -> No
         confidence_threshold=0.30,
         enable_grounding_dino=True,
         enable_yolo=True,
-        enable_locate_anything=True,
-        enable_florence2=False,
+        enable_florence2=True,
         classes=[
             AutoLabelClass(name="truck", prompt="truck"),
             AutoLabelClass(name="car", prompt="car"),
@@ -470,6 +422,6 @@ def test_auto_label_engine_multi_model_ensemble_fusion(sample_image: Path) -> No
     )
 
     result = engine.run_preview(sample_image, config)
-    # 3 distinct objects: truck (from DINO, duplicate from YOLO suppressed), car (from YOLO), motorcycle (from Locate Anything)
+    # 3 distinct objects: truck (from DINO, duplicate from YOLO suppressed), car (from YOLO), motorcycle (from Florence-2)
     assert result.count == 3
     assert {d.class_name for d in result.detections} == {"truck", "car", "motorcycle"}

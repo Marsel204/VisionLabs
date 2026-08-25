@@ -255,7 +255,6 @@ class AITunerEngine:
             yolo_model_name=config.yolo_model_name,
             enable_grounding_dino=config.enable_grounding_dino,
             enable_yolo=config.enable_yolo,
-            enable_locate_anything=config.enable_locate_anything,
             enable_florence2=config.enable_florence2,
             enable_sam2_masks=config.enable_sam2_masks,
         )
@@ -274,7 +273,6 @@ class AITunerEngine:
             yolo_model_name=config.yolo_model_name,
             enable_grounding_dino=config.enable_grounding_dino,
             enable_yolo=config.enable_yolo,
-            enable_locate_anything=config.enable_locate_anything,
             enable_florence2=config.enable_florence2,
             enable_sam2_masks=config.enable_sam2_masks,
         )
