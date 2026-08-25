@@ -9,6 +9,7 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 from threading import Event
+from typing import Any
 
 from PySide6.QtCore import QEvent, QObject, QRunnable, QSize, Qt, QThreadPool, Signal
 from PySide6.QtGui import QAction, QActionGroup, QBrush, QColor, QIcon, QImage, QPainter, QPixmap
@@ -2446,11 +2447,16 @@ class MainWindow(QMainWindow):
                 for existing in self._document.annotations
             ):
                 continue
+            source = (
+                AnnotationSource.SAM2
+                if det.polygon_normalized
+                else AnnotationSource.GROUNDING_DINO
+            )
             ann = Annotation(
                 class_name=det.class_name,
                 box=det.box,
                 confidence=det.confidence,
-                source=AnnotationSource.SAM2 if det.polygon_normalized else AnnotationSource.GROUNDING_DINO,
+                source=source,
             )
             self._document = self._history.execute(AddAnnotationCommand(ann))
             added += 1
