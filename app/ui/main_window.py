@@ -1331,7 +1331,7 @@ class MainWindow(QMainWindow):
                     image.height(),
                 )
         self._project_root = None
-        self.image_browser.set_paths(paths)
+        self._refresh_image_browser_order(preserve_current=False)
         self.statusBar().showMessage(f"Imported {len(paths)} images")
 
     def _import_coco_dataset(self) -> None:
@@ -1473,9 +1473,7 @@ class MainWindow(QMainWindow):
         self._project_documents = {
             document.image_path: document for document in result.documents
         }
-        self.image_browser.set_paths(sorted(self._project_documents))
-        if result.documents:
-            self.image_browser.setCurrentRow(0)
+        self._refresh_image_browser_order(preserve_current=False)
 
     @staticmethod
     def _new_project_path(parent: Path, stem: str) -> Path:
@@ -1695,6 +1693,41 @@ class MainWindow(QMainWindow):
         """Persist the active document in the current imported project session."""
         if self._document is not None and self._document.image_path in self._project_documents:
             self._project_documents[self._document.image_path] = self._document
+            self._refresh_image_browser_order(preserve_current=True)
+
+    def _refresh_image_browser_order(self, preserve_current: bool = True) -> None:
+        """Sort and refresh the Image Browser to keep annotated images at the top."""
+        if not self._project_documents:
+            return
+
+        current_path = self._document.image_path if self._document else None
+
+        annotated_paths = [
+            p
+            for p, doc in self._project_documents.items()
+            if doc and doc.annotations
+        ]
+        unannotated_paths = [
+            p
+            for p, doc in self._project_documents.items()
+            if not doc or not doc.annotations
+        ]
+
+        # Put annotated images at the top!
+        sorted_paths = sorted(annotated_paths) + sorted(unannotated_paths)
+        counts = {
+            p: len(doc.annotations) for p, doc in self._project_documents.items() if doc
+        }
+
+        self.image_browser.blockSignals(True)
+        self.image_browser.set_paths(sorted_paths, annotation_counts=counts)
+
+        if preserve_current and current_path in sorted_paths:
+            row = sorted_paths.index(current_path)
+            self.image_browser.setCurrentRow(row)
+        elif sorted_paths:
+            self.image_browser.setCurrentRow(0)
+        self.image_browser.blockSignals(False)
 
     def _load_yolo_model(self) -> None:
         """Load YOLO weights once for reuse across images."""
@@ -2462,6 +2495,8 @@ class MainWindow(QMainWindow):
             added += 1
 
         self.canvas.set_document(self._document)
+        self._remember_current_document()
+        self._refresh_image_browser_order(preserve_current=True)
         self.statusBar().showMessage(
             f"Auto Label applied {added} annotation(s) to {self._document.image_path.name}"
         )
@@ -2482,6 +2517,7 @@ class MainWindow(QMainWindow):
                 self._document = updated
                 self._history = AnnotationHistory(updated)
             self.canvas.set_document(self._document)
+        self._refresh_image_browser_order(preserve_current=True)
         self.statusBar().showMessage(
             f"Batch Auto Label finished for {len(updated_documents)} images"
         )

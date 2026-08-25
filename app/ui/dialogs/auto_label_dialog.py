@@ -499,7 +499,7 @@ class AutoLabelDialog(QDialog):
     """Roboflow-style Auto Label modal with clean unified top bar, direct 4-sample grid, and approved batch application."""
 
     preview_applied = Signal(AutoLabelResult)
-    batch_completed = Signal(dict)
+    batch_completed = Signal(object)
 
     def __init__(
         self,
@@ -519,16 +519,33 @@ class AutoLabelDialog(QDialog):
         self.image_paths = list(image_paths)
         self.ground_truth = ground_truth or {}
 
-        # Initialize primary image + up to 3 diverse sample images
+        # Initialize primary image + up to 3 diverse sample images (prioritizing annotated ground truth)
         if self.image_paths:
+            annotated_in_dataset = [
+                p
+                for p in self.image_paths
+                if p in self.ground_truth and self.ground_truth[p].annotations
+            ]
+
             if current_image_path and current_image_path in self.image_paths:
                 primary = current_image_path
+            elif annotated_in_dataset:
+                primary = annotated_in_dataset[0]
             else:
                 primary = self.image_paths[0]
 
             other_samples = [p for p in self.image_paths if p != primary]
-            random_others = random.sample(other_samples, min(3, len(other_samples)))
-            self.preview_image_paths = [primary] + random_others
+            annotated_others = [p for p in other_samples if p in annotated_in_dataset]
+            unannotated_others = [p for p in other_samples if p not in annotated_in_dataset]
+
+            selected_others = list(annotated_others[:3])
+            needed = 3 - len(selected_others)
+            if needed > 0 and unannotated_others:
+                selected_others += random.sample(
+                    unannotated_others, min(needed, len(unannotated_others))
+                )
+
+            self.preview_image_paths = [primary] + selected_others
             self.current_image_path = primary
         else:
             self.preview_image_paths = []
@@ -1044,10 +1061,16 @@ class AutoLabelDialog(QDialog):
         selected_idx = 0
         visible_idx = 0
 
-        # Pin selected preview images at the top, followed by remaining batch images
+        # Pin selected preview images at the top, followed by other annotated images, then unannotated
         pinned_selected = [p for p in self.preview_image_paths if p in self.image_paths]
         remaining = [p for p in self.image_paths if p not in self.preview_image_paths]
-        ordered_paths = pinned_selected + remaining
+        other_annotated = [
+            p for p in remaining if p in self.ground_truth and self.ground_truth[p].annotations
+        ]
+        unannotated = [
+            p for p in remaining if not (p in self.ground_truth and self.ground_truth[p].annotations)
+        ]
+        ordered_paths = pinned_selected + other_annotated + unannotated
 
         for img_path in ordered_paths:
             if filter_lower and filter_lower not in img_path.name.lower():
@@ -1130,11 +1153,15 @@ class AutoLabelDialog(QDialog):
             self.single_view_btn.setObjectName("ViewModeBtn")
             for btn in self.sample_tab_buttons:
                 btn.setVisible(False)
+            self.apply_btn.setText("✔ Apply to 4 Samples")
+            self.apply_btn.setToolTip("Apply annotations across all 4 sample images in the preview grid")
         else:
             self.grid_view_btn.setObjectName("ViewModeBtn")
             self.single_view_btn.setObjectName("ViewModeBtnActive")
             for i, btn in enumerate(self.sample_tab_buttons):
                 btn.setVisible(i < len(self.preview_image_paths))
+            self.apply_btn.setText("✔ Apply to Current Image")
+            self.apply_btn.setToolTip("Apply annotations ONLY to this single focused sample image")
         self.grid_view_btn.setStyle(self.grid_view_btn.style())
         self.single_view_btn.setStyle(self.single_view_btn.style())
 
@@ -1901,7 +1928,7 @@ class AutoLabelDialog(QDialog):
         )
 
     def _run_single_preview(self) -> None:
-        """Run preview across the active sample images (up to 4 randomized or cherry-picked)."""
+        """Run preview across the active sample images (all 4 in Grid View, or current image only in Focused View)."""
         if self._is_previewing:
             return
 
@@ -1917,23 +1944,34 @@ class AutoLabelDialog(QDialog):
             QMessageBox.warning(self, "No Classes", "Please add at least one class before previewing.")
             return
 
+        is_focused_view = self.preview_views_stack.currentIndex() == 1
+        if is_focused_view and self.current_image_path:
+            target_images = [self.current_image_path]
+        else:
+            target_images = list(self.preview_image_paths)
+
         self._is_previewing = True
         config = self._get_current_config()
 
         self.inline_progress.setVisible(True)
-        self.inline_progress.setRange(0, len(self.preview_image_paths))
+        self.inline_progress.setRange(0, len(target_images))
         self.inline_progress.setValue(0)
-        self.result_stats_label.setText("⚡ Running preview across sample images...")
+        self.result_stats_label.setText(f"⚡ Running preview on {len(target_images)} image(s)...")
 
         total_detections = 0
         total_time = 0.0
         class_counts: dict[str, int] = {}
 
         try:
-            for idx, img_path in enumerate(self.preview_image_paths):
-                self.result_stats_label.setText(
-                    f"⚡ Running {self.model_combo.currentText()} on sample {idx + 1}/{len(self.preview_image_paths)}: {img_path.name[:20]}..."
-                )
+            for idx, img_path in enumerate(target_images):
+                if len(target_images) == 1:
+                    self.result_stats_label.setText(
+                        f"⚡ Running {self.model_combo.currentText()} on {img_path.name[:24]}..."
+                    )
+                else:
+                    self.result_stats_label.setText(
+                        f"⚡ Running {self.model_combo.currentText()} on sample {idx + 1}/{len(target_images)}: {img_path.name[:20]}..."
+                    )
                 QDialog.repaint(self)
 
                 result = self.engine.run_preview(img_path, config)
@@ -1943,8 +1981,10 @@ class AutoLabelDialog(QDialog):
                 for det in result.detections:
                     class_counts[det.class_name] = class_counts.get(det.class_name, 0) + 1
 
-                if idx < len(self.preview_cards):
-                    self.preview_cards[idx].set_data(img_path, result)
+                if img_path in self.preview_image_paths:
+                    card_idx = self.preview_image_paths.index(img_path)
+                    if card_idx < len(self.preview_cards):
+                        self.preview_cards[card_idx].set_data(img_path, result)
 
                 self.inline_progress.setValue(idx + 1)
 
@@ -1961,9 +2001,15 @@ class AutoLabelDialog(QDialog):
                 breakdown = ", ".join(
                     f"{count} {c}{'s' if count > 1 else ''}" for c, count in class_counts.items()
                 )
-                summary_str = f"Found {total_detections} objects ({breakdown}) in {total_time:.2f}s"
+                if is_focused_view and self.current_image_path:
+                    summary_str = f"Found {total_detections} objects ({breakdown}) on {self.current_image_path.name[:20]} in {total_time:.2f}s"
+                else:
+                    summary_str = f"Found {total_detections} objects ({breakdown}) in {total_time:.2f}s"
             else:
-                summary_str = f"Found 0 objects across {len(self.preview_image_paths)} samples ({total_time:.2f}s)"
+                if is_focused_view and self.current_image_path:
+                    summary_str = f"Found 0 objects on {self.current_image_path.name[:20]} ({total_time:.2f}s)"
+                else:
+                    summary_str = f"Found 0 objects across {len(target_images)} samples ({total_time:.2f}s)"
 
             self.result_stats_label.setText(f"⚡ {summary_str}")
             self._update_sample_tabs_ui()
@@ -2011,7 +2057,10 @@ class AutoLabelDialog(QDialog):
         self._run_single_preview()
 
     def _apply_preview_to_image(self) -> None:
-        """Approve and apply annotations from the preview."""
+        """Approve and apply annotations from the preview.
+        In Focused View: applies ONLY to the currently focused sample image.
+        In 4-Grid View: applies to all previewed sample images.
+        """
         if not self._latest_results and not self._latest_result:
             QMessageBox.information(
                 self,
@@ -2020,10 +2069,108 @@ class AutoLabelDialog(QDialog):
             )
             return
 
-        res = self._latest_results.get(self.current_image_path, self._latest_result)
-        if res is not None:
-            self.preview_applied.emit(res)
-            self.accept()
+        from app.services.annotation.domain import (
+            TARGET_CLASSES,
+            Annotation,
+            AnnotationDocument,
+            AnnotationSource,
+        )
+        from app.services.auto_label.engine import compute_box_iou
+
+        is_focused_view = self.preview_views_stack.currentIndex() == 1
+
+        if is_focused_view:
+            if not self.current_image_path:
+                return
+            res = self._latest_results.get(self.current_image_path, self._latest_result)
+            if res is None:
+                QMessageBox.information(
+                    self,
+                    "No Preview",
+                    f"No preview result available for {self.current_image_path.name}.",
+                )
+                return
+            results_to_apply = {self.current_image_path: res}
+        else:
+            results_to_apply = dict(self._latest_results)
+            if not results_to_apply and self._latest_result and self.current_image_path:
+                results_to_apply[self.current_image_path] = self._latest_result
+
+        updated_docs: dict[Path, AnnotationDocument] = {}
+        total_applied_boxes = 0
+
+        for img_path, res in results_to_apply.items():
+            existing_doc = self.ground_truth.get(img_path)
+            existing_anns = list(existing_doc.annotations) if existing_doc else []
+            new_anns = list(existing_anns)
+
+            for det in res.detections:
+                if det.class_name not in TARGET_CLASSES:
+                    continue
+                # Avoid duplicate annotations
+                if any(
+                    ex.class_name == det.class_name
+                    and compute_box_iou(ex.box, det.box) >= 0.50
+                    for ex in existing_anns
+                ):
+                    continue
+                source = (
+                    AnnotationSource.SAM2
+                    if det.polygon_normalized
+                    else AnnotationSource.GROUNDING_DINO
+                )
+                new_anns.append(
+                    Annotation(
+                        class_name=det.class_name,
+                        box=det.box,
+                        confidence=det.confidence,
+                        source=source,
+                    )
+                )
+                total_applied_boxes += 1
+
+            w = res.image_width or (existing_doc.image_width if existing_doc else 640)
+            h = res.image_height or (existing_doc.image_height if existing_doc else 480)
+            updated_doc = AnnotationDocument(
+                image_path=img_path,
+                image_width=w,
+                image_height=h,
+                annotations=tuple(new_anns),
+            )
+            updated_docs[img_path] = updated_doc
+
+        # Update in-memory ground truth dictionary in dialog
+        self.ground_truth.update(updated_docs)
+
+        # Notify MainWindow to update its dataset documents and canvas
+        self.batch_completed.emit(updated_docs)
+
+        # Emit preview_applied for current image if available
+        if self.current_image_path in results_to_apply:
+            self.preview_applied.emit(results_to_apply[self.current_image_path])
+
+        if is_focused_view:
+            self.result_stats_label.setText(
+                f"✔ Applied {total_applied_boxes} annotations to {self.current_image_path.name}!"
+            )
+            QMessageBox.information(
+                self,
+                "Applied to Current Image",
+                f"Successfully applied {total_applied_boxes} annotation(s) to:\n"
+                f"{self.current_image_path.name}\n\n"
+                "Saved as Ground Truth reference for AI Auto-Tuning.",
+            )
+        else:
+            self.result_stats_label.setText(
+                f"✔ Applied {total_applied_boxes} annotations to {len(updated_docs)} sample images!"
+            )
+            QMessageBox.information(
+                self,
+                "Applied to Samples",
+                f"Successfully applied {total_applied_boxes} annotation(s) across "
+                f"{len(updated_docs)} sample image(s)!\n\n"
+                "These samples are now stored as Ground Truth references for AI Auto-Tuning.",
+            )
 
     def _run_batch_auto_label(self) -> None:
         """Run full batch auto-annotation across every image in the dataset."""

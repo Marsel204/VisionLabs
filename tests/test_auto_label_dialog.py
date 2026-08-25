@@ -179,7 +179,8 @@ def test_auto_label_dialog_single_preview(sample_images: list[Path], qapp: QAppl
     # Test applying preview
     applied_results = []
     dialog.preview_applied.connect(lambda res: applied_results.append(res))
-    dialog._apply_preview_to_image()
+    with patch("PySide6.QtWidgets.QMessageBox.information"):
+        dialog._apply_preview_to_image()
     assert len(applied_results) == 1
     assert applied_results[0].detections[0].class_name == "truck"
 

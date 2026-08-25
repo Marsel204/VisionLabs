@@ -358,28 +358,40 @@ class AnnotationCanvas(QGraphicsView):
         if self._moving is not None:
             annotation, item, _, original = self._moving
             self._moving = None
-            rect = item.rect()
-            if self._document is not None and rect != original:
-                self.box_resized.emit(annotation.annotation_id, BoundingBox(
-                    rect.left() / self._document.image_width,
-                    rect.top() / self._document.image_height,
-                    rect.right() / self._document.image_width,
-                    rect.bottom() / self._document.image_height,
-                ))
+            try:
+                rect = item.rect()
+                if self._document is not None and rect != original:
+                    self.box_resized.emit(
+                        annotation.annotation_id,
+                        BoundingBox(
+                            rect.left() / self._document.image_width,
+                            rect.top() / self._document.image_height,
+                            rect.right() / self._document.image_width,
+                            rect.bottom() / self._document.image_height,
+                        ),
+                    )
+            except RuntimeError:
+                pass
             self._update_hover_cursor(event.position())
             return
 
         if self._resizing is not None:
             annotation, item, _, original = self._resizing
             self._resizing = None
-            rect = item.rect()
-            if self._document is not None and rect != original:
-                self.box_resized.emit(annotation.annotation_id, BoundingBox(
-                    rect.left() / self._document.image_width,
-                    rect.top() / self._document.image_height,
-                    rect.right() / self._document.image_width,
-                    rect.bottom() / self._document.image_height,
-                ))
+            try:
+                rect = item.rect()
+                if self._document is not None and rect != original:
+                    self.box_resized.emit(
+                        annotation.annotation_id,
+                        BoundingBox(
+                            rect.left() / self._document.image_width,
+                            rect.top() / self._document.image_height,
+                            rect.right() / self._document.image_width,
+                            rect.bottom() / self._document.image_height,
+                        ),
+                    )
+            except RuntimeError:
+                pass
             self._update_hover_cursor(event.position())
             return
 

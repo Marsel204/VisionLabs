@@ -98,8 +98,25 @@ class AITunerDialog(QDialog):
         self.resize(880, 680)
         self.setMinimumSize(780, 580)
 
-        self.sample_images = sample_images
-        self.ground_truth = ground_truth
+        self.ground_truth = ground_truth or {}
+
+        # Prioritize annotated sample images from dataset
+        annotated_samples = [
+            p
+            for p in sample_images
+            if p in self.ground_truth and self.ground_truth[p].annotations
+        ]
+        if not annotated_samples:
+            annotated_in_project = [
+                p for p, doc in self.ground_truth.items() if doc and doc.annotations
+            ]
+            if annotated_in_project:
+                self.sample_images = annotated_in_project[:8]
+            else:
+                self.sample_images = list(sample_images)
+        else:
+            self.sample_images = list(sample_images)
+
         self.current_config = current_config
         self.auto_label_engine = engine or AutoLabelEngine()
 
@@ -346,18 +363,23 @@ class AITunerDialog(QDialog):
 
         if annotated_samples:
             self.gt_status_icon.setText("✅")
+            names_summary = ", ".join(p.name[:18] for p in annotated_samples[:2])
+            if len(annotated_samples) > 2:
+                names_summary += f" (+{len(annotated_samples) - 2} more)"
             self.gt_status_text.setText(
-                f"Found {len(annotated_samples)} of {len(self.sample_images)} sample images "
-                f"with Ground Truth ({total_boxes} total reference objects)."
+                f"Found {len(annotated_samples)} reference image(s) with Ground Truth "
+                f"({total_boxes} total objects: {names_summary}). Ready to tune!"
             )
             self.gt_status_frame.setStyleSheet(
                 "background-color: #064e3b; border: 1px solid #059669; border-radius: 6px;"
             )
+            self.start_btn.setEnabled(True)
         else:
             self.gt_status_icon.setText("⚠️")
             self.gt_status_text.setText(
-                "No ground-truth annotations found on the selected samples. Annotate at least "
-                "1-4 images first to serve as reference gold standards."
+                "No ground-truth annotations found in dataset. Please draw or verify boxes "
+                "on 1-4 images first (or run Preview Mix -> Apply to Samples) to establish "
+                "a reference target."
             )
             self.gt_status_frame.setStyleSheet(
                 "background-color: #451a03; border: 1px solid #d97706; border-radius: 6px;"

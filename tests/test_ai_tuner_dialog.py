@@ -62,7 +62,7 @@ def test_ai_tuner_dialog_init(
     assert "AI Auto-Tuner" in dialog.windowTitle()
     assert dialog.start_btn.isEnabled() is True
     assert dialog.apply_btn.isEnabled() is False
-    assert "Found 2 of 2" in dialog.gt_status_text.text()
+    assert "Found 2" in dialog.gt_status_text.text()
     assert dialog.diff_table.rowCount() == 2
 
 
