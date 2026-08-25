@@ -7,6 +7,10 @@ import logging
 import sys
 from pathlib import Path
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 from app.configs.settings import AppSettings, load_settings
 from app.core.logging import configure_logging
 
@@ -68,6 +72,7 @@ def _dark_stylesheet() -> str:
     }
     QToolButton:hover { background: #333438; border-color: #5f6368; }
     QToolButton:pressed { background: #3c4043; }
+    QToolButton:checked { background: #394457; border-color: #5f8dd3; font-weight: bold; color: #8ab4f8; }
     QLineEdit, QDoubleSpinBox {
         background: #292a2d;
         border: 1px solid #3c4043;
@@ -86,6 +91,23 @@ def _dark_stylesheet() -> str:
     QMenu::item { padding: 6px 18px; border-radius: 4px; }
     QMenu::item:selected { background: #394457; }
     QStatusBar { background: #292a2d; color: #9aa0a6; }
+    QDialog { background: #202124; border: 1px solid #3c4043; }
+    QDialog QLabel { color: #e8eaed; padding: 8px 2px; }
+    QProgressBar {
+        background: #17181a;
+        border: 1px solid #3c4043;
+        border-radius: 4px;
+        min-height: 12px;
+        text-align: center;
+    }
+    QProgressBar::chunk { background: #5f8dd3; border-radius: 3px; }
+    QPushButton {
+        background: #394457;
+        border: 1px solid #5f6368;
+        border-radius: 4px;
+        padding: 6px 18px;
+    }
+    QPushButton:hover { background: #4b5d7a; }
     #welcomeLabel { color: #9aa0a6; font-size: 18px; }
     """
 

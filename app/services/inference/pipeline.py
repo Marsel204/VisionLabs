@@ -31,7 +31,7 @@ class InferencePipeline:
         grounding_dino: GroundingDinoModel,
         sam2: Sam2Model,
         yolo: YoloModel,
-        prompt: str = "motorcycle. car. bus. truck.",
+        prompt: str = "motorcycle. motorbike. scooter. car. bus. truck.",
     ) -> None:
         self._grounding_dino = grounding_dino
         self._sam2 = sam2

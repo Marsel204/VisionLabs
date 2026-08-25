@@ -120,6 +120,10 @@ class CocoImporter:
                                 box=box,
                                 confidence=None,
                                 source=AnnotationSource.HUMAN,
+                                occluded=record.get("occluded", False)
+                                in (True, 1, "1", "true"),
+                                truncated=record.get("truncated", False)
+                                in (True, 1, "1", "true"),
                             )
                         )
                     except (KeyError, TypeError, ValueError) as error:
@@ -131,7 +135,7 @@ class CocoImporter:
                         imported,
                         overlap_iou_threshold,
                         containment_threshold,
-                        same_class_only=False,
+                        same_class_only=True,
                     )
                     counts["overlapping_removed"] += removed
                     imported = list(kept)

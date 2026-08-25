@@ -8,8 +8,9 @@ INSTALL_DIR="${TRAFFIC_ANNOTATOR_INSTALL_DIR:-${HOME}/.local/share/${APP_NAME}}"
 BIN_DIR="${HOME}/.local/bin"
 APPLICATIONS_DIR="${HOME}/.local/share/applications"
 DESKTOP_FILE="${APPLICATIONS_DIR}/${APP_NAME}.desktop"
-USE_SYSTEM_TORCH=0
 SKIP_SYSTEM_DEPS=0
+JETSON_TORCH_WHEEL=""
+FORCE_CPU=0
 
 die() {
     printf 'Error: %s\n' "$*" >&2
@@ -24,6 +25,8 @@ Installs ${APP_NAME} for the current user.
 
 Options:
   --cpu-only           Install the normal PyPI PyTorch package, even on Jetson.
+  --torch-wheel PATH   Install this Jetson-compatible PyTorch wheel on Jetson.
+                       PATH may also be an HTTPS URL. The wheel must support sm_87.
   --no-system-deps     Do not install Ubuntu runtime packages with apt.
   --install-dir PATH   Override ${INSTALL_DIR}.
   -h, --help           Show this help.
@@ -32,7 +35,12 @@ EOF
 
 while (($#)); do
     case "$1" in
-        --cpu-only) USE_SYSTEM_TORCH=0; FORCE_CPU=1; shift ;;
+        --cpu-only) FORCE_CPU=1; shift ;;
+        --torch-wheel)
+            (($# >= 2)) || die "--torch-wheel requires a path or HTTPS URL"
+            JETSON_TORCH_WHEEL="$2"
+            shift 2
+            ;;
         --no-system-deps) SKIP_SYSTEM_DEPS=1; shift ;;
         --install-dir)
             (($# >= 2)) || die "--install-dir requires a path"
@@ -44,7 +52,6 @@ while (($#)); do
     esac
 done
 
-FORCE_CPU="${FORCE_CPU:-0}"
 [[ "${EUID}" -ne 0 ]] || die "run this installer as your normal user, not root"
 command -v python3 >/dev/null || die "python3 is required"
 PYTHON_BIN="$(command -v python3)"
@@ -78,6 +85,21 @@ if [[ "${FORCE_CPU}" -eq 0 ]] && command -v dpkg-query >/dev/null \
     JETSON=1
 fi
 
+if [[ -n "${JETSON_TORCH_WHEEL}" && "${JETSON}" -eq 0 ]]; then
+    die "--torch-wheel is only supported on Jetson systems"
+fi
+if [[ "${JETSON}" -eq 1 && "${FORCE_CPU}" -eq 0 && -z "${JETSON_TORCH_WHEEL}" ]]; then
+    die "Jetson requires --torch-wheel PATH_OR_URL; use --cpu-only for CPU mode"
+fi
+if [[ -n "${JETSON_TORCH_WHEEL}" ]]; then
+    if [[ "${JETSON_TORCH_WHEEL}" == http://* ]]; then
+        die "--torch-wheel accepts local paths or HTTPS URLs, not HTTP URLs"
+    fi
+    if [[ "${JETSON_TORCH_WHEEL}" != https://* && ! -f "${JETSON_TORCH_WHEEL}" ]]; then
+        die "PyTorch wheel not found: ${JETSON_TORCH_WHEEL}"
+    fi
+fi
+
 if [[ "${INSTALL_DIR}" == "${HOME}" || "${INSTALL_DIR}" == "/" ]]; then
     die "refusing unsafe install directory: ${INSTALL_DIR}"
 fi
@@ -103,25 +125,43 @@ fi
 rm -rf -- "${INSTALL_DIR}.previous"
 
 if [[ "${JETSON}" -eq 1 ]]; then
-    printf 'Jetson/L4T detected; keeping the system CUDA-enabled PyTorch.\n'
-    if ! "${PYTHON_BIN}" -c 'import torch; raise SystemExit(0 if torch.cuda.is_available() else 1)' >/dev/null 2>&1; then
-        die "Jetson mode requires CUDA-enabled PyTorch importable by ${PYTHON_BIN}; install the NVIDIA Jetson PyTorch wheel for this JetPack/Python version or rerun with --cpu-only"
-    fi
-    uv venv --python "${PYTHON_BIN}" --system-site-packages "${INSTALL_DIR}/.venv"
+    printf 'Jetson/L4T detected; installing the supplied CUDA-enabled PyTorch wheel.\n'
+    uv venv --python "${PYTHON_BIN}" "${INSTALL_DIR}/.venv"
     uv sync --directory "${INSTALL_DIR}" --locked --no-dev --no-install-package torch
+    uv pip install --python "${INSTALL_DIR}/.venv/bin/python" --no-deps "${JETSON_TORCH_WHEEL}"
 else
     uv sync --directory "${INSTALL_DIR}" --locked --no-dev
 fi
 
-if [[ "${JETSON}" -eq 1 ]]; then
-    TORCH_CHECK='import torch; raise SystemExit(0 if torch.cuda.is_available() else 1)'
+if [[ "${JETSON}" -eq 1 && "${FORCE_CPU}" -eq 0 ]]; then
+    if ! "${INSTALL_DIR}/.venv/bin/python" - <<'PY'
+import torch
+
+if not torch.cuda.is_available():
+    raise SystemExit("CUDA is unavailable in the supplied PyTorch wheel")
+
+capability = torch.cuda.get_device_capability(0)
+architectures = set(torch.cuda.get_arch_list())
+if capability != (8, 7) or "sm_87" not in architectures:
+    raise SystemExit(
+        f"PyTorch wheel does not support Jetson Orin: capability={capability}, "
+        f"architectures={sorted(architectures)}"
+    )
+
+print(
+    f"PyTorch {torch.__version__}; CUDA {torch.version.cuda}; "
+    f"GPU {torch.cuda.get_device_name(0)}; architecture sm_87"
+)
+PY
+    then
+        die "the supplied PyTorch wheel is not CUDA-enabled for Jetson Orin sm_87"
+    fi
 else
-    TORCH_CHECK='import torch'
+    if ! "${INSTALL_DIR}/.venv/bin/python" -c 'import torch' >/dev/null 2>&1; then
+        die "PyTorch is not importable in ${INSTALL_DIR}/.venv"
+    fi
+    "${INSTALL_DIR}/.venv/bin/python" -c 'import PySide6, torch; print(f"PySide6 {PySide6.__version__}; PyTorch {torch.__version__}; CUDA {torch.cuda.is_available()}")'
 fi
-if ! "${INSTALL_DIR}/.venv/bin/python" -c "${TORCH_CHECK}" >/dev/null 2>&1; then
-    die "PyTorch is not importable in ${INSTALL_DIR}/.venv; on Jetson, verify that the NVIDIA PyTorch wheel matches ${PYTHON_VERSION}"
-fi
-"${INSTALL_DIR}/.venv/bin/python" -c 'import PySide6, torch; print(f"PySide6 {PySide6.__version__}; PyTorch {torch.__version__}; CUDA {torch.cuda.is_available()}")'
 
 mkdir -p "${BIN_DIR}" "${APPLICATIONS_DIR}"
 cp -- "${SOURCE_DIR}/uninstall.sh" "${INSTALL_DIR}/uninstall.sh"

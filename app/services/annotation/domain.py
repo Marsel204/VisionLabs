@@ -23,6 +23,8 @@ class AnnotationSource(StrEnum):
     GROUNDING_DINO = "grounding_dino"
     SAM2 = "sam2"
     YOLO = "yolo"
+    FLORENCE2 = "florence2"
+    LOCATE_ANYTHING = "locate_anything"
     FUSED = "fused"
 
 
@@ -77,6 +79,20 @@ class BoundingBox:
             self.height,
         )
 
+    def intersection_over_min(self, other: BoundingBox) -> float:
+        """Calculate intersection over minimum area (containment ratio) with another box."""
+        inter_left = max(self.left, other.left)
+        inter_top = max(self.top, other.top)
+        inter_right = min(self.right, other.right)
+        inter_bottom = min(self.bottom, other.bottom)
+
+        if inter_left >= inter_right or inter_top >= inter_bottom:
+            return 0.0
+
+        inter_area = (inter_right - inter_left) * (inter_bottom - inter_top)
+        min_area = min(self.area, other.area)
+        return inter_area / min_area if min_area > 0.0 else 0.0
+
 
 @dataclass(frozen=True, slots=True)
 class Annotation:
@@ -87,6 +103,8 @@ class Annotation:
     confidence: float | None = None
     source: AnnotationSource = AnnotationSource.HUMAN
     review_status: ReviewStatus = ReviewStatus.PENDING
+    occluded: bool = False
+    truncated: bool = False
     annotation_id: UUID = field(default_factory=uuid4)
 
     def __post_init__(self) -> None:

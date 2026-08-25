@@ -11,20 +11,22 @@ from pathlib import Path
 from threading import Event
 
 from PySide6.QtCore import QEvent, QObject, QRunnable, Qt, QThreadPool, Signal
-from PySide6.QtGui import QAction, QImage
+from PySide6.QtGui import QAction, QActionGroup, QImage
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QDockWidget,
-    QDoubleSpinBox,
     QFileDialog,
-    QFormLayout,
     QGroupBox,
     QInputDialog,
     QLineEdit,
     QMainWindow,
     QMessageBox,
-    QProgressDialog,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QProgressBar,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QStatusBar,
@@ -37,7 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.runtime import detect_gpu
-from app.export.exporters import CocoExporter, YoloExporter
+from app.export.exporters import CocoExporter, YoloExporter, split_documents
 from app.models.contracts import Detection as ModelDetection
 from app.services.active_learning import ActiveLearningConfig, ActiveLearningEngine, ImageAnalysis
 from app.services.active_learning.active_learning_models import DifficultyResult
@@ -64,7 +66,9 @@ from app.services.fusion import (
     FusionStatus,
     remove_overlapping_annotations,
 )
-from app.ui.canvas.annotation_canvas import AnnotationCanvas
+from app.services.inference.dense_motorcycle import DenseInferenceConfig, DenseMotorcycleInference
+from app.services.inference.grounding import grounding_class, prompt_variants, tile_positions
+from app.ui.canvas.annotation_canvas import AnnotationCanvas, CanvasMode
 from app.ui.views.image_browser import ImageBrowser
 
 LOGGER = logging.getLogger(__name__)
@@ -103,8 +107,39 @@ class _DatasetAnnotationSignals(QObject):
     cancelled = Signal()
 
 
+class _DatasetProgressDialog(QDialog):
+    """Readable, cancellable progress window for long dataset operations."""
+
+    cancelled = Signal()
+
+    def __init__(self, title: str, total: int, parent=None) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumWidth(560)
+        self.setModal(False)
+        layout = QVBoxLayout(self)
+        self._phase = QLabel("Preparing...")
+        self._phase.setWordWrap(True)
+        self._phase.setMinimumHeight(42)
+        self._progress = QProgressBar()
+        self._progress.setRange(0, total)
+        self._progress.setValue(0)
+        self._cancel = QPushButton("Cancel")
+        self._cancel.clicked.connect(self.cancelled.emit)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        buttons.addWidget(self._cancel)
+        layout.addWidget(self._phase)
+        layout.addWidget(self._progress)
+        layout.addLayout(buttons)
+
+    def update_progress(self, value: int, message: str) -> None:
+        self._progress.setValue(value)
+        self._phase.setText(message)
+
+
 class _DatasetAnnotationTask(QRunnable):
-    """Run Grounding DINO and YOLO over dataset images off the UI thread."""
+    """Run configurable Grounding DINO and YOLO dataset inference off the UI thread."""
 
     def __init__(
         self,
@@ -116,17 +151,44 @@ class _DatasetAnnotationTask(QRunnable):
         confidence: float,
         iou_threshold: float,
         containment_threshold: float,
+        use_yolo: bool = True,
+        tile_size: int = 512,
+        tile_overlap: float = 0.25,
+        enabled_classes: set[str] | None = None,
+        sam2_model=None,
+        sam2_processor=None,
+        use_sam2: bool = False,
     ) -> None:  # type: ignore[no-untyped-def]
         super().__init__()
         self.signals = _DatasetAnnotationSignals()
         self._documents = documents
         self._grounding_model = grounding_model
         self._grounding_processor = grounding_processor
+        self._sam2_model = sam2_model
+        self._sam2_processor = sam2_processor
+        self._use_sam2 = use_sam2
         self._yolo_model = yolo_model
         self._prompt = prompt
+        self._prompts = prompt_variants(prompt)
         self._confidence = confidence
         self._iou_threshold = iou_threshold
         self._containment_threshold = containment_threshold
+        self._use_yolo = use_yolo
+        self._tile_size = tile_size
+        self._tile_overlap = tile_overlap
+        self._dense_inference = DenseMotorcycleInference(
+            grounding_model,
+            grounding_processor,
+            yolo_model,
+            DenseInferenceConfig(
+                yolo_confidence=min(confidence, 0.05),
+                dino_box_threshold=min(confidence, 0.12),
+                dino_text_threshold=min(confidence, 0.18),
+                enabled_classes=frozenset(enabled_classes)
+                if enabled_classes
+                else frozenset({"motorcycle", "car", "bus", "truck"}),
+            ),
+        )
         self._cancel_requested = Event()
 
     def cancel(self) -> None:
@@ -135,6 +197,8 @@ class _DatasetAnnotationTask(QRunnable):
 
     def run(self) -> None:
         try:
+            from PIL import Image
+
             results: dict[Path, AnnotationDocument] = {}
             added_total = 0
             removed_total = 0
@@ -142,29 +206,55 @@ class _DatasetAnnotationTask(QRunnable):
                 if self._cancel_requested.is_set():
                     self.signals.cancelled.emit()
                     return
-                predictions = [
-                    *self._grounding_detections(document),
-                    *self._yolo_detections(document),
-                ]
-                additions = self._merge_predictions(document, predictions)
-                kept, removed = remove_overlapping_annotations(
-                    additions,
-                    iou_threshold=self._iou_threshold,
-                    containment_threshold=self._containment_threshold,
+                preserved = tuple(
+                    item
+                    for item in document.annotations
+                    if item.source
+                    not in {AnnotationSource.GROUNDING_DINO, AnnotationSource.FUSED}
+                    and not (
+                        self._use_yolo and item.source is AnnotationSource.YOLO
+                    )
+                )
+                inference_document = AnnotationDocument(
+                    document.image_path,
+                    document.image_width,
+                    document.image_height,
+                    preserved,
+                )
+                yolo_predictions, dino_predictions = self._dense_inference.predict(
+                    document,
+                    self._prompt,
+                    use_yolo=self._use_yolo,
+                )
+                if self._use_yolo:
+                    predictions = self._supplement_yolo(yolo_predictions, dino_predictions)
+                else:
+                    predictions = self._resolve_class_conflicts(dino_predictions)
+                additions = self._merge_predictions(
+                    inference_document,
+                    predictions,
                     same_class_only=True,
                 )
+                kept = tuple(
+                    self._nms_predictions(additions, self._dense_inference.config.nms_iou)
+                )
+                if self._use_sam2 and self._sam2_model is not None and self._sam2_processor is not None:
+                    image = Image.open(document.image_path).convert("RGB")
+                    kept = tuple(self._refine_annotations_sam2(image, list(kept)))
+                removed = len(additions) - len(kept)
                 updated = AnnotationDocument(
                     document.image_path,
                     document.image_width,
                     document.image_height,
-                    (*document.annotations, *kept),
+                    (*preserved, *kept),
                 )
                 results[document.image_path] = updated
                 added_total += len(kept)
                 removed_total += removed
                 self.signals.progress.emit(
                     index,
-                    f"{document.image_path.name} | added {len(kept)} | "
+                    f"{document.image_path.name} | YOLO {len(yolo_predictions)} | "
+                    f"DINO {len(dino_predictions)} | added {len(kept)} | "
                     f"removed {removed}",
                 )
             self.signals.completed.emit((results, added_total, removed_total))
@@ -172,57 +262,206 @@ class _DatasetAnnotationTask(QRunnable):
             LOGGER.exception("dataset annotation failed")
             self.signals.failed.emit(str(error))
 
+    def _refine_annotations_sam2(self, image, annotations: list[Annotation]) -> list[Annotation]:  # type: ignore[no-untyped-def]
+        if not annotations:
+            return []
+        import torch
+
+        try:
+            boxes = [
+                [
+                    ann.box.left * image.width,
+                    ann.box.top * image.height,
+                    ann.box.right * image.width,
+                    ann.box.bottom * image.height,
+                ]
+                for ann in annotations
+            ]
+            pixel_boxes = [boxes]
+            inputs = self._sam2_processor(
+                images=image, input_boxes=pixel_boxes, return_tensors="pt"
+            )
+            device = next(self._sam2_model.parameters()).device
+            inputs = {
+                key: value.to(device) if hasattr(value, "to") else value
+                for key, value in inputs.items()
+            }
+            with torch.no_grad():
+                outputs = self._sam2_model(**inputs, multimask_output=False)
+            masks = self._sam2_processor.post_process_masks(
+                outputs.pred_masks.cpu(), inputs["original_sizes"]
+            )
+            mask_batch = masks[0]
+            refined: list[Annotation] = []
+            for idx, ann in enumerate(annotations):
+                mask = mask_batch[idx].squeeze()
+                rows, columns = torch.where(mask > 0)
+                if rows.numel() == 0:
+                    refined.append(ann)
+                else:
+                    refined_box = BoundingBox(
+                        float(columns.min()) / image.width,
+                        float(rows.min()) / image.height,
+                        float(columns.max() + 1) / image.width,
+                        float(rows.max() + 1) / image.height,
+                    )
+                    refined.append(replace(ann, box=refined_box, source=AnnotationSource.SAM2))
+            return refined
+        except Exception:
+            return annotations
+
     def _grounding_detections(self, document: AnnotationDocument) -> list[Annotation]:
         import torch
         from PIL import Image
 
         image = Image.open(document.image_path).convert("RGB")
-        inputs = self._grounding_processor(
-            images=image,
-            text=self._prompt,
-            return_tensors="pt",
-        )
-        device = next(self._grounding_model.parameters()).device
-        inputs = {
-            key: value.to(device) if hasattr(value, "to") else value
-            for key, value in inputs.items()
-        }
-        with torch.no_grad():
-            outputs = self._grounding_model(**inputs)
-        result = self._grounding_processor.post_process_grounded_object_detection(
-            outputs,
-            inputs["input_ids"],
-            threshold=self._confidence,
-            text_threshold=self._confidence,
-            target_sizes=[(image.height, image.width)],
-        )[0]
-        labels = result["text_labels"] if "text_labels" in result else result["labels"]
         detections = []
-        for box, score, label in zip(result["boxes"], result["scores"], labels, strict=True):
-            class_name = next(
-                (
-                    name
-                    for name in ("motorcycle", "car", "bus", "truck")
-                    if name in str(label).lower()
-                ),
-                None,
-            )
-            if class_name is None:
-                continue
-            left, top, right, bottom = box.tolist()
-            detections.append(
-                self._annotation(
-                    class_name,
-                    left,
-                    top,
-                    right,
-                    bottom,
-                    float(score),
-                    AnnotationSource.GROUNDING_DINO,
-                    document,
+        for prompt in self._prompts:
+            for crop, offset_x, offset_y, is_tile in self._grounding_crops(image):
+                inputs = self._grounding_processor(
+                    images=crop,
+                    text=prompt,
+                    return_tensors="pt",
                 )
+                device = next(self._grounding_model.parameters()).device
+                inputs = {
+                    key: value.to(device) if hasattr(value, "to") else value
+                    for key, value in inputs.items()
+                }
+                with torch.no_grad():
+                    outputs = self._grounding_model(**inputs)
+                result = self._post_process_grounding(
+                    outputs,
+                    inputs["input_ids"],
+                    (crop.height, crop.width),
+                )
+                labels = result.get("text_labels", result.get("labels", ()))
+                for index, (box, score) in enumerate(
+                    zip(result["boxes"], result["scores"], strict=True)
+                ):
+                    if index >= len(labels):
+                        continue
+                    class_name = grounding_class(str(labels[index]))
+                    if class_name is None:
+                        continue
+                    left, top, right, bottom = box.tolist()
+                    if is_tile and (
+                        left <= 2
+                        or top <= 2
+                        or right >= crop.width - 2
+                        or bottom >= crop.height - 2
+                    ):
+                        continue
+                    annotation = self._annotation(
+                        class_name,
+                        left + offset_x,
+                        top + offset_y,
+                        right + offset_x,
+                        bottom + offset_y,
+                        float(score),
+                        AnnotationSource.GROUNDING_DINO,
+                        document,
+                    )
+                    if annotation is not None and annotation.box.area <= 0.75:
+                        detections.append(annotation)
+        return self._nms_predictions(detections, self._iou_threshold)
+
+    @staticmethod
+    def _nms_predictions(
+        predictions: list[Annotation], iou_threshold: float
+    ) -> list[Annotation]:
+        """Suppress same-class duplicates without containment suppression."""
+        kept: list[Annotation] = []
+        for prediction in sorted(
+            predictions,
+            key=lambda item: item.confidence if item.confidence is not None else 0.0,
+            reverse=True,
+        ):
+            if any(
+                existing.class_name == prediction.class_name
+                and MainWindow._box_iou(existing.box, prediction.box) >= iou_threshold
+                for existing in kept
+            ):
+                continue
+            kept.append(prediction)
+        return kept
+
+    def _supplement_yolo(
+        self,
+        yolo_predictions: list[Annotation],
+        dino_predictions: list[Annotation],
+    ) -> list[Annotation]:
+        """Keep YOLO boxes authoritative and add only useful DINO proposals."""
+        result = list(yolo_predictions)
+        for prediction in dino_predictions:
+            if prediction.class_name != "motorcycle":
+                continue
+            if any(
+                item.class_name == "motorcycle"
+                and MainWindow._box_iou(item.box, prediction.box) >= 0.3
+                for item in yolo_predictions
+            ):
+                continue
+            result.append(prediction)
+        return self._resolve_class_conflicts(result, preserve_yolo=True)
+
+    def _resolve_class_conflicts(
+        self,
+        predictions: list[Annotation],
+        preserve_yolo: bool = False,
+    ) -> list[Annotation]:
+        """Remove competing classes."""
+        ordered = sorted(
+            predictions,
+            key=lambda item: (
+                1 if preserve_yolo and item.source is AnnotationSource.YOLO else 0,
+                item.confidence if item.confidence is not None else 0.0,
+            ),
+            reverse=True,
+        )
+        kept: list[Annotation] = []
+        for prediction in ordered:
+            conflict = any(
+                existing.class_name != prediction.class_name
+                and MainWindow._box_iou(existing.box, prediction.box) >= self._iou_threshold
+                for existing in kept
             )
-        return [item for item in detections if item is not None]
+            if not conflict:
+                kept.append(prediction)
+        return kept
+
+    def _post_process_grounding(self, outputs, input_ids, target_size):  # type: ignore[no-untyped-def]
+        """Support both Transformers Grounding DINO threshold parameter names."""
+        try:
+            return self._grounding_processor.post_process_grounded_object_detection(
+                outputs,
+                input_ids,
+                threshold=self._confidence,
+                text_threshold=self._confidence,
+                target_sizes=[target_size],
+            )[0]
+        except TypeError:
+            return self._grounding_processor.post_process_grounded_object_detection(
+                outputs,
+                input_ids,
+                box_threshold=self._confidence,
+                text_threshold=self._confidence,
+                target_sizes=[target_size],
+            )[0]
+
+    def _grounding_crops(self, image):  # type: ignore[no-untyped-def]
+        if image.width <= self._tile_size and image.height <= self._tile_size:
+            return [(image, 0, 0, False)]
+        stride = max(1, int(self._tile_size * (1.0 - self._tile_overlap)))
+        x_positions = tile_positions(image.width, self._tile_size, stride)
+        y_positions = tile_positions(image.height, self._tile_size, stride)
+        crops = [(image, 0, 0, False)]
+        for top in y_positions:
+            for left in x_positions:
+                right = min(image.width, left + self._tile_size)
+                bottom = min(image.height, top + self._tile_size)
+                crops.append((image.crop((left, top, right, bottom)), left, top, True))
+        return crops
 
     def _yolo_detections(self, document: AnnotationDocument) -> list[Annotation]:
         device = 0 if detect_gpu().device == "cuda" else "cpu"
@@ -286,12 +525,13 @@ class _DatasetAnnotationTask(QRunnable):
     def _merge_predictions(
         document: AnnotationDocument,
         predictions: list[Annotation],
+        same_class_only: bool = True,
     ) -> list[Annotation]:
         """Preserve manual boxes and reject predictions already covered by them."""
         additions = []
         for prediction in predictions:
             if any(
-                existing.class_name == prediction.class_name
+                (not same_class_only or existing.class_name == prediction.class_name)
                 and MainWindow._box_iou(existing.box, prediction.box) >= 0.5
                 for existing in document.annotations
             ):
@@ -321,8 +561,11 @@ class MainWindow(QMainWindow):
         self._sam2_processor = None
         self._sam2_model = None
         self._sam2_model_id = "facebook/sam2.1-hiera-tiny"
+        self._vlm_helper = None
+        self._vlm_model_id = "microsoft/Florence-2-base"
+        self._vlm_filter_enabled = True
         self._confidence_threshold = 0.25
-        self._grounding_prompt = "motorcycle. car. bus. truck."
+        self._grounding_prompt = "motorcycle. motorbike. scooter. car. bus. truck."
         self._grounding_detections: list[ModelDetection] = []
         self._yolo_detections: list[ModelDetection] = []
         self._fusion_result: FusionResult | None = None
@@ -331,7 +574,7 @@ class MainWindow(QMainWindow):
         self._active_learning_result: DifficultyResult | None = None
         self._active_learning_task: _ActiveLearningTask | None = None
         self._dataset_annotation_task: _DatasetAnnotationTask | None = None
-        self._dataset_progress: QProgressDialog | None = None
+        self._dataset_progress: _DatasetProgressDialog | None = None
         self._project_documents: dict[Path, AnnotationDocument] = {}
         self._project_root: Path | None = None
         self._crop_session: CropSession | None = None
@@ -339,6 +582,7 @@ class MainWindow(QMainWindow):
         self._crop_original_history: AnnotationHistory | None = None
         self._crop_index = 0
         self._crop_directory: Path | None = None
+        self._enabled_classes = {"motorcycle", "car", "bus", "truck"}
         self._build_docks()
         self._document: AnnotationDocument | None = None
         self._history: AnnotationHistory | None = None
@@ -359,7 +603,7 @@ class MainWindow(QMainWindow):
         for name in ("motorcycle", "car", "bus", "truck"):
             QTreeWidgetItem(class_list, [name])
         class_list.itemSelectionChanged.connect(self._class_changed)
-        class_list.setCurrentItem(class_list.topLevelItem(1))
+        class_list.setCurrentItem(class_list.topLevelItem(0))
         classes_dock = self._dock("Classes", class_list)
         classes_dock.setMinimumWidth(250)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, classes_dock)
@@ -375,10 +619,7 @@ class MainWindow(QMainWindow):
         self._properties_layout.setSpacing(8)
         self._property_group_layouts: dict[str, QVBoxLayout] = {}
         for title in (
-            "Detection Settings",
-            "AI Annotation",
-            "Dataset Processing",
-            "Review & Cleanup",
+            "Review && Cleanup",
             "Crop Assist",
             "Project",
         ):
@@ -394,12 +635,13 @@ class MainWindow(QMainWindow):
         properties_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         properties_scroll.setWidget(properties)
         properties_dock = self._dock("Properties", properties_scroll)
-        properties_dock.setMinimumWidth(320)
+        properties_dock.setMinimumWidth(280)
         self.addDockWidget(
             Qt.DockWidgetArea.RightDockWidgetArea,
             properties_dock,
         )
-        self.resizeDocks([classes_dock, properties_dock], [250, 320], Qt.Orientation.Horizontal)
+        self.resizeDocks([classes_dock, properties_dock], [250, 280], Qt.Orientation.Horizontal)
+        self.resizeDocks([classes_dock, images_dock], [200, 450], Qt.Orientation.Vertical)
         self._build_shortcuts()
         self.image_browser.image_selected.connect(self._load_image)
         self.canvas.box_created.connect(self._add_box)
@@ -442,6 +684,18 @@ class MainWindow(QMainWindow):
         load_sam2 = QAction("Load SAM2", self)
         load_sam2.setShortcut("Ctrl+Shift+L")
         load_sam2.triggered.connect(self._load_sam2_model)
+        load_vlm = QAction("Load Florence-2 VLM", self)
+        load_vlm.setShortcut("Ctrl+Shift+U")
+        load_vlm.triggered.connect(self._load_vlm_model)
+        vlm_annotate = QAction("VLM Auto-Annotate", self)
+        vlm_annotate.setShortcut("Ctrl+Shift+V")
+        vlm_annotate.setToolTip("Run Florence-2 object detection to generate new annotations on active image (Ctrl+Shift+V)")
+        vlm_annotate.triggered.connect(self._vlm_auto_annotate)
+        toggle_vlm_filter = QAction("VLM Auto-Filter (DINO+SAM)", self)
+        toggle_vlm_filter.setCheckable(True)
+        toggle_vlm_filter.setChecked(True)
+        toggle_vlm_filter.setToolTip("Filter candidate boxes through Florence-2 captioning before SAM2 segmentation")
+        toggle_vlm_filter.toggled.connect(self._toggle_vlm_filtering)
         refine_sam2 = QAction("Refine Selection (SAM2)", self)
         refine_sam2.setShortcut("Ctrl+Shift+S")
         refine_sam2.triggered.connect(self._refine_with_sam2)
@@ -451,6 +705,13 @@ class MainWindow(QMainWindow):
         cleanup = QAction("Remove Overlapping Duplicates", self)
         cleanup.setShortcut("Ctrl+Shift+D")
         cleanup.triggered.connect(self._remove_overlapping)
+        cleanup_dataset = QAction("Remove Database Duplicates", self)
+        cleanup_dataset.setShortcut("Ctrl+Shift+Alt+D")
+        cleanup_dataset.triggered.connect(self._remove_database_duplicates)
+        toggle_occluded = QAction("Toggle Selected Occluded", self)
+        toggle_occluded.triggered.connect(self._toggle_selected_occluded)
+        toggle_truncated = QAction("Toggle Selected Truncated", self)
+        toggle_truncated.triggered.connect(self._toggle_selected_truncated)
         fusion_colors = QAction("Show Fusion Status Colors", self)
         fusion_colors.setCheckable(True)
         fusion_colors.setChecked(True)
@@ -460,6 +721,19 @@ class MainWindow(QMainWindow):
         active_learning.triggered.connect(self._score_active_image)
         dataset_annotate = QAction("Annotate Entire Dataset", self)
         dataset_annotate.triggered.connect(self._annotate_entire_dataset)
+        dino_dataset_annotate = QAction("DINO Annotate Entire Dataset", self)
+        dino_dataset_annotate.triggered.connect(self._annotate_entire_dataset_dino)
+        dino_sam_annotate = QAction("DINO + SAM Auto-Annotate", self)
+        dino_sam_annotate.setShortcut("Ctrl+Shift+Z")
+        dino_sam_annotate.setToolTip("Run Grounding DINO detection and refine with SAM2 in one step (Ctrl+Shift+Z)")
+        dino_sam_annotate.triggered.connect(self._zero_shot_dino_sam_annotate)
+        dino_sam_dataset_annotate = QAction("DINO + SAM Annotate Entire Dataset", self)
+        dino_sam_dataset_annotate.setToolTip("Run Zero-Shot Grounding DINO + SAM2 auto-annotation across the entire dataset")
+        dino_sam_dataset_annotate.triggered.connect(self._annotate_entire_dataset_dino_sam)
+        auto_label_workspace = QAction("⚡ Auto Label...", self)
+        auto_label_workspace.setShortcut("Ctrl+Shift+A")
+        auto_label_workspace.setToolTip("Open Roboflow-style Auto Label workspace with DINO, SAM2, VLM, custom visual prompts & live preview (Ctrl+Shift+A)")
+        auto_label_workspace.triggered.connect(self._open_auto_label_dialog)
         self._filter_actions = {}
         for label, status in (
             ("Show Accepted", FusionStatus.ACCEPTED),
@@ -475,40 +749,107 @@ class MainWindow(QMainWindow):
         save.setShortcut("Ctrl+S")
         save.triggered.connect(self._save_annotations)
 
+        draw_tool = QAction("Draw Box Tool", self)
+        draw_tool.setCheckable(True)
+        draw_tool.setChecked(True)
+        draw_tool.setShortcut("V")
+        draw_tool.setToolTip("Select and draw bounding boxes (V)")
+        draw_tool.triggered.connect(self.canvas.set_draw_mode)
+
+        pan_tool = QAction("Pan Tool", self)
+        pan_tool.setCheckable(True)
+        pan_tool.setShortcut("H")
+        pan_tool.setToolTip("Pan / Hand Tool (H) - Drag canvas to pan (Or Space+drag / Middle-click drag)")
+        pan_tool.triggered.connect(self.canvas.set_pan_mode)
+
+        tool_group = QActionGroup(self)
+        tool_group.addAction(draw_tool)
+        tool_group.addAction(pan_tool)
+        tool_group.setExclusive(True)
+
+        def _sync_canvas_mode(mode: CanvasMode) -> None:
+            if mode == CanvasMode.DRAW:
+                draw_tool.setChecked(True)
+            elif mode == CanvasMode.PAN:
+                pan_tool.setChecked(True)
+
+        self.canvas.mode_changed.connect(_sync_canvas_mode)
+
+        fit_view = QAction("Fit to View", self)
+        fit_view.setShortcut("F")
+        fit_view.setToolTip("Fit image to canvas view (F)")
+        fit_view.triggered.connect(self.canvas.reset_view)
+
+        zoom_in = QAction("Zoom In", self)
+        zoom_in.setShortcuts(["Ctrl++", "Ctrl+=", "+", "="])
+        zoom_in.setToolTip("Zoom in (+ / Ctrl++)")
+        zoom_in.triggered.connect(lambda: self.canvas.zoom_in())
+
+        zoom_out = QAction("Zoom Out", self)
+        zoom_out.setShortcuts(["Ctrl+-", "-"])
+        zoom_out.setToolTip("Zoom out (- / Ctrl+-)")
+        zoom_out.triggered.connect(lambda: self.canvas.zoom_out())
+
+        zoom_actual = QAction("Actual Size (100%)", self)
+        zoom_actual.setShortcut("Ctrl+1")
+        zoom_actual.setToolTip("Zoom to 100% scale (Ctrl+1)")
+        zoom_actual.triggered.connect(self.canvas.zoom_actual_size)
+
         file_menu = self.menuBar().addMenu("File")
         file_menu.addAction(import_folder)
         file_menu.addAction(import_coco)
         file_menu.addAction(export_dataset)
         file_menu.addAction(save)
+        view_menu = self.menuBar().addMenu("View")
+        view_menu.addAction(draw_tool)
+        view_menu.addAction(pan_tool)
+        view_menu.addSeparator()
+        view_menu.addAction(fit_view)
+        view_menu.addAction(zoom_in)
+        view_menu.addAction(zoom_out)
+        view_menu.addAction(zoom_actual)
+        view_menu.addSeparator()
+        view_menu.addAction(fusion_colors)
+        filter_menu = view_menu.addMenu("Fusion Filters")
+        for action in self._filter_actions.values():
+            filter_menu.addAction(action)
         model_menu = self.menuBar().addMenu("Model")
         model_menu.addAction(load_model)
         model_menu.addAction(load_grounding)
         model_menu.addAction(load_sam2)
+        model_menu.addAction(load_vlm)
         annotation_menu = self.menuBar().addMenu("Annotation")
+        annotation_menu.addAction(auto_label_workspace)
+        annotation_menu.addSeparator()
         annotation_menu.addAction(auto_annotate)
         annotation_menu.addAction(grounding_annotate)
         annotation_menu.addAction(refine_sam2)
+        annotation_menu.addAction(dino_sam_annotate)
+        annotation_menu.addAction(vlm_annotate)
+        annotation_menu.addAction(toggle_vlm_filter)
         annotation_menu.addAction(dataset_annotate)
+        annotation_menu.addAction(dino_dataset_annotate)
+        annotation_menu.addAction(dino_sam_dataset_annotate)
         annotation_menu.addAction(fuse)
         annotation_menu.addAction(cleanup)
+        annotation_menu.addAction(cleanup_dataset)
+        annotation_menu.addAction(toggle_occluded)
+        annotation_menu.addAction(toggle_truncated)
         annotation_menu.addAction(fusion_colors)
         annotation_menu.addAction(active_learning)
         crop_menu = annotation_menu.addMenu("Crop Assist")
         for action in (crop_start, crop_previous, crop_next, crop_commit, crop_cancel):
             crop_menu.addAction(action)
-        filter_menu = annotation_menu.addMenu("Fusion Filters")
-        for action in self._filter_actions.values():
-            filter_menu.addAction(action)
 
         for group, action in (
-            ("AI Annotation", auto_annotate),
-            ("AI Annotation", grounding_annotate),
-            ("AI Annotation", refine_sam2),
-            ("Dataset Processing", dataset_annotate),
-            ("Review & Cleanup", fuse),
-            ("Review & Cleanup", cleanup),
-            ("Review & Cleanup", fusion_colors),
-            ("Review & Cleanup", active_learning),
+            ("Review && Cleanup", refine_sam2),
+            ("Review && Cleanup", fuse),
+            ("Review && Cleanup", cleanup),
+            ("Review && Cleanup", cleanup_dataset),
+            ("Review && Cleanup", toggle_occluded),
+            ("Review && Cleanup", toggle_truncated),
+            ("Review && Cleanup", fusion_colors),
+            ("Review && Cleanup", active_learning),
             ("Crop Assist", crop_start),
             ("Crop Assist", crop_previous),
             ("Crop Assist", crop_next),
@@ -523,36 +864,18 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.addAction(import_folder)
         toolbar.addAction(import_coco)
+        toolbar.addAction(save)
+        toolbar.addAction(export_dataset)
         toolbar.addSeparator()
-        prompt = QLineEdit(self._grounding_prompt, self)
-        prompt.setMaximumWidth(220)
-        prompt.setMinimumWidth(140)
-        prompt.setPlaceholderText("car. bus. truck.")
-        prompt.setToolTip("Grounding DINO prompt")
-        prompt.textChanged.connect(self._set_grounding_prompt)
-        confidence = QDoubleSpinBox(self)
-        confidence.setRange(0.0, 1.0)
-        confidence.setSingleStep(0.05)
-        confidence.setDecimals(2)
-        confidence.setValue(self._confidence_threshold)
-        confidence.setFixedWidth(80)
-        confidence.setToolTip("Minimum detection confidence")
-        confidence.valueChanged.connect(self._set_confidence_threshold)
-        asset_dir = Path(__file__).parent / "assets"
-        confidence.setStyleSheet(
-            "QDoubleSpinBox::up-arrow {"
-            f"image: url(\"{asset_dir / 'spin-up.svg'}\");"
-            "}"
-            "QDoubleSpinBox::down-arrow {"
-            f"image: url(\"{asset_dir / 'spin-down.svg'}\");"
-            "}"
-        )
-
-        settings_layout = QFormLayout()
-        settings_layout.setContentsMargins(0, 0, 0, 0)
-        settings_layout.addRow("Prompt", prompt)
-        settings_layout.addRow("Confidence", confidence)
-        self._property_group_layouts["Detection Settings"].addLayout(settings_layout)
+        toolbar.addAction(draw_tool)
+        toolbar.addAction(pan_tool)
+        toolbar.addSeparator()
+        toolbar.addAction(auto_label_workspace)
+        toolbar.addSeparator()
+        toolbar.addAction(fit_view)
+        toolbar.addAction(zoom_in)
+        toolbar.addAction(zoom_out)
+        toolbar.addAction(zoom_actual)
 
         self.addToolBar(toolbar)
 
@@ -569,6 +892,16 @@ class MainWindow(QMainWindow):
 
     def _set_confidence_threshold(self, value: float) -> None:
         self._confidence_threshold = value
+
+    def _set_enabled_classes(self, value: str) -> None:
+        supported = {"motorcycle", "car", "bus", "truck"}
+        selected = {
+            item.strip().lower()
+            for item in value.split(",")
+            if item.strip().lower() in supported
+        }
+        if selected:
+            self._enabled_classes = selected
 
     def _set_grounding_prompt(self, value: str) -> None:
         self._grounding_prompt = value
@@ -673,6 +1006,16 @@ class MainWindow(QMainWindow):
         )
         if not accepted:
             return
+        split_choice, accepted = QInputDialog.getItem(
+            self,
+            "Export Split",
+            "Dataset layout:",
+            ["All images", "Train / validation / test split"],
+            0,
+            False,
+        )
+        if not accepted:
+            return
         slug = {
             "COCO Detection": "coco",
             "YOLOv8 Detection": "yolov8",
@@ -686,8 +1029,47 @@ class MainWindow(QMainWindow):
         if not parent_name:
             return
         documents = list(self._project_documents.values())
-        destination = self._new_project_path(Path(parent_name), f"exported-{slug}")
-        exporter = CocoExporter() if slug == "coco" else YoloExporter(variant=slug)
+        splits = None
+        suffix = ""
+        if split_choice != "All images":
+            ratio_text, accepted = QInputDialog.getText(
+                self,
+                "Split Ratios",
+                "Train, validation, test ratios:",
+                QLineEdit.EchoMode.Normal,
+                "0.8,0.1,0.1",
+            )
+            if not accepted:
+                return
+            try:
+                ratios = tuple(float(value.strip()) for value in ratio_text.split(","))
+                if len(ratios) != 3:
+                    raise ValueError
+                seed, accepted = QInputDialog.getInt(
+                    self,
+                    "Split Seed",
+                    "Random seed:",
+                    42,
+                    0,
+                    2**31 - 1,
+                )
+                if not accepted:
+                    return
+                splits = split_documents(documents, *ratios, seed=seed)
+            except ValueError:
+                QMessageBox.warning(
+                    self,
+                    "Invalid split ratios",
+                    "Enter three non-negative ratios that add up to 1.0.",
+                )
+                return
+            suffix = "-split"
+        destination = self._new_project_path(Path(parent_name), f"exported-{slug}{suffix}")
+        exporter = (
+            CocoExporter(splits=splits)
+            if slug == "coco"
+            else YoloExporter(variant=slug, splits=splits)
+        )
         try:
             result = exporter.export(documents, destination)
         except Exception as error:
@@ -976,6 +1358,81 @@ class MainWindow(QMainWindow):
             LOGGER.exception("SAM2 loading failed")
             self.statusBar().showMessage(f"SAM2 loading failed: {error}")
 
+    def _load_vlm_model(self) -> None:
+        """Load the Hugging Face Florence-2 model once for verification."""
+        try:
+            from src.vlm_helper import Florence2VLM
+
+            self._vlm_helper = Florence2VLM(model_id=self._vlm_model_id)
+            self._vlm_helper.ensure_loaded()
+            self.statusBar().showMessage(f"Loaded Florence-2 VLM: {self._vlm_model_id}")
+        except Exception as error:
+            self._vlm_helper = None
+            LOGGER.exception("Florence-2 VLM loading failed")
+            self.statusBar().showMessage(f"Florence-2 VLM loading failed: {error}")
+
+    def _toggle_vlm_filtering(self, enabled: bool) -> None:
+        """Toggle automatic VLM verification during DINO + SAM auto-annotation."""
+        self._vlm_filter_enabled = enabled
+        status = "enabled" if enabled else "disabled"
+        self.statusBar().showMessage(f"VLM auto-filter {status}")
+
+    def _vlm_auto_annotate(self) -> None:
+        """Run Florence-2 object detection to generate new annotations on the active image."""
+        if self._document is None or self._history is None:
+            self.statusBar().showMessage("Select an image before running VLM auto-annotate")
+            return
+
+        if self._vlm_helper is None:
+            self._load_vlm_model()
+        if self._vlm_helper is None:
+            return
+
+        from app.services.annotation.domain import Annotation, AnnotationSource
+        from app.services.annotation.history import AddAnnotationCommand
+        from src.vlm_helper import generate_annotations
+
+        try:
+            from PIL import Image
+
+            image = Image.open(self._document.image_path).convert("RGB")
+
+            candidates = generate_annotations(
+                image=image,
+                image_width=image.width,
+                image_height=image.height,
+                vlm=self._vlm_helper,
+                enabled_classes=self._enabled_classes,
+            )
+
+            added = 0
+            for class_name, bbox in candidates:
+                # Skip if overlapping with existing annotation of the same class
+                if any(
+                    existing.class_name == class_name
+                    and self._box_iou(existing.box, bbox) >= 0.5
+                    for existing in self._document.annotations
+                ):
+                    continue
+
+                annotation = Annotation(
+                    class_name=class_name,
+                    box=bbox,
+                    confidence=None,
+                    source=AnnotationSource.FLORENCE2,
+                )
+                self._document = self._history.execute(AddAnnotationCommand(annotation))
+                added += 1
+
+            self.canvas.set_document(self._document)
+            msg = f"VLM Auto-Annotate: added {added} new annotations ({len(candidates)} detected)"
+            LOGGER.info(msg)
+            self.statusBar().showMessage(msg)
+        except Exception as error:
+            LOGGER.exception("VLM auto-annotate failed")
+            self.statusBar().showMessage(f"VLM auto-annotate failed: {error}")
+
+
     def _annotate_entire_dataset(self) -> None:
         """Run both detectors over every imported image with cancellable progress."""
         if self._crop_session is not None:
@@ -1009,20 +1466,11 @@ class MainWindow(QMainWindow):
             self._confidence_threshold,
             self._fusion_config.overlap_removal_iou_threshold,
             self._fusion_config.overlap_removal_containment_threshold,
+            enabled_classes=self._enabled_classes,
         )
-        progress = QProgressDialog(
-            "Preparing dataset annotation...", "Cancel", 0, len(documents), self
-        )
-        progress.setWindowTitle("Annotate Entire Dataset")
-        progress.setMinimumDuration(0)
-        progress.setAutoClose(False)
-        progress.canceled.connect(task.cancel)
-        task.signals.progress.connect(lambda value, _message: progress.setValue(value))
-        task.signals.progress.connect(
-            lambda value, message: progress.setLabelText(
-                f"Processing image {value} / {len(documents)}\n{message}"
-            )
-        )
+        progress = _DatasetProgressDialog("Annotate Entire Dataset", len(documents), self)
+        progress.cancelled.connect(task.cancel)
+        task.signals.progress.connect(progress.update_progress)
         task.signals.completed.connect(self._dataset_annotation_completed)
         task.signals.cancelled.connect(self._dataset_annotation_cancelled)
         task.signals.failed.connect(self._dataset_annotation_failed)
@@ -1030,6 +1478,105 @@ class MainWindow(QMainWindow):
         self._dataset_annotation_task = task
         progress.show()
         self.statusBar().showMessage(f"Annotating dataset: 0/{len(documents)}")
+        QThreadPool.globalInstance().start(task)
+
+    def _annotate_entire_dataset_dino(self) -> None:
+        """Run Grounding DINO prompt-ensemble inference over every image."""
+        if self._crop_session is not None:
+            self.statusBar().showMessage("Commit or cancel Crop Assist first")
+            return
+        if self._dataset_annotation_task is not None:
+            self.statusBar().showMessage("Dataset annotation is already running")
+            return
+        if not self._project_documents:
+            self.statusBar().showMessage("Import a folder or dataset first")
+            return
+        if not self._grounding_prompt.strip():
+            self.statusBar().showMessage("Enter a Grounding DINO prompt first")
+            return
+        if self._grounding_model is None or self._grounding_processor is None:
+            self._load_grounding_model()
+        if self._grounding_model is None or self._grounding_processor is None:
+            return
+
+        documents = list(self._project_documents.values())
+        task = _DatasetAnnotationTask(
+            documents,
+            self._grounding_model,
+            self._grounding_processor,
+            None,
+            self._grounding_prompt,
+            self._confidence_threshold,
+            self._fusion_config.overlap_removal_iou_threshold,
+            self._fusion_config.overlap_removal_containment_threshold,
+            use_yolo=False,
+            enabled_classes=self._enabled_classes,
+        )
+        progress = _DatasetProgressDialog(
+            "DINO Annotate Entire Dataset", len(documents), self
+        )
+        progress.cancelled.connect(task.cancel)
+        task.signals.progress.connect(progress.update_progress)
+        task.signals.completed.connect(self._dataset_annotation_completed)
+        task.signals.cancelled.connect(self._dataset_annotation_cancelled)
+        task.signals.failed.connect(self._dataset_annotation_failed)
+        self._dataset_progress = progress
+        self._dataset_annotation_task = task
+        progress.show()
+        self.statusBar().showMessage(f"DINO annotating dataset: 0/{len(documents)}")
+        QThreadPool.globalInstance().start(task)
+
+    def _annotate_entire_dataset_dino_sam(self) -> None:
+        """Run Zero-Shot Grounding DINO + SAM2 auto-annotation across every image."""
+        if self._crop_session is not None:
+            self.statusBar().showMessage("Commit or cancel Crop Assist first")
+            return
+        if self._dataset_annotation_task is not None:
+            self.statusBar().showMessage("Dataset annotation is already running")
+            return
+        if not self._project_documents:
+            self.statusBar().showMessage("Import a folder or dataset first")
+            return
+        if not self._grounding_prompt.strip():
+            self.statusBar().showMessage("Enter a Grounding DINO prompt first")
+            return
+        if self._grounding_model is None or self._grounding_processor is None:
+            self._load_grounding_model()
+        if self._grounding_model is None or self._grounding_processor is None:
+            return
+        if self._sam2_model is None or self._sam2_processor is None:
+            self._load_sam2_model()
+        if self._sam2_model is None or self._sam2_processor is None:
+            return
+
+        documents = list(self._project_documents.values())
+        task = _DatasetAnnotationTask(
+            documents,
+            self._grounding_model,
+            self._grounding_processor,
+            None,
+            self._grounding_prompt,
+            self._confidence_threshold,
+            self._fusion_config.overlap_removal_iou_threshold,
+            self._fusion_config.overlap_removal_containment_threshold,
+            use_yolo=False,
+            enabled_classes=self._enabled_classes,
+            sam2_model=self._sam2_model,
+            sam2_processor=self._sam2_processor,
+            use_sam2=True,
+        )
+        progress = _DatasetProgressDialog(
+            "DINO + SAM Annotate Entire Dataset", len(documents), self
+        )
+        progress.cancelled.connect(task.cancel)
+        task.signals.progress.connect(progress.update_progress)
+        task.signals.completed.connect(self._dataset_annotation_completed)
+        task.signals.cancelled.connect(self._dataset_annotation_cancelled)
+        task.signals.failed.connect(self._dataset_annotation_failed)
+        self._dataset_progress = progress
+        self._dataset_annotation_task = task
+        progress.show()
+        self.statusBar().showMessage(f"DINO + SAM annotating dataset: 0/{len(documents)}")
         QThreadPool.globalInstance().start(task)
 
     def _dataset_annotation_completed(self, result) -> None:  # type: ignore[no-untyped-def]
@@ -1160,13 +1707,22 @@ class MainWindow(QMainWindow):
             }
             with torch.no_grad():
                 outputs = self._grounding_model(**inputs)
-            results = self._grounding_processor.post_process_grounded_object_detection(
-                outputs,
-                inputs["input_ids"],
-                threshold=self._confidence_threshold,
-                text_threshold=self._confidence_threshold,
-                target_sizes=[(image.height, image.width)],
-            )[0]
+            try:
+                results = self._grounding_processor.post_process_grounded_object_detection(
+                    outputs,
+                    inputs["input_ids"],
+                    threshold=self._confidence_threshold,
+                    text_threshold=self._confidence_threshold,
+                    target_sizes=[(image.height, image.width)],
+                )[0]
+            except TypeError:
+                results = self._grounding_processor.post_process_grounded_object_detection(
+                    outputs,
+                    inputs["input_ids"],
+                    box_threshold=self._confidence_threshold,
+                    text_threshold=self._confidence_threshold,
+                    target_sizes=[(image.height, image.width)],
+                )[0]
             added = self._add_grounding_results(results, image.width, image.height)
             self.canvas.set_document(self._document)
             self.statusBar().showMessage(f"Grounding DINO added {added} boxes")
@@ -1175,7 +1731,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Grounding DINO annotation failed: {error}")
 
     def _add_grounding_results(self, results, image_width: int, image_height: int) -> int:  # type: ignore[no-untyped-def]
-        class_order = {"motorcycle", "car", "bus", "truck"}
         self._grounding_detections = []
         added = 0
         boxes = results["boxes"]
@@ -1185,15 +1740,14 @@ class MainWindow(QMainWindow):
             if index >= len(labels):
                 continue
             label = labels[index]
-            label_text = str(label).lower().strip(" .")
-            class_name = next((name for name in class_order if name in label_text), "")
-            if not class_name:
+            class_name = grounding_class(str(label)) or ""
+            if not class_name or class_name not in self._enabled_classes:
                 continue
             left, top, right, bottom = box.tolist()
-            left = max(0.0, min(float(left), image_width))
-            top = max(0.0, min(float(top), image_height))
-            right = max(0.0, min(float(right), image_width))
-            bottom = max(0.0, min(float(bottom), image_height))
+            left = max(0.0, min(float(left), float(image_width)))
+            top = max(0.0, min(float(top), float(image_height)))
+            right = max(0.0, min(float(right), float(image_width)))
+            bottom = max(0.0, min(float(bottom), float(image_height)))
             if left >= right or top >= bottom:
                 continue
             annotation = Annotation(
@@ -1215,15 +1769,321 @@ class MainWindow(QMainWindow):
                     source=AnnotationSource.GROUNDING_DINO,
                 )
             )
-            if any(
+            if self._document is not None and any(
                 existing.class_name == annotation.class_name
                 and self._box_iou(existing.box, annotation.box) >= 0.5
                 for existing in self._document.annotations
             ):
                 continue
-            self._document = self._history.execute(AddAnnotationCommand(annotation))
-            added += 1
+            if self._history is not None:
+                self._document = self._history.execute(AddAnnotationCommand(annotation))
+                added += 1
         return added
+
+    def _zero_shot_dino_sam_annotate(self) -> None:
+        """Run Grounding DINO detection and refine with SAM2 in a single zero-shot step."""
+        if self._document is None or self._history is None:
+            self.statusBar().showMessage("Select an image before annotating")
+            return
+        if not self._grounding_prompt.strip():
+            self.statusBar().showMessage("Enter a Grounding DINO prompt first")
+            return
+        if self._grounding_model is None or self._grounding_processor is None:
+            self._load_grounding_model()
+        if self._grounding_model is None or self._grounding_processor is None:
+            return
+        if self._sam2_model is None or self._sam2_processor is None:
+            self._load_sam2_model()
+        if self._sam2_model is None or self._sam2_processor is None:
+            return
+
+        try:
+            import torch
+            from PIL import Image
+
+            image = Image.open(self._document.image_path).convert("RGB")
+            prompt = self._normalize_grounding_prompt(self._grounding_prompt)
+            inputs = self._grounding_processor(
+                images=image,
+                text=prompt,
+                return_tensors="pt",
+            )
+            device = next(self._grounding_model.parameters()).device
+            inputs = {
+                key: value.to(device) if hasattr(value, "to") else value
+                for key, value in inputs.items()
+            }
+            with torch.no_grad():
+                outputs = self._grounding_model(**inputs)
+            try:
+                results = self._grounding_processor.post_process_grounded_object_detection(
+                    outputs,
+                    inputs["input_ids"],
+                    threshold=self._confidence_threshold,
+                    text_threshold=self._confidence_threshold,
+                    target_sizes=[(image.height, image.width)],
+                )[0]
+            except TypeError:
+                results = self._grounding_processor.post_process_grounded_object_detection(
+                    outputs,
+                    inputs["input_ids"],
+                    box_threshold=self._confidence_threshold,
+                    text_threshold=self._confidence_threshold,
+                    target_sizes=[(image.height, image.width)],
+                )[0]
+
+            boxes = results.get("boxes", [])
+            scores = results.get("scores", [])
+            labels = results.get("text_labels", results.get("labels", []))
+
+            if len(boxes) == 0:
+                LOGGER.warning("Zero detections for text_prompt on %s", self._document.image_path.name)
+                self.statusBar().showMessage(
+                    f"Zero detections for '{self._grounding_prompt}' on {self._document.image_path.name}"
+                )
+                return
+
+            candidate_boxes: list[list[float]] = []
+            candidate_labels: list[str] = []
+            candidate_scores: list[float] = []
+
+            for index, (box, score) in enumerate(zip(boxes, scores, strict=True)):
+                if index >= len(labels):
+                    continue
+                label = labels[index]
+                class_name = grounding_class(str(label)) or ""
+                if not class_name or class_name not in self._enabled_classes:
+                    continue
+
+                left, top, right, bottom = box.tolist()
+                left = max(0.0, min(float(left), image.width))
+                top = max(0.0, min(float(top), image.height))
+                right = max(0.0, min(float(right), image.width))
+                bottom = max(0.0, min(float(bottom), image.height))
+                if left >= right or top >= bottom:
+                    continue
+
+                candidate_boxes.append([left, top, right, bottom])
+                candidate_labels.append(class_name)
+                candidate_scores.append(float(score))
+
+            if not candidate_boxes:
+                self.statusBar().showMessage("No valid detections matched enabled classes")
+                return
+
+            if self._vlm_filter_enabled and candidate_boxes:
+                if self._vlm_helper is None:
+                    self._load_vlm_model()
+                if self._vlm_helper is not None:
+                    from src.vlm_helper import crop_image, verify_crop_class
+
+                    vlm_boxes: list[list[float]] = []
+                    vlm_labels: list[str] = []
+                    vlm_scores: list[float] = []
+                    for b_coords, c_name, s_val in zip(
+                        candidate_boxes, candidate_labels, candidate_scores, strict=True
+                    ):
+                        crop = crop_image(image, b_coords, normalized=False)
+                        if verify_crop_class(crop, c_name, vlm=self._vlm_helper):
+                            vlm_boxes.append(b_coords)
+                            vlm_labels.append(c_name)
+                            vlm_scores.append(s_val)
+                        else:
+                            LOGGER.info(
+                                "VLM rejected false positive '%s' at %s", c_name, b_coords
+                            )
+                    rejected = len(candidate_boxes) - len(vlm_boxes)
+                    if rejected > 0:
+                        LOGGER.info("VLM filtered out %d false-positive candidate boxes", rejected)
+                    candidate_boxes = vlm_boxes
+                    candidate_labels = vlm_labels
+                    candidate_scores = vlm_scores
+
+            if not candidate_boxes:
+                self.statusBar().showMessage("No candidate boxes survived VLM verification")
+                return
+
+            sam_device = next(self._sam2_model.parameters()).device
+            pixel_boxes = [candidate_boxes]
+            sam_inputs = self._sam2_processor(
+                images=image, input_boxes=pixel_boxes, return_tensors="pt"
+            )
+            sam_inputs = {
+                k: v.to(sam_device) if hasattr(v, "to") else v
+                for k, v in sam_inputs.items()
+            }
+            with torch.no_grad():
+                sam_outputs = self._sam2_model(**sam_inputs, multimask_output=False)
+            masks = self._sam2_processor.post_process_masks(
+                sam_outputs.pred_masks.cpu(), sam_inputs["original_sizes"]
+            )
+            mask_batch = masks[0]
+
+            added = 0
+            for idx, (box_coords, class_name, score_val) in enumerate(
+                zip(candidate_boxes, candidate_labels, candidate_scores, strict=True)
+            ):
+                left, top, right, bottom = box_coords
+                mask = mask_batch[idx].squeeze()
+                rows, columns = torch.where(mask > 0)
+                if rows.numel() > 0:
+                    refined_box = BoundingBox(
+                        float(columns.min()) / image.width,
+                        float(rows.min()) / image.height,
+                        float(columns.max() + 1) / image.width,
+                        float(rows.max() + 1) / image.height,
+                    )
+                else:
+                    refined_box = BoundingBox(
+                        left / image.width,
+                        top / image.height,
+                        right / image.width,
+                        bottom / image.height,
+                    )
+
+                if any(
+                    existing.class_name == class_name
+                    and self._box_iou(existing.box, refined_box) >= 0.5
+                    for existing in self._document.annotations
+                ):
+                    continue
+
+                annotation = Annotation(
+                    class_name=class_name,
+                    box=refined_box,
+                    confidence=score_val,
+                    source=AnnotationSource.SAM2,
+                )
+                self._document = self._history.execute(AddAnnotationCommand(annotation))
+                added += 1
+
+            self.canvas.set_document(self._document)
+            self.statusBar().showMessage(f"DINO + SAM auto-annotated {added} objects")
+        except Exception as error:
+            LOGGER.exception("DINO + SAM annotation failed")
+            self.statusBar().showMessage(f"DINO + SAM annotation failed: {error}")
+
+    def _open_auto_label_dialog(self) -> None:
+        """Open the Roboflow-style Auto Label dialog with Grounding DINO, SAM2, and Florence-2 VLM."""
+        from app.services.auto_label.engine import AutoLabelEngine
+        from app.services.auto_label.models import DEFAULT_AUTO_LABEL_CLASSES, AutoLabelClass
+        from app.ui.dialogs.auto_label_dialog import AutoLabelDialog
+
+        image_paths = list(self._project_documents.keys()) if self._project_documents else []
+        current_path = self._document.image_path if self._document is not None else None
+        if not image_paths and current_path is not None:
+            image_paths = [current_path]
+
+        if not image_paths:
+            self.statusBar().showMessage("Import a folder or dataset before opening Auto Label")
+            return
+
+        initial_classes = []
+        for cls_name in sorted(self._enabled_classes):
+            matching_default = next(
+                (c for c in DEFAULT_AUTO_LABEL_CLASSES if c.name == cls_name), None
+            )
+            if matching_default is not None:
+                initial_classes.append(
+                    AutoLabelClass(
+                        name=matching_default.name,
+                        prompt=matching_default.prompt,
+                        color=matching_default.color,
+                    )
+                )
+            else:
+                initial_classes.append(AutoLabelClass(name=cls_name, prompt="", color="#29b6f6"))
+
+        if not initial_classes:
+            initial_classes = list(DEFAULT_AUTO_LABEL_CLASSES)
+
+        grounding_detector = None
+        if self._grounding_model is not None and self._grounding_processor is not None:
+            from pipeline_bridge import GroundingDinoDetector
+
+            grounding_detector = GroundingDinoDetector(
+                processor=self._grounding_processor,
+                model=self._grounding_model,
+            )
+
+        sam_segmenter = None
+        if self._sam2_model is not None and self._sam2_processor is not None:
+            from pipeline_bridge import SamSegmenter
+
+            sam_segmenter = SamSegmenter(
+                processor=self._sam2_processor,
+                model=self._sam2_model,
+            )
+
+        vlm_helper = self._vlm_helper
+
+        engine = AutoLabelEngine(
+            grounding_detector=grounding_detector,
+            sam_segmenter=sam_segmenter,
+            vlm_helper=vlm_helper,
+            yolo_detector=self._yolo_model,
+        )
+
+        dialog = AutoLabelDialog(
+            image_paths=image_paths,
+            current_image_path=current_path,
+            engine=engine,
+            initial_classes=initial_classes,
+            parent=self,
+        )
+        dialog.preview_applied.connect(self._on_auto_label_preview_applied)
+        dialog.batch_completed.connect(self._on_auto_label_batch_completed)
+        dialog.exec()
+
+    def _on_auto_label_preview_applied(self, result: Any) -> None:
+        """Apply previewed Auto Label detections directly to the active document."""
+        if self._document is None or self._history is None:
+            return
+        from app.services.annotation.domain import TARGET_CLASSES
+
+        added = 0
+        for det in result.detections:
+            if det.class_name not in TARGET_CLASSES:
+                continue
+            if any(
+                existing.class_name == det.class_name
+                and self._box_iou(existing.box, det.box) >= 0.5
+                for existing in self._document.annotations
+            ):
+                continue
+            ann = Annotation(
+                class_name=det.class_name,
+                box=det.box,
+                confidence=det.confidence,
+                source=AnnotationSource.SAM2 if det.polygon_normalized else AnnotationSource.GROUNDING_DINO,
+            )
+            self._document = self._history.execute(AddAnnotationCommand(ann))
+            added += 1
+
+        self.canvas.set_document(self._document)
+        self.statusBar().showMessage(
+            f"Auto Label applied {added} annotation(s) to {self._document.image_path.name}"
+        )
+
+    def _on_auto_label_batch_completed(
+        self, updated_documents: dict[Path, AnnotationDocument]
+    ) -> None:
+        """Handle completed batch Auto Label results."""
+        self._project_documents.update(updated_documents)
+        current_path = self._document.image_path if self._document is not None else None
+        if current_path is not None and current_path in updated_documents:
+            updated = updated_documents[current_path]
+            if self._history is not None and self._document is not None:
+                self._document = self._history.execute(
+                    ReplaceDocumentCommand(self._document, updated)
+                )
+            else:
+                self._document = updated
+                self._history = AnnotationHistory(updated)
+            self.canvas.set_document(self._document)
+        self.statusBar().showMessage(
+            f"Batch Auto Label finished for {len(updated_documents)} images"
+        )
 
     @staticmethod
     def _normalize_grounding_prompt(prompt: str) -> str:
@@ -1249,7 +2109,7 @@ class MainWindow(QMainWindow):
                 verbose=False,
             )[0]
             names = self._yolo_model.names
-            class_order = {"motorcycle", "car", "bus", "truck"}
+            class_order = self._enabled_classes
             self._yolo_detections = []
             added = 0
             for box in result.boxes:
@@ -1384,6 +2244,85 @@ class MainWindow(QMainWindow):
         self.canvas.set_document(self._document)
         self.statusBar().showMessage(f"Removed {removed_count} overlapping duplicate boxes")
 
+    def _remove_database_duplicates(self) -> None:
+        """Remove redundant boxes from every imported document."""
+        if self._crop_session is not None:
+            self.statusBar().showMessage("Commit or cancel Crop Assist first")
+            return
+        if self._dataset_annotation_task is not None:
+            self.statusBar().showMessage("Dataset annotation is already running")
+            return
+        if not self._project_documents:
+            self.statusBar().showMessage("Import a folder or dataset first")
+            return
+
+        updated_documents: dict[Path, AnnotationDocument] = {}
+        removed_total = 0
+        for document in self._project_documents.values():
+            kept, removed = remove_overlapping_annotations(
+                document.annotations,
+                self._fusion_config.overlap_removal_iou_threshold,
+                self._fusion_config.overlap_removal_containment_threshold,
+                self._fusion_config.overlap_removal_same_class_only,
+            )
+            updated_documents[document.image_path] = (
+                document
+                if not removed
+                else AnnotationDocument(
+                    document.image_path,
+                    document.image_width,
+                    document.image_height,
+                    kept,
+                )
+            )
+            removed_total += removed
+
+        self._project_documents.update(updated_documents)
+        if self._document is not None and self._document.image_path in updated_documents:
+            updated = updated_documents[self._document.image_path]
+            if self._history is not None and updated is not self._document:
+                self._document = self._history.execute(
+                    ReplaceDocumentCommand(self._document, updated)
+                )
+            else:
+                self._document = updated
+            self.canvas.set_document(self._document)
+            self._remember_current_document()
+        self.statusBar().showMessage(
+            f"Database duplicate cleanup complete: removed {removed_total} boxes"
+        )
+
+    def _toggle_selected_occluded(self) -> None:
+        """Toggle the occlusion flag on the selected annotation."""
+        self._toggle_selected_annotation_flag("occluded")
+
+    def _toggle_selected_truncated(self) -> None:
+        """Toggle the truncated flag on the selected annotation."""
+        self._toggle_selected_annotation_flag("truncated")
+
+    def _toggle_selected_annotation_flag(self, flag: str) -> None:
+        if self._document is None or self._history is None or self._selected_annotation_id is None:
+            self.statusBar().showMessage("Select an annotation first")
+            return
+        annotation = next(
+            (
+                item
+                for item in self._document.annotations
+                if item.annotation_id == self._selected_annotation_id
+            ),
+            None,
+        )
+        if annotation is None:
+            self.statusBar().showMessage("Select an annotation first")
+            return
+        updated = replace(annotation, **{flag: not getattr(annotation, flag)})
+        self._document = self._history.execute(UpdateAnnotationCommand(annotation, updated))
+        self._remember_current_document()
+        self.canvas.set_document(self._document)
+        self.statusBar().showMessage(
+            f"{flag.title()} set to {getattr(updated, flag)}"
+        )
+
     @staticmethod
     def _box_iou(first: BoundingBox, second: BoundingBox) -> float:
         """Return intersection-over-union for two normalized boxes."""
@@ -1434,6 +2373,12 @@ class MainWindow(QMainWindow):
         if isinstance(watched, (QLineEdit, QAbstractSpinBox)):
             return super().eventFilter(watched, event)
         if not isinstance(watched, QWidget):
+            return super().eventFilter(watched, event)
+        if event.modifiers() & (
+            Qt.KeyboardModifier.ShiftModifier
+            | Qt.KeyboardModifier.ControlModifier
+            | Qt.KeyboardModifier.AltModifier
+        ):
             return super().eventFilter(watched, event)
         if not (
             watched is self.canvas

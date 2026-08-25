@@ -8,6 +8,7 @@ from app.export.exporters import (
     ExportError,
     PascalVocExporter,
     RoboflowExporter,
+    split_documents,
     YoloExporter,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "ExportError",
     "PascalVocExporter",
     "RoboflowExporter",
+    "split_documents",
     "YoloExporter",
 ]

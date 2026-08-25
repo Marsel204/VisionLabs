@@ -21,11 +21,18 @@ Run the installer from this directory as the normal desktop user:
 It installs the application under `~/.local/share/traffic-annotator`, adds a
 `~/.local/bin/traffic-annotator` command, and creates an application-menu entry.
 The installer supports Ubuntu 24.04 on x86_64 and ARM64. On Jetson systems with
-`nvidia-l4t-core` installed, it preserves the system CUDA-enabled PyTorch instead
-of downloading an incompatible generic PyTorch wheel. Jetson CUDA-enabled PyTorch
-must already be installed for the same Python interpreter as `python3`; otherwise
-the installer stops and explains how to correct it. Use `--cpu-only` to force the
-normal PyPI installation. Remove the application with:
+`nvidia-l4t-core` installed, it requires an explicitly supplied CUDA-enabled
+PyTorch wheel instead of downloading the incompatible generic PyPI wheel. The
+wheel must target the installed Python version and include `sm_87` for Orin:
+
+```bash
+./install.sh --torch-wheel /path/to/torch-jetson.whl
+```
+
+An HTTPS wheel URL is also accepted. The installer verifies CUDA availability,
+Orin compute capability `8.7`, and the presence of `sm_87` before completing.
+Use `--cpu-only` to force the normal PyPI installation. Remove the application
+with:
 
 ```bash
 ~/.local/share/traffic-annotator/uninstall.sh
@@ -83,8 +90,31 @@ Use `File > Import COCO Dataset` to choose an annotations JSON, the source image
 new project destination. Supported categories are imported as bounding boxes; unsupported
 categories and invalid records are reported and skipped. Images are copied into the project, so
 the source dataset is never modified. Import automatically removes overlapping boxes, including
-different-class overlaps, using the configured IoU and containment thresholds. Use
+same-class overlaps, using the configured IoU and containment thresholds. Motorcycle and rider
+boxes are intentionally preserved even when they overlap. Use
 `File > Export Cleaned COCO` to write a new COCO dataset with copied images and cleaned boxes.
+
+## Train/Validation/Test Export
+
+Use `File > Export Dataset`, select an export format, and choose `Train / validation / test split`.
+Enter ratios such as `0.8,0.1,0.1` and a seed to create a reproducible split. YOLO exports use
+`images/{train,val,test}` and `labels/{train,val,test}` with matching paths in `dataset.yaml`.
+COCO exports create one self-contained directory and `annotations.json` per split.
+
+## Motorcycle and Rider Annotation
+
+The supported classes include both `motorcycle` and `rider`. Keep the boxes separate:
+the motorcycle box describes the motorcycle and the rider box describes the person riding it.
+Overlapping motorcycle and rider boxes are preserved during duplicate cleanup. Use
+`Annotation > DINO Annotate Entire Dataset` for Grounding DINO-only prompt-ensemble annotation.
+The DINO dataset pass runs full-image and overlapping tiled inference, and accepts comma- or
+period-separated prompts such as `motorcycle. rider. motorbike. motorcyclist.`
+The selected annotation can be marked occluded or truncated from the Review & Cleanup actions.
+
+Dense traffic annotation uses multi-scale YOLO proposals plus Grounding DINO proposals. The
+combined dataset action keeps YOLO vehicle detections authoritative and uses DINO to supplement
+motorcycles and riders. DINO-only annotation preserves existing YOLO boxes, so it can be used as
+a second pass without replacing the baseline.
 
 ## Crop Assist
 

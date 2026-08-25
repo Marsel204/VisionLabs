@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import zipfile
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -13,6 +14,7 @@ from app.services.annotation.domain import TARGET_CLASSES, AnnotationDocument
 
 LOGGER = logging.getLogger(__name__)
 CLASS_ORDER = ("motorcycle", "car", "bus", "truck")
+SPLIT_NAMES = ("train", "val", "test")
 
 
 class ExportError(RuntimeError):
@@ -27,35 +29,86 @@ class DatasetExporter(ABC):
         """Export documents and return the generated artifact path."""
 
 
+def split_documents(
+    documents: list[AnnotationDocument],
+    train_ratio: float = 0.8,
+    val_ratio: float = 0.1,
+    test_ratio: float = 0.1,
+    seed: int = 42,
+) -> dict[str, list[AnnotationDocument]]:
+    """Assign documents to reproducible train, validation, and test splits."""
+    ratios = (train_ratio, val_ratio, test_ratio)
+    if any(ratio < 0.0 for ratio in ratios) or abs(sum(ratios) - 1.0) > 1e-6:
+        raise ValueError("split ratios must be non-negative and sum to 1")
+    shuffled = sorted(documents, key=lambda item: str(item.image_path))
+    random.Random(seed).shuffle(shuffled)
+    train_end = round(len(shuffled) * train_ratio)
+    val_end = train_end + round(len(shuffled) * val_ratio)
+    return {
+        "train": shuffled[:train_end],
+        "val": shuffled[train_end:val_end],
+        "test": shuffled[val_end:],
+    }
+
+
 class YoloExporter(DatasetExporter):
     """Export YOLO detection labels and a dataset YAML file."""
 
-    def __init__(self, variant: str = "generic") -> None:
+    def __init__(
+        self,
+        variant: str = "generic",
+        splits: dict[str, list[AnnotationDocument]] | None = None,
+    ) -> None:
         self.variant = variant
+        self.splits = splits
 
     def export(self, documents: list[AnnotationDocument], destination: Path) -> Path:
         validate_documents(documents)
         destination.mkdir(parents=True, exist_ok=True)
-        images = destination / "images"
-        labels = destination / "labels"
-        images.mkdir(exist_ok=True)
-        labels.mkdir(exist_ok=True)
-        for document in documents:
-            image_target = images / document.image_path.name
-            label_target = labels / f"{document.image_path.stem}.txt"
-            image_target.write_bytes(document.image_path.read_bytes())
-            lines = []
-            for annotation in document.annotations:
-                center_x, center_y, width, height = annotation.box.to_yolo()
-                lines.append(
-                    f"{CLASS_ORDER.index(annotation.class_name)} {center_x:.6f} "
-                    f"{center_y:.6f} {width:.6f} {height:.6f}"
+        split_documents_map = self.splits or {"": documents}
+        metadata: dict[str, list[dict[str, object]]] = {}
+        for split, split_documents_list in split_documents_map.items():
+            images = destination / "images" / split if split else destination / "images"
+            labels = destination / "labels" / split if split else destination / "labels"
+            images.mkdir(parents=True, exist_ok=True)
+            labels.mkdir(parents=True, exist_ok=True)
+            for document in split_documents_list:
+                image_target = images / document.image_path.name
+                label_target = labels / f"{document.image_path.stem}.txt"
+                image_target.write_bytes(document.image_path.read_bytes())
+                lines = []
+                for annotation in document.annotations:
+                    center_x, center_y, width, height = annotation.box.to_yolo()
+                    lines.append(
+                        f"{CLASS_ORDER.index(annotation.class_name)} {center_x:.6f} "
+                        f"{center_y:.6f} {width:.6f} {height:.6f}"
+                    )
+                label_target.write_text(
+                    "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8"
                 )
-            label_target.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+                metadata_key = f"{split}/{document.image_path.name}" if split else document.image_path.name
+                metadata[metadata_key] = [
+                    {
+                        "class_name": annotation.class_name,
+                        "occluded": annotation.occluded,
+                        "truncated": annotation.truncated,
+                    }
+                    for annotation in document.annotations
+                ]
+        (destination / "annotation_metadata.json").write_text(
+            json.dumps(metadata, indent=2), encoding="utf-8"
+        )
         yaml_path = destination / "dataset.yaml"
+        if self.splits:
+            split_paths = "\n".join(
+                f"{name}: images/{name}" for name in SPLIT_NAMES
+            )
+        else:
+            split_paths = "train: images\nval: images"
         yaml_path.write_text(
             f"path: {destination.resolve()}\n"
-            f"train: images\nval: images\nnames: {list(CLASS_ORDER)}\n",
+            f"{split_paths}\n"
+            f"names: {list(CLASS_ORDER)}\n",
             encoding="utf-8",
         )
         LOGGER.info(
@@ -70,8 +123,15 @@ class YoloExporter(DatasetExporter):
 class CocoExporter(DatasetExporter):
     """Export COCO detection JSON and source images."""
 
+    def __init__(self, splits: dict[str, list[AnnotationDocument]] | None = None) -> None:
+        self.splits = splits
+
     def export(self, documents: list[AnnotationDocument], destination: Path) -> Path:
         validate_documents(documents)
+        if self.splits:
+            for split, split_documents_list in self.splits.items():
+                CocoExporter().export(split_documents_list, destination / split)
+            return destination
         destination.mkdir(parents=True, exist_ok=True)
         payload = {
             "images": [],
@@ -105,6 +165,8 @@ class CocoExporter(DatasetExporter):
                         ],
                         "area": box.area * document.image_width * document.image_height,
                         "iscrowd": 0,
+                        "occluded": annotation.occluded,
+                        "truncated": annotation.truncated,
                     }
                 )
                 annotation_id += 1
@@ -136,6 +198,8 @@ class PascalVocExporter(DatasetExporter):
             for annotation in document.annotations:
                 obj = SubElement(root, "object")
                 SubElement(obj, "name").text = annotation.class_name
+                SubElement(obj, "occluded").text = str(int(annotation.occluded))
+                SubElement(obj, "truncated").text = str(int(annotation.truncated))
                 box = SubElement(obj, "bndbox")
                 for name, value in (
                     ("xmin", annotation.box.left * document.image_width),
@@ -180,7 +244,8 @@ class CvatExporter(DatasetExporter):
                     "box",
                     {
                         "label": annotation.class_name,
-                        "occluded": "0",
+                        "occluded": str(int(annotation.occluded)),
+                        "truncated": str(int(annotation.truncated)),
                         "xtl": str(box.left * document.image_width),
                         "ytl": str(box.top * document.image_height),
                         "xbr": str(box.right * document.image_width),
