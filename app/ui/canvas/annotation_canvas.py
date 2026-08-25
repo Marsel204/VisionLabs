@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum, auto
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsRectItem,
@@ -44,6 +44,8 @@ class AnnotationCanvas(QGraphicsView):
         super().__init__()
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
+        self.setBackgroundBrush(QBrush(QColor("#111215")))
+        self.setStyleSheet("border: none; background: #111215;")
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
@@ -152,7 +154,11 @@ class AnnotationCanvas(QGraphicsView):
                     FusionStatus.CONFLICT: "#e53935",
                     FusionStatus.REJECTED: "#757575",
                 }[fusion_status]
-            item.setPen(QPen(QColor(color), 2))
+            qcol = QColor(color)
+            item.setPen(QPen(qcol, 2))
+            fill_col = QColor(qcol)
+            fill_col.setAlpha(30)
+            item.setBrush(QBrush(fill_col))
             status_text = fusion_status.value.replace("_", " ").title() if fusion_status else ""
             suffix = f" | {status_text}" if status_text else ""
             item.setToolTip(
