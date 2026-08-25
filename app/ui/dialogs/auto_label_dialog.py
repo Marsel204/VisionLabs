@@ -462,6 +462,7 @@ class AutoLabelDialog(QDialog):
         current_image_path: Path | None = None,
         engine: AutoLabelEngine | None = None,
         initial_classes: Sequence[AutoLabelClass] | None = None,
+        ground_truth: dict[Path, AnnotationDocument] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -471,6 +472,7 @@ class AutoLabelDialog(QDialog):
         self.setMinimumSize(1060, 660)
 
         self.image_paths = list(image_paths)
+        self.ground_truth = ground_truth or {}
 
         # Initialize primary image + up to 3 diverse sample images
         if self.image_paths:
@@ -739,6 +741,12 @@ class AutoLabelDialog(QDialog):
         self.preview_mix_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.preview_mix_btn.clicked.connect(self._run_single_preview)
 
+        self.ai_tuner_btn = QPushButton("✨ AI Auto-Tune")
+        self.ai_tuner_btn.setObjectName("AITunerTopBtn")
+        self.ai_tuner_btn.setToolTip("Autonomous Prompt & Setting Optimizer using Vision LLM")
+        self.ai_tuner_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ai_tuner_btn.clicked.connect(self._open_ai_tuner_dialog)
+
         row1.addWidget(self.model_combo, 0)
         row1.addWidget(self.model_badge, 0)
         row1.addWidget(self.yolo_weights_btn, 0)
@@ -746,6 +754,7 @@ class AutoLabelDialog(QDialog):
         row1.addLayout(conf_container)
         row1.addLayout(iou_container)
         row1.addWidget(self.preview_mix_btn, 0)
+        row1.addWidget(self.ai_tuner_btn, 0)
 
         # Row 2: Detector Pill Checkboxes
         row2 = QHBoxLayout()
@@ -1413,6 +1422,18 @@ class AutoLabelDialog(QDialog):
             QPushButton#PreviewMixTopBtn:hover {
                 background-color: #4338ca;
             }
+            QPushButton#AITunerTopBtn {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #8b5cf6, stop:1 #ec4899);
+                border: none;
+                border-radius: 6px;
+                color: #ffffff;
+                font-size: 11px;
+                font-weight: 700;
+                padding: 5px 12px;
+            }
+            QPushButton#AITunerTopBtn:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #7c3aed, stop:1 #db2777);
+            }
 
             /* --- Stage Frame & View Switcher --- */
             QFrame#StageFrame {
@@ -1848,6 +1869,40 @@ class AutoLabelDialog(QDialog):
         finally:
             self._is_previewing = False
             self.inline_progress.setVisible(False)
+
+    def _open_ai_tuner_dialog(self) -> None:
+        """Open the interactive AI Auto-Tuner modal."""
+        if not self.preview_image_paths:
+            QMessageBox.warning(self, "No Images", "Please load at least one sample image to tune.")
+            return
+
+        from app.ui.dialogs.ai_tuner_dialog import AITunerDialog
+
+        dialog = AITunerDialog(
+            sample_images=self.preview_image_paths,
+            ground_truth=self.ground_truth,
+            current_config=self._get_current_config(),
+            engine=self.engine,
+            parent=self,
+        )
+        dialog.tuning_applied.connect(self._apply_tuned_config)
+        dialog.exec()
+
+    def _apply_tuned_config(self, tuned_config: AutoLabelConfig) -> None:
+        """Apply tuned prompts and hyperparameters to the UI and re-run preview."""
+        self.classes = [
+            AutoLabelClass(c.name, c.prompt, c.color, c.enabled)
+            for c in tuned_config.classes
+        ]
+        self._rebuild_class_cards()
+
+        conf_val = int(round(tuned_config.confidence_threshold * 100))
+        iou_val = int(round(tuned_config.box_iou_threshold * 100))
+        self.conf_slider.setValue(conf_val)
+        self.iou_slider.setValue(iou_val)
+
+        self.result_stats_label.setText("✨ AI Tuned Settings applied! Re-evaluating sample preview...")
+        self._run_single_preview()
 
     def _apply_preview_to_image(self) -> None:
         """Approve and apply annotations from the preview."""

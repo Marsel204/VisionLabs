@@ -2029,6 +2029,7 @@ class MainWindow(QMainWindow):
             current_image_path=current_path,
             engine=engine,
             initial_classes=initial_classes,
+            ground_truth=self._project_documents,
             parent=self,
         )
         dialog.preview_applied.connect(self._on_auto_label_preview_applied)
