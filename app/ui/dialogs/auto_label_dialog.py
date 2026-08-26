@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import logging
 import random
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from PIL import Image
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QThread, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -463,7 +463,7 @@ class CherryPickDialog(QDialog):
 
 
 _THUMBNAIL_BASE_CACHE: OrderedDict[Path, QPixmap] = OrderedDict()
-_MAX_THUMBNAIL_CACHE_SIZE = 500
+_MAX_THUMBNAIL_CACHE_SIZE = 2000
 _DEFAULT_AUTOLABEL_ICON: QIcon | None = None
 
 
@@ -843,6 +843,7 @@ class AutoLabelDialog(QDialog):
         self.image_list.setWordWrap(False)
         self.image_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.image_list.setMinimumHeight(150)
+        self.image_list.verticalScrollBar().valueChanged.connect(self._load_visible_autolabel_thumbnails)
         self._populate_image_list()
         self.image_list.itemClicked.connect(self._on_preview_image_clicked)
         self.image_list.itemSelectionChanged.connect(self._on_preview_image_selected)
@@ -1185,7 +1186,92 @@ class AutoLabelDialog(QDialog):
         painter.end()
         return QIcon(pixmap)
 
+    def _ensure_autolabel_item_thumbnail(self, item: QListWidgetItem) -> None:
+        """Ensure thumbnail icon is rendered and set for the given item."""
+        path_str = item.data(Qt.ItemDataRole.UserRole)
+        if not path_str:
+            return
+        p = Path(path_str)
+        if p in self._autolabel_rendered_paths:
+            return
+        self._autolabel_rendered_paths.add(p)
+        is_preview = p in self.preview_image_paths
+        slot = (self.preview_image_paths.index(p) + 1) if is_preview else 0
+        item.setIcon(self._create_thumbnail_icon(p, is_preview, slot))
+
+    def _load_visible_autolabel_thumbnails(self) -> None:
+        """Immediately render thumbnails for all items currently visible in preview list viewport."""
+        if not hasattr(self, "image_list") or not hasattr(self, "_autolabel_items_by_path") or not self._autolabel_items_by_path:
+            return
+        viewport_rect = self.image_list.viewport().rect()
+        if not viewport_rect.isValid() or viewport_rect.isEmpty():
+            for idx in range(min(40, self.image_list.count())):
+                item = self.image_list.item(idx)
+                if item is not None:
+                    self._ensure_autolabel_item_thumbnail(item)
+            return
+
+        count = self.image_list.count()
+        first_visible = -1
+        last_visible = -1
+        for row in range(count):
+            rect = self.image_list.visualRect(self.image_list.model().index(row, 0))
+            if rect.bottom() >= 0 and rect.top() <= viewport_rect.bottom():
+                if first_visible == -1:
+                    first_visible = row
+                last_visible = row
+            elif first_visible != -1 and rect.top() > viewport_rect.bottom():
+                break
+
+        if first_visible == -1:
+            first_visible = 0
+            last_visible = min(count - 1, 40)
+
+        start_row = max(0, first_visible - 10)
+        end_row = min(count, last_visible + 15)
+        for row in range(start_row, end_row):
+            item = self.image_list.item(row)
+            if item is not None:
+                self._ensure_autolabel_item_thumbnail(item)
+
+    def _start_autolabel_background_loader(self) -> None:
+        """Progressively render remaining unrendered images in preview list."""
+        if not hasattr(self, "_autolabel_unrendered_queue") or not self._autolabel_unrendered_queue:
+            return
+        if not hasattr(self, "_autolabel_batch_timer") or self._autolabel_batch_timer is None:
+            self._autolabel_batch_timer = QTimer(self)
+            self._autolabel_batch_timer.setInterval(10)
+            self._autolabel_batch_timer.timeout.connect(self._process_autolabel_background_batch)
+        if not self._autolabel_batch_timer.isActive():
+            self._autolabel_batch_timer.start()
+
+    def _process_autolabel_background_batch(self) -> None:
+        """Process a small batch of unrendered thumbnails in the background."""
+        if not self._autolabel_unrendered_queue:
+            if self._autolabel_batch_timer and self._autolabel_batch_timer.isActive():
+                self._autolabel_batch_timer.stop()
+            return
+        batch_size = 20
+        processed = 0
+        while self._autolabel_unrendered_queue and processed < batch_size:
+            path = self._autolabel_unrendered_queue.popleft()
+            if path in self._autolabel_rendered_paths:
+                continue
+            item = self._autolabel_items_by_path.get(path)
+            if item is not None:
+                self._ensure_autolabel_item_thumbnail(item)
+                processed += 1
+        if not self._autolabel_unrendered_queue and self._autolabel_batch_timer and self._autolabel_batch_timer.isActive():
+            self._autolabel_batch_timer.stop()
+
     def _populate_image_list(self, filter_text: str = "") -> None:
+        if hasattr(self, "_autolabel_batch_timer") and self._autolabel_batch_timer and self._autolabel_batch_timer.isActive():
+            self._autolabel_batch_timer.stop()
+
+        self._autolabel_rendered_paths: set[Path] = set()
+        self._autolabel_items_by_path: dict[Path, QListWidgetItem] = {}
+        self._autolabel_unrendered_queue: deque[Path] = deque()
+
         self.image_list.setUpdatesEnabled(False)
         self.image_list.blockSignals(True)
         self.image_list.clear()
@@ -1210,17 +1296,20 @@ class AutoLabelDialog(QDialog):
         for idx, img_path in enumerate(ordered_paths):
             if filter_lower and filter_lower not in img_path.name.lower():
                 continue
+            self._autolabel_unrendered_queue.append(img_path)
             is_preview = img_path in self.preview_image_paths
             slot = (self.preview_image_paths.index(img_path) + 1) if is_preview else 0
             item = QListWidgetItem()
             if is_preview or idx < eager_limit or img_path in _THUMBNAIL_BASE_CACHE:
                 item.setIcon(self._create_thumbnail_icon(img_path, is_preview, slot))
+                self._autolabel_rendered_paths.add(img_path)
             else:
                 item.setIcon(default_icon)
             prefix = f"★ [Sample {slot}] " if is_preview else ""
             item.setToolTip(f"{prefix}{img_path.name}")
             item.setData(Qt.ItemDataRole.UserRole, str(img_path))
             self.image_list.addItem(item)
+            self._autolabel_items_by_path[img_path] = item
             if self.current_image_path and img_path == self.current_image_path:
                 selected_idx = visible_idx
             visible_idx += 1
@@ -1229,6 +1318,9 @@ class AutoLabelDialog(QDialog):
             self.image_list.setCurrentRow(selected_idx)
         self.image_list.blockSignals(False)
         self.image_list.setUpdatesEnabled(True)
+
+        self._load_visible_autolabel_thumbnails()
+        self._start_autolabel_background_loader()
 
     def _filter_image_list(self, text: str) -> None:
         self._populate_image_list(text)
@@ -1263,8 +1355,7 @@ class AutoLabelDialog(QDialog):
                 self.current_image_path = p
                 is_preview = p in self.preview_image_paths
                 slot = (self.preview_image_paths.index(p) + 1) if is_preview else 0
-                if p not in _THUMBNAIL_BASE_CACHE:
-                    item.setIcon(self._create_thumbnail_icon(p, is_preview, slot))
+                self._ensure_autolabel_item_thumbnail(item)
                 if is_preview:
                     self._on_card_zoomed(p)
 

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from pathlib import Path
 
-from PySide6.QtCore import QRect, QSize, Qt, Signal
+from PySide6.QtCore import QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -15,13 +15,15 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
     QPixmap,
+    QResizeEvent,
+    QShowEvent,
 )
 from PySide6.QtWidgets import QListView, QListWidget, QListWidgetItem
 
 _BASE_IMAGE_CACHE: OrderedDict[Path, QPixmap] = OrderedDict()
-_MAX_BASE_CACHE_SIZE = 500
+_MAX_BASE_CACHE_SIZE = 2000
 _ICON_CACHE: OrderedDict[tuple[Path, int], QIcon] = OrderedDict()
-_MAX_ICON_CACHE_SIZE = 500
+_MAX_ICON_CACHE_SIZE = 2000
 _DEFAULT_ICON: QIcon | None = None
 
 
@@ -65,6 +67,10 @@ class ImageBrowser(QListWidget):
         self.itemSelectionChanged.connect(self._emit_selection)
         self._annotation_counts: dict[Path, int] = {}
         self._items_by_path: dict[Path, QListWidgetItem] = {}
+        self._rendered_paths: set[Path] = set()
+        self._unrendered_queue: deque[Path] = deque()
+        self._batch_timer: QTimer | None = None
+        self.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
 
     @staticmethod
     def _get_base_thumbnail(path: Path, target_size: int = 60) -> QPixmap:
@@ -165,12 +171,115 @@ class ImageBrowser(QListWidget):
         _ICON_CACHE[cache_key] = icon
         return icon
 
+    def _ensure_item_thumbnail(self, item: QListWidgetItem) -> None:
+        """Ensure thumbnail icon is rendered and set for the given item."""
+        path_str = item.data(256)
+        if not path_str:
+            return
+        path = Path(path_str)
+        if path in self._rendered_paths:
+            return
+        self._rendered_paths.add(path)
+        count = self._annotation_counts.get(path, 0)
+        item.setIcon(self._create_thumbnail_icon(path, count))
+
+    def _load_visible_thumbnails(self) -> None:
+        """Immediately render thumbnails for all items currently visible in viewport + margin."""
+        if not self._items_by_path:
+            return
+
+        viewport_rect = self.viewport().rect()
+        if not viewport_rect.isValid() or viewport_rect.isEmpty():
+            for idx in range(min(40, self.count())):
+                item = self.item(idx)
+                if item is not None:
+                    self._ensure_item_thumbnail(item)
+            return
+
+        count = self.count()
+        first_visible = -1
+        last_visible = -1
+
+        for row in range(count):
+            rect = self.visualRect(self.model().index(row, 0))
+            if rect.bottom() >= 0 and rect.top() <= viewport_rect.bottom():
+                if first_visible == -1:
+                    first_visible = row
+                last_visible = row
+            elif first_visible != -1 and rect.top() > viewport_rect.bottom():
+                break
+
+        if first_visible == -1:
+            first_visible = 0
+            last_visible = min(count - 1, 40)
+
+        start_row = max(0, first_visible - 10)
+        end_row = min(count, last_visible + 15)
+
+        for row in range(start_row, end_row):
+            item = self.item(row)
+            if item is not None:
+                self._ensure_item_thumbnail(item)
+
+    def _start_background_loader(self) -> None:
+        """Progressively render remaining unrendered images in idle batches."""
+        if not self._unrendered_queue:
+            return
+        if self._batch_timer is None:
+            self._batch_timer = QTimer(self)
+            self._batch_timer.setInterval(10)
+            self._batch_timer.timeout.connect(self._process_background_batch)
+        if not self._batch_timer.isActive():
+            self._batch_timer.start()
+
+    def _process_background_batch(self) -> None:
+        """Process a small batch of unrendered thumbnails in the background."""
+        if not self._unrendered_queue:
+            if self._batch_timer and self._batch_timer.isActive():
+                self._batch_timer.stop()
+            return
+
+        batch_size = 20
+        processed = 0
+        while self._unrendered_queue and processed < batch_size:
+            path = self._unrendered_queue.popleft()
+            if path in self._rendered_paths:
+                continue
+            item = self._items_by_path.get(path)
+            if item is not None:
+                self._ensure_item_thumbnail(item)
+                processed += 1
+
+        if not self._unrendered_queue and self._batch_timer and self._batch_timer.isActive():
+            self._batch_timer.stop()
+
+    def _on_scroll_changed(self, _value: int) -> None:
+        self._load_visible_thumbnails()
+
+    def scrollContentsBy(self, dx: int, dy: int) -> None:
+        super().scrollContentsBy(dx, dy)
+        self._load_visible_thumbnails()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._load_visible_thumbnails()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        self._load_visible_thumbnails()
+
     def set_paths(
         self, paths: list[Path], annotation_counts: dict[Path, int] | None = None
     ) -> None:
         """Replace visible paths with thumbnail cards without blocking on massive datasets."""
+        if self._batch_timer and self._batch_timer.isActive():
+            self._batch_timer.stop()
+
         self._annotation_counts = annotation_counts or {}
         self._items_by_path.clear()
+        self._rendered_paths.clear()
+        self._unrendered_queue = deque(paths)
+
         self.setUpdatesEnabled(False)
         self.blockSignals(True)
         self.clear()
@@ -183,6 +292,7 @@ class ImageBrowser(QListWidget):
             item = QListWidgetItem()
             if idx < eager_limit or count > 0 or path in _BASE_IMAGE_CACHE:
                 item.setIcon(self._create_thumbnail_icon(path, count))
+                self._rendered_paths.add(path)
             else:
                 item.setIcon(default_icon)
             ann_note = f" ({count} annotations)" if count > 0 else " (unannotated)"
@@ -194,6 +304,9 @@ class ImageBrowser(QListWidget):
         self.blockSignals(False)
         self.setUpdatesEnabled(True)
 
+        self._load_visible_thumbnails()
+        self._start_background_loader()
+
     def update_annotation_count(self, path: Path, count: int) -> None:
         """In-place O(1) thumbnail badge update for a single image without resetting the list."""
         if self._annotation_counts.get(path) == count:
@@ -201,6 +314,7 @@ class ImageBrowser(QListWidget):
         self._annotation_counts[path] = count
         item = self._items_by_path.get(path)
         if item is not None:
+            self._rendered_paths.add(path)
             item.setIcon(self._create_thumbnail_icon(path, count))
             ann_note = f" ({count} annotations)" if count > 0 else " (unannotated)"
             item.setToolTip(f"{path.name}{ann_note}")
@@ -208,8 +322,8 @@ class ImageBrowser(QListWidget):
     def _emit_selection(self) -> None:
         item = self.currentItem()
         if item is not None:
-            path = Path(item.data(256))
-            count = self._annotation_counts.get(path, 0)
-            if path not in _BASE_IMAGE_CACHE:
-                item.setIcon(self._create_thumbnail_icon(path, count))
-            self.image_selected.emit(path)
+            path_str = item.data(256)
+            if path_str:
+                path = Path(path_str)
+                self._ensure_item_thumbnail(item)
+                self.image_selected.emit(path)
