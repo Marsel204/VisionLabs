@@ -466,12 +466,21 @@ class AutoLabelEngine:
                     # Refine bounding box from polygon bounds
                     xs = [pt[0] for pt in poly_norm]
                     ys = [pt[1] for pt in poly_norm]
-                    refined_box = BoundingBox(
-                        left=min(xs),
-                        top=min(ys),
-                        right=max(xs),
-                        bottom=max(ys),
-                    )
+                    min_x = max(0.0, min(1.0, float(min(xs))))
+                    min_y = max(0.0, min(1.0, float(min(ys))))
+                    max_x = max(0.0, min(1.0, float(max(xs))))
+                    max_y = max(0.0, min(1.0, float(max(ys))))
+                    if min_x >= max_x or min_y >= max_y:
+                        if xmin_n >= xmax_n or ymin_n >= ymax_n:
+                            continue
+                        refined_box = BoundingBox(xmin_n, ymin_n, xmax_n, ymax_n)
+                    else:
+                        refined_box = BoundingBox(
+                            left=min_x,
+                            top=min_y,
+                            right=max_x,
+                            bottom=max_y,
+                        )
                 else:
                     if xmin_n >= xmax_n or ymin_n >= ymax_n:
                         continue

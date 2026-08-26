@@ -104,3 +104,32 @@ def test_image_browser_scroll_rendering(sample_dataset: list[Path], qapp: QAppli
 
     last_item_path = sample_dataset[-1]
     assert last_item_path in browser._rendered_paths
+
+
+def test_image_browser_remove_path_and_signals(
+    sample_dataset: list[Path], qapp: QApplication
+) -> None:
+    """Test removing path from image browser in-place and emitting delete signals."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QKeyEvent
+
+    browser = ImageBrowser()
+    browser.set_paths(sample_dataset[:5])
+    assert browser.count() == 5
+
+    deleted_paths = []
+    browser.delete_requested.connect(lambda p: deleted_paths.append(p))
+
+    # Test in-place removal
+    target = sample_dataset[2]
+    browser.remove_path(target)
+    assert browser.count() == 4
+    assert target not in browser._items_by_path
+
+    # Test keyPressEvent with Delete key
+    browser.setCurrentRow(0)
+    event = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Delete, Qt.KeyboardModifier.NoModifier)
+    browser.keyPressEvent(event)
+    assert len(deleted_paths) == 1
+    assert deleted_paths[0] == sample_dataset[0]
+

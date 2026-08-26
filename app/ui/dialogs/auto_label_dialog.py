@@ -701,6 +701,7 @@ class AutoLabelDialog(QDialog):
 
         self._init_ui()
         self._render_initial_images()
+        self._set_preview_view_mode(0)
 
     def _init_ui(self) -> None:
         root_layout = QVBoxLayout(self)
@@ -1382,18 +1383,23 @@ class AutoLabelDialog(QDialog):
     def _set_preview_view_mode(self, mode: int) -> None:
         """Mode 0: 4-Grid View, Mode 1: Focused Single View."""
         self.preview_views_stack.setCurrentIndex(mode)
+        num_samples = len(self.preview_image_paths)
         if mode == 0:
             self.grid_view_btn.setObjectName("ViewModeBtnActive")
             self.single_view_btn.setObjectName("ViewModeBtn")
             for btn in self.sample_tab_buttons:
                 btn.setVisible(False)
-            self.apply_btn.setText("✔ Apply to 4 Samples")
-            self.apply_btn.setToolTip("Apply annotations across all 4 sample images in the preview grid")
+            if num_samples <= 1:
+                self.apply_btn.setText("✔ Apply to Current Image")
+                self.apply_btn.setToolTip("Apply annotations to the active sample image")
+            else:
+                self.apply_btn.setText(f"✔ Apply to {num_samples} Samples")
+                self.apply_btn.setToolTip(f"Apply annotations across all {num_samples} sample images in the preview grid")
         else:
             self.grid_view_btn.setObjectName("ViewModeBtn")
             self.single_view_btn.setObjectName("ViewModeBtnActive")
             for i, btn in enumerate(self.sample_tab_buttons):
-                btn.setVisible(i < len(self.preview_image_paths))
+                btn.setVisible(i < num_samples)
             self.apply_btn.setText("✔ Apply to Current Image")
             self.apply_btn.setToolTip("Apply annotations ONLY to this single focused sample image")
         self.grid_view_btn.setStyle(self.grid_view_btn.style())
@@ -2296,115 +2302,161 @@ class AutoLabelDialog(QDialog):
         In Focused View: applies ONLY to the currently focused sample image.
         In 4-Grid View: applies to all previewed sample images.
         """
-        if not self._latest_results and not self._latest_result:
-            QMessageBox.information(
-                self,
-                "No Preview Ready",
-                "Please click '⚡ Preview Mix' first to preview before approving.",
-            )
-            return
-
-        from app.services.annotation.domain import (
-            TARGET_CLASSES,
-            Annotation,
-            AnnotationDocument,
-            AnnotationSource,
-        )
-        from app.services.auto_label.engine import compute_box_iou
-
-        is_focused_view = self.preview_views_stack.currentIndex() == 1
-
-        if is_focused_view:
-            if not self.current_image_path:
-                return
-            res = self._latest_results.get(self.current_image_path, self._latest_result)
-            if res is None:
+        try:
+            if not self._latest_results and not self._latest_result:
                 QMessageBox.information(
                     self,
-                    "No Preview",
-                    f"No preview result available for {self.current_image_path.name}.",
+                    "No Preview Ready",
+                    "Please click '⚡ Preview Mix' first to preview before approving.",
                 )
                 return
-            results_to_apply = {self.current_image_path: res}
-        else:
-            results_to_apply = dict(self._latest_results)
-            if not results_to_apply and self._latest_result and self.current_image_path:
-                results_to_apply[self.current_image_path] = self._latest_result
 
-        updated_docs: dict[Path, AnnotationDocument] = {}
-        total_applied_boxes = 0
+            from app.services.annotation.domain import (
+                TARGET_CLASSES,
+                Annotation,
+                AnnotationDocument,
+                AnnotationSource,
+                BoundingBox,
+            )
+            from app.services.auto_label.engine import compute_box_iou
 
-        for img_path, res in results_to_apply.items():
-            existing_doc = self.ground_truth.get(img_path)
-            existing_anns = list(existing_doc.annotations) if existing_doc else []
-            new_anns = list(existing_anns)
+            is_focused_view = self.preview_views_stack.currentIndex() == 1
 
-            for det in res.detections:
-                if det.class_name not in TARGET_CLASSES:
-                    continue
-                # Avoid duplicate annotations
-                if any(
-                    ex.class_name == det.class_name
-                    and compute_box_iou(ex.box, det.box) >= 0.50
-                    for ex in existing_anns
-                ):
-                    continue
-                source = (
-                    AnnotationSource.SAM2
-                    if det.polygon_normalized
-                    else AnnotationSource.GROUNDING_DINO
-                )
-                new_anns.append(
-                    Annotation(
-                        class_name=det.class_name,
-                        box=det.box,
-                        confidence=det.confidence,
-                        source=source,
+            if is_focused_view:
+                if not self.current_image_path:
+                    return
+                res = self._latest_results.get(self.current_image_path, self._latest_result)
+                if res is None:
+                    QMessageBox.information(
+                        self,
+                        "No Preview",
+                        f"No preview result available for {self.current_image_path.name}.",
                     )
+                    return
+                results_to_apply = {self.current_image_path: res}
+            else:
+                results_to_apply = dict(self._latest_results)
+                if not results_to_apply and self._latest_result and self.current_image_path:
+                    results_to_apply[self.current_image_path] = self._latest_result
+
+            if not results_to_apply:
+                QMessageBox.information(
+                    self,
+                    "No Preview Ready",
+                    "Please click '⚡ Preview Mix' first to preview before approving.",
                 )
-                total_applied_boxes += 1
+                return
 
-            w = res.image_width or (existing_doc.image_width if existing_doc else 640)
-            h = res.image_height or (existing_doc.image_height if existing_doc else 480)
-            updated_doc = AnnotationDocument(
-                image_path=img_path,
-                image_width=w,
-                image_height=h,
-                annotations=tuple(new_anns),
-            )
-            updated_docs[img_path] = updated_doc
+            updated_docs: dict[Path, AnnotationDocument] = {}
+            total_applied_boxes = 0
 
-        # Update in-memory ground truth dictionary in dialog
-        self.ground_truth.update(updated_docs)
+            for img_path, res in results_to_apply.items():
+                existing_doc = self.ground_truth.get(img_path)
+                existing_anns = list(existing_doc.annotations) if existing_doc else []
+                new_anns = list(existing_anns)
 
-        # Notify MainWindow to update its dataset documents and canvas
-        self.batch_completed.emit(updated_docs)
+                for det in res.detections:
+                    if det.class_name not in TARGET_CLASSES:
+                        continue
+                    # Safely validate and clamp bounding box
+                    try:
+                        box = det.box
+                        left = max(0.0, min(1.0, float(box.left)))
+                        top = max(0.0, min(1.0, float(box.top)))
+                        right = max(0.0, min(1.0, float(box.right)))
+                        bottom = max(0.0, min(1.0, float(box.bottom)))
+                        if left >= right or top >= bottom:
+                            continue
+                        safe_box = BoundingBox(left, top, right, bottom)
+                    except Exception:
+                        continue
 
-        # Emit preview_applied for current image if available
-        if self.current_image_path in results_to_apply:
-            self.preview_applied.emit(results_to_apply[self.current_image_path])
+                    # Avoid duplicate annotations
+                    if any(
+                        ex.class_name == det.class_name
+                        and compute_box_iou(ex.box, safe_box) >= 0.50
+                        for ex in new_anns
+                    ):
+                        continue
 
-        if is_focused_view:
-            self.result_stats_label.setText(
-                f"✔ Applied {total_applied_boxes} annotations to {self.current_image_path.name}!"
-            )
-            QMessageBox.information(
+                    conf = det.confidence
+                    if conf is not None:
+                        conf = max(0.0, min(1.0, float(conf)))
+
+                    source = (
+                        AnnotationSource.SAM2
+                        if det.polygon_normalized
+                        else AnnotationSource.GROUNDING_DINO
+                    )
+                    new_anns.append(
+                        Annotation(
+                            class_name=det.class_name,
+                            box=safe_box,
+                            confidence=conf,
+                            source=source,
+                        )
+                    )
+                    total_applied_boxes += 1
+
+                w = res.image_width or (existing_doc.image_width if existing_doc else 640)
+                h = res.image_height or (existing_doc.image_height if existing_doc else 480)
+                try:
+                    with Image.open(img_path) as im:
+                        w, h = im.width, im.height
+                except Exception:
+                    pass
+
+                updated_doc = AnnotationDocument(
+                    image_path=img_path,
+                    image_width=w,
+                    image_height=h,
+                    annotations=tuple(new_anns),
+                )
+                updated_docs[img_path] = updated_doc
+
+            # Update in-memory ground truth dictionary in dialog
+            self.ground_truth.update(updated_docs)
+
+            # Notify MainWindow to update its dataset documents and canvas
+            self.batch_completed.emit(updated_docs)
+
+            # Emit preview_applied for current image if available
+            if self.current_image_path in results_to_apply:
+                self.preview_applied.emit(results_to_apply[self.current_image_path])
+
+            if is_focused_view or len(results_to_apply) == 1:
+                target_name = (
+                    self.current_image_path.name
+                    if self.current_image_path
+                    else next(iter(results_to_apply.keys())).name
+                )
+                self.result_stats_label.setText(
+                    f"✔ Applied {total_applied_boxes} annotations to {target_name}!"
+                )
+                QMessageBox.information(
+                    self,
+                    "Applied to Current Image",
+                    f"Successfully applied {total_applied_boxes} annotation(s) to:\n"
+                    f"{target_name}\n\n"
+                    "Saved as Ground Truth reference for AI Auto-Tuning.",
+                )
+            else:
+                self.result_stats_label.setText(
+                    f"✔ Applied {total_applied_boxes} annotations to {len(updated_docs)} sample images!"
+                )
+                QMessageBox.information(
+                    self,
+                    "Applied to Samples",
+                    f"Successfully applied {total_applied_boxes} annotation(s) across "
+                    f"{len(updated_docs)} sample image(s)!\n\n"
+                    "These samples are now stored as Ground Truth references for AI Auto-Tuning.",
+                )
+        except Exception as err:
+            LOGGER.exception("Failed to apply preview annotations: %s", err)
+            QMessageBox.critical(
                 self,
-                "Applied to Current Image",
-                f"Successfully applied {total_applied_boxes} annotation(s) to:\n"
-                f"{self.current_image_path.name}\n\n"
-                "Saved as Ground Truth reference for AI Auto-Tuning.",
-            )
-        else:
-            self.result_stats_label.setText(
-                f"✔ Applied {total_applied_boxes} annotations to {len(updated_docs)} sample images!"
-            )
-            QMessageBox.information(
-                self,
-                "Applied to Samples",
-                f"Successfully applied {total_applied_boxes} annotation(s) across "
-                f"{len(updated_docs)} sample image(s)!\n\n"
-                "These samples are now stored as Ground Truth references for AI Auto-Tuning.",
+                "Apply Error",
+                f"An error occurred while applying annotations:\n{err}",
             )
 
     def _run_batch_auto_label(self, wait: bool = False) -> None:

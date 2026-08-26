@@ -14,7 +14,6 @@ from app.services.annotation.domain import AnnotationDocument, BoundingBox
 from app.services.auto_label.engine import AutoLabelEngine
 from app.services.auto_label.models import (
     AutoLabelClass,
-    AutoLabelConfig,
     AutoLabelDetection,
     AutoLabelPipelineMode,
     AutoLabelResult,
@@ -242,3 +241,188 @@ def test_main_window_auto_label_action_and_handler(
         }
         window._open_auto_label_dialog()
         mock_exec.assert_called_once()
+
+
+def test_auto_label_single_picture_apply_flow(sample_images: list[Path], qapp: QApplication) -> None:
+    """Test full workflow for 1 picture: preview -> apply -> MainWindow document and canvas updated."""
+    settings = AppSettings()
+    window = MainWindow(settings.fusion, settings.active_learning)
+    single_image = sample_images[0]
+    initial_doc = AnnotationDocument(single_image, 640, 480)
+    window._project_documents = {single_image: initial_doc}
+    window._load_image(single_image)
+
+    mock_engine = MagicMock(spec=AutoLabelEngine)
+    sample_result = AutoLabelResult(
+        image_path=single_image,
+        image_width=640,
+        image_height=480,
+        detections=[
+            AutoLabelDetection(
+                class_name="motorcycle",
+                confidence=0.88,
+                box=BoundingBox(0.2, 0.2, 0.6, 0.6),
+                color="#ff9800",
+            ),
+            # Invalid out of bounds / degenerate box that should be safely handled
+            AutoLabelDetection(
+                class_name="motorcycle",
+                confidence=0.75,
+                box=BoundingBox(0.1, 0.1, 0.15, 0.15),
+                color="#ff9800",
+            ),
+        ],
+        elapsed_seconds=0.10,
+    )
+    mock_engine.run_preview.return_value = sample_result
+
+    dialog = AutoLabelDialog(
+        image_paths=[single_image],
+        current_image_path=single_image,
+        engine=mock_engine,
+        ground_truth=window._project_documents,
+        parent=window,
+    )
+    dialog.batch_completed.connect(window._on_auto_label_batch_completed)
+
+    # 1. Preview
+    dialog._run_single_preview()
+    assert dialog.apply_btn.text() == "✔ Apply to Current Image"
+
+    # 2. Apply annotation for the 1 picture
+    with patch("PySide6.QtWidgets.QMessageBox.information"):
+        dialog._apply_preview_to_image()
+
+    # 3. Verify MainWindow state
+    assert len(window._document.annotations) == 2
+    assert window._document.annotations[0].class_name == "motorcycle"
+    assert single_image in window._project_documents
+    assert len(window._project_documents[single_image].annotations) == 2
+
+    # Verify history undo works cleanly
+    assert window._history.can_undo
+    window._undo_annotation_edit()
+    assert len(window._document.annotations) == 0
+
+
+def test_image_browser_fast_path_refresh(sample_images: list[Path], qapp: QApplication) -> None:
+    """Verify _refresh_image_browser_order uses fast-path in-place updates when ordering is unchanged."""
+    settings = AppSettings()
+    window = MainWindow(settings.fusion, settings.active_learning)
+    single_image = sample_images[0]
+    window._project_documents = {single_image: AnnotationDocument(single_image, 640, 480)}
+    window._load_image(single_image)
+    window.image_browser.set_paths([single_image], {single_image: 0})
+
+    with patch.object(window.image_browser, "set_paths") as mock_set_paths:
+        with patch.object(window.image_browser, "update_annotation_count") as mock_update_count:
+            window._refresh_image_browser_order(preserve_current=True)
+            # Ordering is unchanged, should call update_annotation_count and NOT rebuild list via set_paths
+            mock_update_count.assert_called_once_with(single_image, 0)
+            mock_set_paths.assert_not_called()
+
+
+def test_auto_label_apply_idempotent_and_empty_handling(
+    sample_images: list[Path], qapp: QApplication
+) -> None:
+    """Verify applying preview multiple times does not create duplicates and handles empty preview safely."""
+    dialog = AutoLabelDialog(image_paths=[sample_images[0]])
+    dialog._latest_results = {}
+    dialog._latest_result = None
+
+    # Apply with no preview ready
+    with patch("PySide6.QtWidgets.QMessageBox.information") as mock_info:
+        dialog._apply_preview_to_image()
+        mock_info.assert_called_once()
+
+    # Now set preview with detections and apply twice
+    sample_result = AutoLabelResult(
+        image_path=sample_images[0],
+        image_width=640,
+        image_height=480,
+        detections=[
+            AutoLabelDetection(
+                class_name="car",
+                confidence=0.95,
+                box=BoundingBox(0.1, 0.1, 0.5, 0.5),
+                color="#29b6f6",
+            )
+        ],
+        elapsed_seconds=0.05,
+    )
+    dialog._latest_results = {sample_images[0]: sample_result}
+    dialog._latest_result = sample_result
+
+    with patch("PySide6.QtWidgets.QMessageBox.information"):
+        dialog._apply_preview_to_image()
+        assert len(dialog.ground_truth[sample_images[0]].annotations) == 1
+
+        # Second apply of same preview does not duplicate the box
+        dialog._apply_preview_to_image()
+        assert len(dialog.ground_truth[sample_images[0]].annotations) == 1
+
+
+def test_main_window_delete_picture_from_database(
+    sample_images: list[Path], qapp: QApplication
+) -> None:
+    """Verify deleting picture from database updates project documents, disk, and canvas."""
+    from PySide6.QtWidgets import QMessageBox
+
+    settings = AppSettings()
+    window = MainWindow(settings.fusion, settings.active_learning)
+    img1, img2 = sample_images[0], sample_images[1]
+    window._project_documents = {
+        img1: AnnotationDocument(img1, 640, 480),
+        img2: AnnotationDocument(img2, 640, 480),
+    }
+    window.image_browser.set_paths([img1, img2], {img1: 0, img2: 0})
+    window._load_image(img1)
+
+    # 1. Cancel deletion via confirmation dialog
+    with patch("PySide6.QtWidgets.QMessageBox.question", return_value=QMessageBox.StandardButton.No):
+        result = window._delete_picture_from_database(img1, confirm=True)
+        assert result is False
+        assert img1 in window._project_documents
+        assert img1.exists()
+
+    # 2. Confirm deletion of img1
+    with patch("PySide6.QtWidgets.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+        result = window._delete_picture_from_database(img1, confirm=True)
+        assert result is True
+        assert img1 not in window._project_documents
+        assert not img1.exists()
+        assert window.image_browser.count() == 1
+        # MainWindow switches to remaining image
+        assert window._document is not None
+        assert window._document.image_path == img2
+
+    # 3. Delete the last remaining picture
+    result = window._delete_picture_from_database(img2, confirm=False)
+    assert result is True
+    assert img2 not in window._project_documents
+    assert not img2.exists()
+    assert window.image_browser.count() == 0
+    assert window._document is None
+    assert window._history is None
+    assert window.canvas._document is None
+
+
+def test_annotation_canvas_clear(sample_images: list[Path], qapp: QApplication) -> None:
+    """Verify AnnotationCanvas.clear() resets scene, document, and items."""
+    from app.ui.canvas.annotation_canvas import AnnotationCanvas
+
+    canvas = AnnotationCanvas()
+    img = sample_images[0]
+    doc = AnnotationDocument(img, 640, 480)
+    canvas.set_document(doc)
+    assert canvas._document is not None
+    assert canvas._image_item is not None
+
+    canvas.clear()
+    assert canvas._document is None
+    assert canvas._image_item is None
+    assert canvas._selected is None
+    assert len(canvas._annotation_items) == 0
+
+
+

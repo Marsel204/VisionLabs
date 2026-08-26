@@ -18,7 +18,7 @@ from PySide6.QtGui import (
     QResizeEvent,
     QShowEvent,
 )
-from PySide6.QtWidgets import QListView, QListWidget, QListWidgetItem
+from PySide6.QtWidgets import QListView, QListWidget, QListWidgetItem, QMenu
 
 _BASE_IMAGE_CACHE: OrderedDict[Path, QPixmap] = OrderedDict()
 _MAX_BASE_CACHE_SIZE = 2000
@@ -52,6 +52,7 @@ class ImageBrowser(QListWidget):
     """Paged image list that emits the selected path with modern thumbnail card presentation."""
 
     image_selected = Signal(Path)
+    delete_requested = Signal(Path)
 
     def __init__(self) -> None:
         super().__init__()
@@ -285,12 +286,12 @@ class ImageBrowser(QListWidget):
         self.clear()
 
         default_icon = _get_default_icon()
-        eager_limit = 40
+        eager_limit = 20
 
         for idx, path in enumerate(paths):
             count = self._annotation_counts.get(path, 0)
             item = QListWidgetItem()
-            if idx < eager_limit or count > 0 or path in _BASE_IMAGE_CACHE:
+            if path in _BASE_IMAGE_CACHE or idx < eager_limit:
                 item.setIcon(self._create_thumbnail_icon(path, count))
                 self._rendered_paths.add(path)
             else:
@@ -319,6 +320,42 @@ class ImageBrowser(QListWidget):
             ann_note = f" ({count} annotations)" if count > 0 else " (unannotated)"
             item.setToolTip(f"{path.name}{ann_note}")
 
+    def remove_path(self, path: Path) -> None:
+        """In-place removal of a single image from the browser without resetting the entire list."""
+        item = self._items_by_path.pop(path, None)
+        if item is not None:
+            row = self.row(item)
+            self.takeItem(row)
+        self._annotation_counts.pop(path, None)
+        self._rendered_paths.discard(path)
+        if path in self._unrendered_queue:
+            self._unrendered_queue = deque(p for p in self._unrendered_queue if p != path)
+
+    def contextMenuEvent(self, event: Any) -> None:
+        """Show context menu on right-click for the image item."""
+        item = self.itemAt(event.pos())
+        if item is None:
+            return
+        path_str = item.data(256)
+        if not path_str:
+            return
+        path = Path(path_str)
+        menu = QMenu(self)
+        delete_action = menu.addAction("🗑 Delete Picture from Database")
+        delete_action.triggered.connect(lambda: self.delete_requested.emit(path))
+        menu.exec(event.globalPos())
+
+    def keyPressEvent(self, event: Any) -> None:
+        """Handle Delete and Backspace keyboard shortcuts on the selected image."""
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            item = self.currentItem()
+            if item is not None:
+                path_str = item.data(256)
+                if path_str:
+                    self.delete_requested.emit(Path(path_str))
+                    return
+        super().keyPressEvent(event)
+
     def _emit_selection(self) -> None:
         item = self.currentItem()
         if item is not None:
@@ -327,3 +364,4 @@ class ImageBrowser(QListWidget):
                 path = Path(path_str)
                 self._ensure_item_thumbnail(item)
                 self.image_selected.emit(path)
+

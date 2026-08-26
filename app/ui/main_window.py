@@ -665,6 +665,7 @@ class MainWindow(QMainWindow):
         self.resizeDocks([classes_dock, images_dock], [200, 450], Qt.Orientation.Vertical)
         self._build_shortcuts()
         self.image_browser.image_selected.connect(self._load_image)
+        self.image_browser.delete_requested.connect(self._delete_picture_from_database)
         self.canvas.box_created.connect(self._add_box)
         self.canvas.box_selected.connect(self._select_annotation)
         self.canvas.box_resized.connect(self._resize_box)
@@ -733,6 +734,10 @@ class MainWindow(QMainWindow):
         delete_all_annotations.setShortcut("Ctrl+Shift+X")
         delete_all_annotations.setToolTip("Delete all annotations on current image (Ctrl+Shift+X)")
         delete_all_annotations.triggered.connect(self._delete_all_annotations)
+        delete_picture = QAction("Delete Picture from Database", self)
+        delete_picture.setShortcuts(["Ctrl+Delete", "Shift+Delete"])
+        delete_picture.setToolTip("Delete current picture from dataset database and disk (Ctrl+Delete)")
+        delete_picture.triggered.connect(lambda: self._delete_picture_from_database())
         toggle_occluded = QAction("Toggle Selected Occluded", self)
         toggle_occluded.triggered.connect(self._toggle_selected_occluded)
         toggle_truncated = QAction("Toggle Selected Truncated", self)
@@ -829,6 +834,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction(import_coco)
         file_menu.addAction(export_dataset)
         file_menu.addAction(save)
+        file_menu.addSeparator()
+        file_menu.addAction(delete_picture)
         view_menu = self.menuBar().addMenu("View")
         view_menu.addAction(draw_tool)
         view_menu.addAction(pan_tool)
@@ -863,6 +870,7 @@ class MainWindow(QMainWindow):
         annotation_menu.addAction(cleanup)
         annotation_menu.addAction(cleanup_dataset)
         annotation_menu.addAction(delete_all_annotations)
+        annotation_menu.addAction(delete_picture)
         annotation_menu.addAction(toggle_occluded)
         annotation_menu.addAction(toggle_truncated)
         annotation_menu.addAction(fusion_colors)
@@ -1100,14 +1108,26 @@ class MainWindow(QMainWindow):
         clean_row.addWidget(clean_db_btn, 1)
         review_layout.addLayout(clean_row)
 
+        delete_btn_row = QHBoxLayout()
+        delete_btn_row.setSpacing(6)
         delete_all_btn = QToolButton(self)
-        delete_all_btn.setText("🗑 Delete All Annotations")
+        delete_all_btn.setText("🗑 Clear Annotations")
         delete_all_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
         delete_all_btn.setToolTip(
             "Delete all bounding box annotations on the current image only (Ctrl+Shift+X)"
         )
         delete_all_btn.clicked.connect(self._delete_all_annotations)
-        review_layout.addWidget(delete_all_btn)
+        delete_btn_row.addWidget(delete_all_btn, 1)
+
+        delete_pic_btn = QToolButton(self)
+        delete_pic_btn.setText("🗑 Delete Picture")
+        delete_pic_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
+        delete_pic_btn.setToolTip(
+            "Delete active picture and its annotations from dataset database (Ctrl+Delete)"
+        )
+        delete_pic_btn.clicked.connect(lambda: self._delete_picture_from_database())
+        delete_btn_row.addWidget(delete_pic_btn, 1)
+        review_layout.addLayout(delete_btn_row)
 
         self._fusion_colors_btn = QToolButton(self)
         self._fusion_colors_btn.setText("🎨 Show Fusion Colors")
@@ -1350,6 +1370,8 @@ class MainWindow(QMainWindow):
         }
         self._project_root = None
         self._refresh_image_browser_order(preserve_current=False)
+        if paths:
+            self._load_image(paths[0])
         self.statusBar().showMessage(f"Imported {len(paths)} images")
 
     def _import_coco_dataset(self) -> None:
@@ -1492,6 +1514,9 @@ class MainWindow(QMainWindow):
             document.image_path: document for document in result.documents
         }
         self._refresh_image_browser_order(preserve_current=False)
+        if self._project_documents:
+            first_path = next(iter(self._project_documents.keys()))
+            self._load_image(first_path)
 
     @staticmethod
     def _new_project_path(parent: Path, stem: str) -> Path:
@@ -1744,9 +1769,17 @@ class MainWindow(QMainWindow):
             p: len(doc.annotations) for p, doc in self._project_documents.items() if doc
         }
 
-        self.image_browser.blockSignals(True)
+        # Fast path: If the paths in the browser already match sorted_paths,
+        # simply update the annotation count badges in-place without rebuilding the widget!
+        existing_paths = list(self.image_browser._items_by_path.keys())
+        if existing_paths == sorted_paths:
+            for p, count in counts.items():
+                self.image_browser.update_annotation_count(p, count)
+            return
+
         self.image_browser.set_paths(sorted_paths, annotation_counts=counts)
 
+        self.image_browser.blockSignals(True)
         if preserve_current and current_path in sorted_paths:
             row = sorted_paths.index(current_path)
             self.image_browser.setCurrentRow(row)
@@ -2537,7 +2570,6 @@ class MainWindow(QMainWindow):
             ground_truth=self._project_documents,
             parent=self,
         )
-        dialog.preview_applied.connect(self._on_auto_label_preview_applied)
         dialog.batch_completed.connect(self._on_auto_label_batch_completed)
         dialog.exec()
 
@@ -2582,22 +2614,29 @@ class MainWindow(QMainWindow):
         self, updated_documents: dict[Path, AnnotationDocument]
     ) -> None:
         """Handle completed batch Auto Label results."""
-        self._project_documents.update(updated_documents)
-        current_path = self._document.image_path if self._document is not None else None
-        if current_path is not None and current_path in updated_documents:
-            updated = updated_documents[current_path]
-            if self._history is not None and self._document is not None:
-                self._document = self._history.execute(
-                    ReplaceDocumentCommand(self._document, updated)
-                )
-            else:
-                self._document = updated
-                self._history = AnnotationHistory(updated)
-            self.canvas.set_document(self._document)
-        self._refresh_image_browser_order(preserve_current=True)
-        self.statusBar().showMessage(
-            f"Batch Auto Label finished for {len(updated_documents)} images"
-        )
+        try:
+            self._project_documents.update(updated_documents)
+            current_path = self._document.image_path if self._document is not None else None
+            if current_path is not None and current_path in updated_documents:
+                updated = updated_documents[current_path]
+                if self._history is not None and self._document is not None:
+                    self._document = self._history.execute(
+                        ReplaceDocumentCommand(self._document, updated)
+                    )
+                else:
+                    self._document = updated
+                    self._history = AnnotationHistory(updated)
+                self.canvas.set_document(self._document)
+                self._remember_current_document()
+            elif current_path is None and updated_documents:
+                first_path = next(iter(updated_documents.keys()))
+                self._load_image(first_path)
+            self._refresh_image_browser_order(preserve_current=True)
+            self.statusBar().showMessage(
+                f"Auto Label applied to {len(updated_documents)} image(s)"
+            )
+        except Exception as err:
+            LOGGER.exception("Failed to update documents from Auto Label: %s", err)
 
     @staticmethod
     def _normalize_grounding_prompt(prompt: str) -> str:
@@ -2786,6 +2825,88 @@ class MainWindow(QMainWindow):
         self.canvas.set_document(self._document)
         self._update_selection_properties()
         self.statusBar().showMessage(f"Deleted all {count} annotations on current image")
+
+    def _delete_picture_from_database(
+        self, path: Path | None = None, confirm: bool = True
+    ) -> bool:
+        """Permanently delete a picture and its annotations from dataset, database, and disk."""
+        if self._crop_session is not None:
+            self.statusBar().showMessage("Commit or cancel Crop Assist before deleting picture")
+            return False
+
+        target_path = path or (self._document.image_path if self._document is not None else None)
+        if target_path is None:
+            cur_item = self.image_browser.currentItem()
+            if cur_item is not None and cur_item.data(256):
+                target_path = Path(cur_item.data(256))
+
+        if target_path is None:
+            self.statusBar().showMessage("Select an image before deleting from database")
+            return False
+
+        if confirm:
+            reply = QMessageBox.question(
+                self,
+                "Delete Picture from Database",
+                f"Are you sure you want to delete picture from database?\n\n"
+                f"File: {target_path.name}\n"
+                f"Path: {target_path}\n\n"
+                f"This will remove the picture, all its annotations, and its database records.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return False
+
+        # 1. Remove from active project documents
+        self._project_documents.pop(target_path, None)
+
+        # 2. Remove from active learning difficulty cache
+        if hasattr(self, "_active_learning_engine") and self._active_learning_engine is not None:
+            try:
+                self._active_learning_engine.remove(target_path)
+            except Exception as err:
+                LOGGER.debug("Could not remove %s from active learning cache: %s", target_path, err)
+
+        # 3. Remove from DatasetIndex if available
+        if hasattr(self, "_dataset_index") and self._dataset_index is not None:
+            try:
+                self._dataset_index.delete(target_path)
+            except Exception as err:
+                LOGGER.debug("Could not remove %s from dataset index: %s", target_path, err)
+
+        # 4. Remove associated label files (.txt)
+        label_file = target_path.with_suffix(".txt")
+        if label_file.is_file():
+            try:
+                label_file.unlink(missing_ok=True)
+            except Exception as err:
+                LOGGER.warning("Could not delete label file %s: %s", label_file, err)
+
+        # 5. Remove image file from disk
+        if target_path.is_file():
+            try:
+                target_path.unlink(missing_ok=True)
+            except Exception as err:
+                LOGGER.warning("Could not delete image file %s: %s", target_path, err)
+
+        # 6. Remove from ImageBrowser UI
+        self.image_browser.remove_path(target_path)
+
+        # 7. Switch or clear active document
+        if self._document is not None and self._document.image_path == target_path:
+            self._selected_annotation_id = None
+            if self._project_documents:
+                next_path = next(iter(self._project_documents.keys()))
+                self._load_image(next_path)
+            else:
+                self._document = None
+                self._history = None
+                self.canvas.clear()
+                self._update_selection_properties()
+
+        self.statusBar().showMessage(f"Deleted '{target_path.name}' from database")
+        return True
 
     def _remove_database_duplicates(self) -> None:
         """Remove redundant boxes from every imported document."""

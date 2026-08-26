@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from PIL import Image
+
 from app.services.annotation.domain import (
     TARGET_CLASSES,
     Annotation,
@@ -69,9 +71,31 @@ class CocoImporter:
         images = self._required_list(payload, "images")
         annotations = self._required_list(payload, "annotations")
         categories = self._required_list(payload, "categories")
-        category_names = {
-            int(item["id"]): str(item["name"]).strip().lower() for item in categories
+
+        CLASS_ALIASES = {
+            "motorbike": "motorcycle",
+            "motorcycles": "motorcycle",
+            "motorbikes": "motorcycle",
+            "cars": "car",
+            "automobile": "car",
+            "automobiles": "car",
+            "auto": "car",
+            "autos": "car",
+            "suv": "car",
+            "sedan": "car",
+            "van": "car",
+            "vans": "car",
+            "trucks": "truck",
+            "pickup": "truck",
+            "buses": "bus",
         }
+        category_names = {}
+        for item in categories:
+            if isinstance(item, dict) and "id" in item and "name" in item:
+                raw_name = str(item["name"]).strip().lower().replace("-", "").replace("_", "")
+                norm_name = CLASS_ALIASES.get(raw_name, str(item["name"]).strip().lower())
+                category_names[int(item["id"])] = norm_name
+
         supported = {
             category_id: name
             for category_id, name in category_names.items()
@@ -101,11 +125,29 @@ class CocoImporter:
                     counts["missing_images"] += 1
                     warnings.append(f"missing image: {relative_name}")
                     continue
-                target_path = project_images / relative_name
+                target_path = project_images / relative_name.name
                 target_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source_path, target_path)
-                image_width = int(image_record["width"])
-                image_height = int(image_record["height"])
+                try:
+                    if source_path.resolve() != target_path.resolve():
+                        shutil.copy2(source_path, target_path)
+                except OSError as err:
+                    counts["missing_images"] += 1
+                    warnings.append(f"could not copy {source_path.name}: {err}")
+                    continue
+
+                try:
+                    image_width = int(float(image_record.get("width", 0) or 0))
+                    image_height = int(float(image_record.get("height", 0) or 0))
+                except (ValueError, TypeError):
+                    image_width, image_height = 0, 0
+
+                if image_width <= 0 or image_height <= 0:
+                    try:
+                        with Image.open(source_path) as im:
+                            image_width, image_height = im.width, im.height
+                    except Exception:
+                        image_width, image_height = 640, 480
+
                 imported: list[Annotation] = []
                 for record in by_image.get(image_id, []):
                     category_id = int(record.get("category_id", -1))
@@ -187,18 +229,43 @@ class CocoImporter:
         return [item for item in value if isinstance(item, dict)]
 
     @staticmethod
-    def _safe_source_path(image_root: Path, relative_name: Path) -> Path:
+    def _safe_source_path(image_root: Path, relative_name: Path | str) -> Path:
         root = image_root.resolve()
-        source = (root / relative_name).resolve()
-        if source != root and root not in source.parents:
-            raise CocoImportError(f"image path escapes image root: {relative_name}")
-        return source
+        clean_rel_str = str(relative_name).replace("\\", "/").lstrip("/")
+        clean_rel = Path(clean_rel_str)
+
+        # 1. Direct relative candidate
+        candidate = (root / clean_rel).resolve()
+        if candidate.is_file() and (candidate == root or root in candidate.parents):
+            return candidate
+
+        # 2. Direct basename in image_root
+        candidate_base = (root / clean_rel.name).resolve()
+        if candidate_base.is_file() and (candidate_base == root or root in candidate_base.parents):
+            return candidate_base
+
+        # 3. Check 'images' subfolder inside image_root
+        candidate_images = (root / "images" / clean_rel.name).resolve()
+        if candidate_images.is_file() and root in candidate_images.parents:
+            return candidate_images
+
+        # 4. Check if relative_name itself was an existing absolute path inside image_root
+        try:
+            abs_cand = Path(str(relative_name)).resolve()
+            if abs_cand.is_file() and (abs_cand == root or root in abs_cand.parents):
+                return abs_cand
+        except Exception:
+            pass
+
+        return candidate
 
     @staticmethod
     def _box(value: object, width: int, height: int) -> BoundingBox:
-        if not isinstance(value, list) or len(value) != 4:
+        if not isinstance(value, (list, tuple)) or len(value) != 4:
             raise ValueError("bbox must contain [x, y, width, height]")
         left, top, box_width, box_height = (float(item) for item in value)
+        if width <= 0 or height <= 0:
+            raise ValueError(f"invalid image dimensions: {width}x{height}")
         right = left + box_width
         bottom = top + box_height
         left = max(0.0, min(left, float(width)))
@@ -207,4 +274,11 @@ class CocoImporter:
         bottom = max(0.0, min(bottom, float(height)))
         if left >= right or top >= bottom:
             raise ValueError("bbox must have positive area")
-        return BoundingBox(left / width, top / height, right / width, bottom / height)
+        # Ensure clamped normalized coordinates
+        n_left = max(0.0, min(1.0, left / width))
+        n_top = max(0.0, min(1.0, top / height))
+        n_right = max(0.0, min(1.0, right / width))
+        n_bottom = max(0.0, min(1.0, bottom / height))
+        if n_left >= n_right or n_top >= n_bottom:
+            raise ValueError("normalized bbox must have positive area")
+        return BoundingBox(n_left, n_top, n_right, n_bottom)

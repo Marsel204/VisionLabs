@@ -201,6 +201,15 @@ class AnnotationCanvas(QGraphicsView):
         if self._document is not None:
             self.set_document(self._document)
 
+    def clear(self) -> None:
+        """Clear all canvas items, document, and scene."""
+        self._document = None
+        self._selected = None
+        self._image_item = None
+        self._annotation_items.clear()
+        self._scene.clear()
+        self._update_hover_cursor()
+
     def clear_fusion_statuses(self) -> None:
         """Return rendering to normal class colors and show all annotations."""
         self._fusion_statuses = {}

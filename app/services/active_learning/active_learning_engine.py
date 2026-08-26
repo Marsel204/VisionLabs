@@ -71,6 +71,14 @@ class _DifficultyCache:
             )
             self._connection.commit()
 
+    def remove(self, image_path: Path) -> None:
+        with self._lock:
+            self._connection.execute(
+                "DELETE FROM difficulty_cache WHERE image_path=?",
+                (str(image_path),),
+            )
+            self._connection.commit()
+
     def close(self) -> None:
         """Close the cache database."""
         with self._lock:
@@ -88,6 +96,10 @@ class ActiveLearningEngine:
     def close(self) -> None:
         """Close the persistent difficulty cache."""
         self._cache.close()
+
+    def remove(self, image_path: Path) -> None:
+        """Remove an image from the persistent difficulty cache."""
+        self._cache.remove(image_path)
 
     def score(self, analysis: ImageAnalysis) -> DifficultyResult:
         """Score one image, returning a cached result when inputs are unchanged."""

@@ -62,3 +62,60 @@ def test_cleaned_documents_export_to_new_coco_dataset(tmp_path: Path) -> None:
     assert len(payload["images"]) == 1
     assert len(payload["annotations"]) == 1
     assert (output / "images" / "street.jpg").is_file()
+
+
+def test_coco_import_resilience_edge_cases(tmp_path: Path) -> None:
+    """Test leading slashes, missing dimensions fallback, aliases, and border boxes."""
+    from PIL import Image
+
+    image_root = tmp_path / "edge_images"
+    image_root.mkdir()
+    test_img = image_root / "sample.jpg"
+    Image.new("RGB", (200, 150), color=(100, 150, 200)).save(test_img)
+
+    annotation_path = tmp_path / "edge_coco.json"
+    annotation_path.write_text(
+        json.dumps(
+            {
+                "images": [
+                    {
+                        "id": 10,
+                        "file_name": "/subfolder/sample.jpg",  # Leading slash and subfolder
+                        "width": 0,  # Missing/zero width -> should fall back to PIL dimensions
+                        "height": None,
+                    }
+                ],
+                "categories": [
+                    {"id": 101, "name": "MotorBike"},  # Alias for motorcycle
+                    {"id": 102, "name": "TRUCK"},  # Uppercase
+                ],
+                "annotations": [
+                    {
+                        "id": 1,
+                        "image_id": 10,
+                        "category_id": 101,
+                        "bbox": [0, 0, 200, 150],  # Full image border bounding box
+                    },
+                    {
+                        "id": 2,
+                        "image_id": 10,
+                        "category_id": 102,
+                        "bbox": [10, 10, 50, 50],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    importer = CocoImporter()
+    result = importer.import_dataset(annotation_path, image_root, tmp_path / "edge_project")
+    assert result.report.images_imported == 1
+    assert len(result.documents) == 1
+    doc = result.documents[0]
+    assert doc.image_width == 200
+    assert doc.image_height == 150
+    assert len(doc.annotations) == 2
+    classes = {ann.class_name for ann in doc.annotations}
+    assert classes == {"motorcycle", "truck"}
+

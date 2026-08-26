@@ -89,6 +89,19 @@ class DatasetIndex:
         )
         self._connection.commit()
 
+    def delete(self, path: Path) -> bool:
+        """Remove one image path from the database index."""
+        cursor = self._connection.execute(
+            "DELETE FROM images WHERE path=?", (str(path),)
+        )
+        self._connection.commit()
+        return cursor.rowcount > 0
+
+    def count(self) -> int:
+        """Return total number of indexed images."""
+        row = self._connection.execute("SELECT COUNT(*) FROM images").fetchone()
+        return int(row[0]) if row else 0
+
     def hardest(self, limit: int = 100) -> list[Path]:
         """Return the highest-difficulty images first."""
         if limit < 1:
@@ -97,3 +110,4 @@ class DatasetIndex:
             "SELECT path FROM images ORDER BY difficulty DESC, path LIMIT ?", (limit,)
         ).fetchall()
         return [Path(row["path"]) for row in rows]
+
