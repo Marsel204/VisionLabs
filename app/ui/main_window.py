@@ -1658,10 +1658,15 @@ class MainWindow(QMainWindow):
         if self._history is None:
             return
         previous = next(
-            item
-            for item in self._history.document.annotations
-            if item.annotation_id == annotation_id
+            (
+                item
+                for item in self._history.document.annotations
+                if item.annotation_id == annotation_id
+            ),
+            None,
         )
+        if previous is None:
+            return
         self._document = self._history.execute(
             UpdateAnnotationCommand(previous, previous.modify(box))
         )
@@ -2083,10 +2088,16 @@ class MainWindow(QMainWindow):
             from PIL import Image
 
             previous = next(
-                item
-                for item in self._document.annotations
-                if item.annotation_id == self._selected_annotation_id
+                (
+                    item
+                    for item in self._document.annotations
+                    if item.annotation_id == self._selected_annotation_id
+                ),
+                None,
             )
+            if previous is None:
+                self.statusBar().showMessage("Select an annotation first")
+                return
             image = Image.open(self._document.image_path).convert("RGB")
             box = previous.box
             pixel_box = [[[
