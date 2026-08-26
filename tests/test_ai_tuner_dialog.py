@@ -143,3 +143,42 @@ def test_ai_tuner_dialog_progress_and_apply(
     assert len(applied_configs) == 1
     assert applied_configs[0].confidence_threshold == 0.40
     assert applied_configs[0].classes[0].prompt == "passenger car, sedan, suv"
+
+
+def test_ai_tuner_api_key_input_and_persistence(
+    tmp_path: Path, qapp: QApplication, sample_data: tuple[list[Path], dict[Path, AnnotationDocument]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify that entering and saving API key persists to .env and updates UI state."""
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **kw: QMessageBox.StandardButton.Ok)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **kw: QMessageBox.StandardButton.Ok)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *a, **kw: QMessageBox.StandardButton.Ok)
+
+    paths, docs = sample_data
+    config = AutoLabelConfig()
+
+    dialog = AITunerDialog(
+        sample_images=paths,
+        ground_truth=docs,
+        current_config=config,
+    )
+
+    assert hasattr(dialog, "key_input")
+    assert hasattr(dialog, "save_key_btn")
+    assert hasattr(dialog, "toggle_echo_btn")
+
+    # Test toggle echo mode
+    dialog.key_input.setText("sk-or-v1-testkey123456789")
+    dialog._toggle_key_echo()
+    assert dialog.key_input.echoMode() == dialog.key_input.EchoMode.Normal
+    assert dialog.toggle_echo_btn.text() == "🔒"
+
+    dialog._toggle_key_echo()
+    assert dialog.key_input.echoMode() == dialog.key_input.EchoMode.Password
+    assert dialog.toggle_echo_btn.text() == "👁"
+
+    # Test save to .env
+    dialog._save_api_key()
+    assert "OpenRouter Key active" in dialog.key_status_label.text()
+

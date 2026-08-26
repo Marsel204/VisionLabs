@@ -1,12 +1,9 @@
-"""Interactive AI Auto-Tuning dialog with live score tracking and prompt diffs."""
-
-from __future__ import annotations
-
 import logging
+import os
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, QThread, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -14,6 +11,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -21,6 +19,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -194,11 +193,59 @@ class AITunerDialog(QDialog):
         self.model_combo.addItem("OpenAI GPT-4o", "openai/gpt-4o")
         config_grid.addWidget(self.model_combo, 1, 1, 1, 3)
 
+        # OpenRouter API Key Input Row
+        config_grid.addWidget(QLabel("OpenRouter API Key:"), 2, 0)
+        key_input_container = QHBoxLayout()
+        key_input_container.setContentsMargins(0, 0, 0, 0)
+        key_input_container.setSpacing(6)
+
+        self.key_input = QLineEdit()
+        self.key_input.setPlaceholderText("Paste OpenRouter API Key (sk-or-v1-...)")
+        self.key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.key_input.setStyleSheet(
+            "background-color: #141c2e; border: 1px solid #283654; "
+            "border-radius: 4px; padding: 4px 8px; color: #ffffff; font-size: 11px;"
+        )
+
+        self.toggle_echo_btn = QToolButton()
+        self.toggle_echo_btn.setText("👁")
+        self.toggle_echo_btn.setToolTip("Show / Hide API key")
+        self.toggle_echo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_echo_btn.setStyleSheet(
+            "background-color: #1e293b; border: 1px solid #334155; border-radius: 4px; "
+            "color: #cbd5e1; padding: 4px 6px;"
+        )
+        self.toggle_echo_btn.clicked.connect(self._toggle_key_echo)
+
+        self.save_key_btn = QPushButton("💾 Save to .env")
+        self.save_key_btn.setToolTip("Automatically create/update .env file and persist this API key")
+        self.save_key_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.save_key_btn.setStyleSheet(
+            "background-color: #3b82f6; border: none; border-radius: 4px; "
+            "color: #ffffff; font-weight: 600; font-size: 11px; padding: 4px 10px;"
+        )
+        self.save_key_btn.clicked.connect(self._save_api_key)
+
+        self.get_key_btn = QPushButton("🌐 Get Key")
+        self.get_key_btn.setToolTip("Open OpenRouter API keys page in your browser")
+        self.get_key_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.get_key_btn.setStyleSheet(
+            "background-color: #1e293b; border: 1px solid #334155; border-radius: 4px; "
+            "color: #94a3b8; font-weight: 500; font-size: 11px; padding: 4px 8px;"
+        )
+        self.get_key_btn.clicked.connect(self._open_get_key_url)
+
+        key_input_container.addWidget(self.key_input, 1)
+        key_input_container.addWidget(self.toggle_echo_btn)
+        key_input_container.addWidget(self.save_key_btn)
+        key_input_container.addWidget(self.get_key_btn)
+        config_grid.addLayout(key_input_container, 2, 1, 1, 3)
+
         # API Key Status Row
-        config_grid.addWidget(QLabel("API Key Status:"), 2, 0)
+        config_grid.addWidget(QLabel("Key Status:"), 3, 0)
         self.key_status_label = QLabel()
+        config_grid.addWidget(self.key_status_label, 3, 1, 1, 3)
         self._refresh_api_key_status()
-        config_grid.addWidget(self.key_status_label, 2, 1, 1, 3)
 
         layout.addWidget(config_card)
 
@@ -340,18 +387,65 @@ class AITunerDialog(QDialog):
             """
         )
 
+    def _toggle_key_echo(self) -> None:
+        if self.key_input.echoMode() == QLineEdit.EchoMode.Password:
+            self.key_input.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.toggle_echo_btn.setText("🔒")
+        else:
+            self.key_input.setEchoMode(QLineEdit.EchoMode.Password)
+            self.toggle_echo_btn.setText("👁")
+
+    def _open_get_key_url(self) -> None:
+        QDesktopServices.openUrl(QUrl("https://openrouter.ai/keys"))
+
+    def _save_api_key(self) -> None:
+        key = self.key_input.text().strip()
+        if not key:
+            QMessageBox.warning(self, "Empty API Key", "Please paste or enter a valid OpenRouter API key.")
+            return
+
+        env_file = Path(__file__).resolve().parents[3] / ".env"
+        try:
+            lines = []
+            found = False
+            if env_file.is_file():
+                for line in env_file.read_text(encoding="utf-8").splitlines():
+                    if line.strip().startswith("OPENROUTER_API_KEY="):
+                        lines.append(f"OPENROUTER_API_KEY={key}")
+                        found = True
+                    else:
+                        lines.append(line)
+            if not found:
+                lines.append(f"OPENROUTER_API_KEY={key}")
+
+            env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            os.environ["OPENROUTER_API_KEY"] = key
+
+            self._refresh_api_key_status()
+            QMessageBox.information(
+                self,
+                "API Key Saved",
+                f"Successfully saved OPENROUTER_API_KEY to {env_file.name}!\n\n"
+                "Vision LLM prompt tuning is now active.",
+            )
+        except Exception as error:
+            LOGGER.exception("Failed to save API key to .env")
+            QMessageBox.critical(self, "Error Saving Key", f"Could not write to .env file: {error}")
+
     def _refresh_api_key_status(self) -> None:
         tuner_cfg = TunerConfig.from_env()
-        if tuner_cfg.api_key:
-            k = tuner_cfg.api_key
-            masked = f"{k[:6]}...{k[-4:]}" if len(k) > 10 else "***"
-            self.key_status_label.setText(f"🟢 OpenRouter Key Loaded from .env ({masked})")
-            self.key_status_label.setStyleSheet("color: #34d399; font-weight: 600;")
+        key = tuner_cfg.api_key or os.getenv("OPENROUTER_API_KEY") or ""
+        if key:
+            masked = f"{key[:7]}...{key[-4:]}" if len(key) > 11 else "***"
+            self.key_status_label.setText(f"🟢 OpenRouter Key active ({masked}) — Loaded from .env")
+            self.key_status_label.setStyleSheet("color: #34d399; font-weight: 600; font-size: 11px;")
+            if not self.key_input.text():
+                self.key_input.setText(key)
         else:
             self.key_status_label.setText(
-                "🟡 No OPENROUTER_API_KEY in .env (Math solver active; add key to .env for LLM)"
+                "🟡 No API key saved. Paste your key above and click 'Save to .env' to enable Vision LLM tuning."
             )
-            self.key_status_label.setStyleSheet("color: #fbbf24; font-weight: 500;")
+            self.key_status_label.setStyleSheet("color: #fbbf24; font-weight: 500; font-size: 11px;")
 
     def _check_ground_truth_status(self) -> None:
         annotated_samples = [
@@ -391,10 +485,32 @@ class AITunerDialog(QDialog):
         target_score = target_map.get(self.target_combo.currentIndex(), 0.80)
         selected_model = self.model_combo.currentData() or "google/gemini-2.0-flash-001"
 
+        user_key = self.key_input.text().strip() or None
+        if user_key and not os.getenv("OPENROUTER_API_KEY"):
+            # Auto-save key if user entered it
+            try:
+                env_file = Path(__file__).resolve().parents[3] / ".env"
+                lines = []
+                found = False
+                if env_file.is_file():
+                    for line in env_file.read_text(encoding="utf-8").splitlines():
+                        if line.strip().startswith("OPENROUTER_API_KEY="):
+                            lines.append(f"OPENROUTER_API_KEY={user_key}")
+                            found = True
+                        else:
+                            lines.append(line)
+                if not found:
+                    lines.append(f"OPENROUTER_API_KEY={user_key}")
+                env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                os.environ["OPENROUTER_API_KEY"] = user_key
+            except Exception:
+                pass
+
         tuner_cfg = TunerConfig.from_env(
             target_f1_score=target_score,
             max_iterations=self.iter_spin.value(),
             model_name=selected_model,
+            api_key=user_key,
         )
 
         self.start_btn.setEnabled(False)
