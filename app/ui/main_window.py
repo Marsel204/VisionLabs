@@ -1790,7 +1790,7 @@ class MainWindow(QMainWindow):
     def _load_yolo_model(self) -> None:
         """Load YOLO weights once for reuse across images."""
         model_path, _ = QFileDialog.getOpenFileName(
-            self, "Choose YOLO model weights", "", "YOLO weights (*.pt)"
+            self, "Choose YOLO model weights", "", "YOLO weights (*.pt *.onnx *.engine);;All Files (*)"
         )
         if not model_path:
             return
@@ -1799,6 +1799,10 @@ class MainWindow(QMainWindow):
 
             self._yolo_model = YOLO(model_path)
             self._yolo_model_path = Path(model_path)
+            if not hasattr(self, "_loaded_yolo_models"):
+                self._loaded_yolo_models = []
+            if str(model_path) not in self._loaded_yolo_models:
+                self._loaded_yolo_models.append(str(model_path))
             self.statusBar().showMessage(f"Loaded model: {self._yolo_model_path.name}")
         except Exception as error:
             self._yolo_model = None
@@ -2560,6 +2564,7 @@ class MainWindow(QMainWindow):
             sam_segmenter=sam_segmenter,
             vlm_helper=vlm_helper,
             yolo_detector=self._yolo_model,
+            yolo_model_name=str(self._yolo_model_path) if self._yolo_model_path else "yolo11n.pt",
         )
 
         dialog = AutoLabelDialog(
@@ -2570,6 +2575,9 @@ class MainWindow(QMainWindow):
             ground_truth=self._project_documents,
             parent=self,
         )
+        if hasattr(self, "_loaded_yolo_models") and self._loaded_yolo_models:
+            dialog._active_yolo_models = list(self._loaded_yolo_models[:3])
+            dialog._update_yolo_button_ui()
         dialog.batch_completed.connect(self._on_auto_label_batch_completed)
         dialog.exec()
 

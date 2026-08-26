@@ -425,3 +425,77 @@ def test_auto_label_engine_multi_model_ensemble_fusion(sample_image: Path) -> No
     # 3 distinct objects: truck (from DINO, duplicate from YOLO suppressed), car (from YOLO), motorcycle (from Florence-2)
     assert result.count == 3
     assert {d.class_name for d in result.detections} == {"truck", "car", "motorcycle"}
+
+
+def test_auto_label_engine_multi_yolo_simultaneous_inference(sample_image: Path) -> None:
+    """Test running 2 to 3 YOLO models simultaneously with prediction fusion."""
+    # Model 1 (e.g. YOLO11n): detects car1 and truck
+    mock_yolo1 = MagicMock()
+    b1_1 = MagicMock()
+    b1_1.cls = [0]
+    b1_1.conf = [0.85]
+    b1_1.xyxy = [[50.0, 50.0, 200.0, 200.0]]  # car
+    b1_2 = MagicMock()
+    b1_2.cls = [1]
+    b1_2.conf = [0.88]
+    b1_2.xyxy = [[300.0, 100.0, 500.0, 350.0]]  # truck
+    res1 = MagicMock()
+    res1.boxes = [b1_1, b1_2]
+    mock_yolo1.return_value = [res1]
+    mock_yolo1.names = {0: "car", 1: "truck"}
+
+    # Model 2 (e.g. YOLOv8m): detects same car with higher confidence, plus motorcycle
+    mock_yolo2 = MagicMock()
+    b2_1 = MagicMock()
+    b2_1.cls = [0]
+    b2_1.conf = [0.94]  # higher score for same car
+    b2_1.xyxy = [[52.0, 51.0, 198.0, 201.0]]  # overlapping car
+    b2_2 = MagicMock()
+    b2_2.cls = [2]
+    b2_2.conf = [0.78]
+    b2_2.xyxy = [[10.0, 300.0, 150.0, 450.0]]  # motorcycle
+    res2 = MagicMock()
+    res2.boxes = [b2_1, b2_2]
+    mock_yolo2.return_value = [res2]
+    mock_yolo2.names = {0: "car", 1: "truck", 2: "motorcycle"}
+
+    # Model 3 (e.g. custom.pt): detects bus
+    mock_yolo3 = MagicMock()
+    b3_1 = MagicMock()
+    b3_1.cls = [3]
+    b3_1.conf = [0.91]
+    b3_1.xyxy = [[400.0, 20.0, 600.0, 220.0]]  # bus
+    res3 = MagicMock()
+    res3.boxes = [b3_1]
+    mock_yolo3.return_value = [res3]
+    mock_yolo3.names = {3: "bus"}
+
+    engine = AutoLabelEngine()
+    engine._yolo_detectors["yolo11n.pt"] = mock_yolo1
+    engine._yolo_detectors["yolov8m.pt"] = mock_yolo2
+    engine._yolo_detectors["custom_best.pt"] = mock_yolo3
+
+    config_3_models = AutoLabelConfig(
+        mode=AutoLabelPipelineMode.YOLO_BOXES,
+        confidence_threshold=0.35,
+        box_iou_threshold=0.50,
+        enable_yolo=True,
+        yolo_models=["yolo11n.pt", "yolov8m.pt", "custom_best.pt"],
+        classes=[
+            AutoLabelClass(name="car", prompt="car"),
+            AutoLabelClass(name="truck", prompt="truck"),
+            AutoLabelClass(name="motorcycle", prompt="motorcycle"),
+            AutoLabelClass(name="bus", prompt="bus"),
+        ],
+    )
+
+    result = engine.run_preview(sample_image, config_3_models)
+    # 4 distinct objects: car (fused/deduplicated with 0.94 score), truck (from yolo1), motorcycle (from yolo2), bus (from yolo3)
+    assert result.count == 4
+    classes_found = {d.class_name for d in result.detections}
+    assert classes_found == {"car", "truck", "motorcycle", "bus"}
+
+    # Check that highest score (0.94) was preserved for the car
+    car_det = next(d for d in result.detections if d.class_name == "car")
+    assert car_det.confidence == pytest.approx(0.94)
+

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QListView,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -687,6 +688,9 @@ class AutoLabelDialog(QDialog):
             self.current_image_path = None
 
         self.engine = engine or AutoLabelEngine()
+        raw_model = getattr(self.engine, "_yolo_model_name", "yolo11n.pt")
+        initial_yolo = raw_model if isinstance(raw_model, str) and raw_model else "yolo11n.pt"
+        self._active_yolo_models: list[str] = [initial_yolo]
 
         self.classes: list[AutoLabelClass] = [
             AutoLabelClass(c.name, c.prompt, c.color, c.enabled)
@@ -882,13 +886,13 @@ class AutoLabelDialog(QDialog):
         self.model_badge = QLabel("Mask labels")
         self.model_badge.setObjectName("ModelBadge")
 
-        model_name = getattr(self.engine, "_yolo_model_name", "yolo11n.pt") or "yolo11n.pt"
-        self.yolo_weights_btn = QPushButton(f"📦 {model_name}")
+        self.yolo_weights_btn = QPushButton("📦 YOLO (1 model)")
         self.yolo_weights_btn.setObjectName("YoloWeightsBtn")
-        self.yolo_weights_btn.setToolTip("Click to select custom pretrained YOLO weights (.pt)")
+        self.yolo_weights_btn.setToolTip("Configure up to 3 simultaneous YOLO models (click to manage)")
         self.yolo_weights_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.yolo_weights_btn.clicked.connect(self._choose_custom_yolo_weights)
+        self.yolo_weights_btn.clicked.connect(self._open_multi_yolo_menu)
         self.yolo_weights_btn.setVisible(False)
+        self._update_yolo_button_ui()
 
         # Confidence Threshold Slider
         conf_container = QHBoxLayout()
@@ -2060,7 +2064,105 @@ class AutoLabelDialog(QDialog):
             return
         self._on_detector_toggled()
 
-    def _choose_custom_yolo_weights(self) -> None:
+    def _update_yolo_button_ui(self) -> None:
+        count = len(getattr(self, "_active_yolo_models", []))
+        if count <= 0:
+            self._active_yolo_models = ["yolo11n.pt"]
+            count = 1
+
+        if count == 1:
+            name = Path(self._active_yolo_models[0]).name
+            self.yolo_weights_btn.setText(f"📦 {name}")
+        elif count == 2:
+            n1 = Path(self._active_yolo_models[0]).name
+            n2 = Path(self._active_yolo_models[1]).name
+            self.yolo_weights_btn.setText(f"⚡ 2 YOLO: {n1} + {n2}")
+        else:
+            n1 = Path(self._active_yolo_models[0]).name
+            self.yolo_weights_btn.setText(f"⚡ 3 YOLO Models ({n1} + {count - 1})")
+
+        details = "\n".join(f"• Model {i+1}: {m}" for i, m in enumerate(self._active_yolo_models))
+        self.yolo_weights_btn.setToolTip(
+            f"Active YOLO Models ({count}/3 simultaneous):\n{details}\n\nClick to add, remove, or swap models."
+        )
+
+    def _open_multi_yolo_menu(self) -> None:
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #1e222d;
+                color: #e0e0e0;
+                border: 1px solid #3b4252;
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 20px 6px 12px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #29b6f6;
+                color: #000000;
+            }
+            QMenu::separator {
+                height: 1px;
+                background-color: #3b4252;
+                margin: 4px 6px;
+            }
+        """)
+
+        header_action = menu.addAction(f"── Active YOLO Models ({len(self._active_yolo_models)}/3) ──")
+        header_action.setEnabled(False)
+
+        for i, model in enumerate(self._active_yolo_models):
+            display = Path(model).name
+            sub_menu = menu.addMenu(f"📦 Model {i+1}: {display}")
+
+            replace_action = sub_menu.addAction("📂 Change Weights (*.pt)...")
+            replace_action.triggered.connect(lambda _, idx=i: self._replace_yolo_model(idx))
+
+            presets_menu = sub_menu.addMenu("⚡ Switch to Preset...")
+            for preset in ["yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolov8n.pt", "yolov8m.pt", "yolov8x.pt"]:
+                p_act = presets_menu.addAction(preset)
+                p_act.triggered.connect(lambda _, idx=i, p=preset: self._set_yolo_model_preset(idx, p))
+
+            if len(self._active_yolo_models) > 1:
+                remove_action = sub_menu.addAction("🗑 Remove Model")
+                remove_action.triggered.connect(lambda _, idx=i: self._remove_yolo_model(idx))
+
+        menu.addSeparator()
+
+        if len(self._active_yolo_models) < 3:
+            add_menu = menu.addMenu("➕ Add Another YOLO Model (up to 3)...")
+            for preset in ["yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolov8n.pt", "yolov8m.pt", "yolov8x.pt"]:
+                if preset not in self._active_yolo_models:
+                    act = add_menu.addAction(f"⚡ {preset}")
+                    act.triggered.connect(lambda _, p=preset: self._add_yolo_model(p))
+
+            custom_act = add_menu.addAction("📂 + Custom Weights (*.pt)...")
+            custom_act.triggered.connect(self._add_custom_yolo_weights)
+        else:
+            limit_act = menu.addAction("⚠️ Maximum 3 YOLO models reached")
+            limit_act.setEnabled(False)
+
+        menu.addSeparator()
+        reset_act = menu.addAction("🔄 Reset to Default (yolo11n.pt)")
+        reset_act.triggered.connect(self._reset_yolo_models)
+
+        menu.exec(self.yolo_weights_btn.mapToGlobal(QPoint(0, self.yolo_weights_btn.height())))
+
+    def _add_yolo_model(self, model: str) -> None:
+        if len(self._active_yolo_models) < 3 and model not in self._active_yolo_models:
+            self._active_yolo_models.append(model)
+            self._update_yolo_button_ui()
+            if not self.yolo_chk.isChecked():
+                self.yolo_chk.setChecked(True)
+
+    def _add_custom_yolo_weights(self) -> None:
+        if len(self._active_yolo_models) >= 3:
+            QMessageBox.information(self, "Limit Reached", "You can run up to 3 YOLO models simultaneously.")
+            return
+
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Choose Pretrained YOLO Weights",
@@ -2073,16 +2175,12 @@ class AutoLabelDialog(QDialog):
                 from ultralytics import YOLO
 
                 loaded_yolo = YOLO(str(path))
+                if hasattr(self.engine, "_yolo_detectors") and isinstance(self.engine._yolo_detectors, dict):
+                    self.engine._yolo_detectors[str(path)] = loaded_yolo
+                    self.engine._yolo_detectors[path.name] = loaded_yolo
                 self.engine._yolo_detector = loaded_yolo
                 self.engine._yolo_model_name = path.name
-                self.yolo_weights_btn.setText(f"📦 {path.name}")
-                self.yolo_weights_btn.setToolTip(f"Pretrained weights: {path}")
-
-                names = getattr(loaded_yolo, "names", None)
-                if isinstance(names, dict) and names:
-                    LOGGER.info(
-                        "Loaded YOLO model '%s' with classes: %s", path.name, list(names.values())
-                    )
+                self._add_yolo_model(str(path))
             except Exception as err:
                 LOGGER.exception("Failed to load custom YOLO model weights")
                 QMessageBox.critical(
@@ -2090,6 +2188,55 @@ class AutoLabelDialog(QDialog):
                     "Loading Error",
                     f"Failed to load YOLO model from {path.name}:\n{err}",
                 )
+
+    def _replace_yolo_model(self, index: int) -> None:
+        if index < 0 or index >= len(self._active_yolo_models):
+            return
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose Pretrained YOLO Weights",
+            "",
+            "YOLO Weights (*.pt *.onnx *.engine);;All Files (*)",
+        )
+        if file_path:
+            path = Path(file_path)
+            try:
+                from ultralytics import YOLO
+
+                loaded_yolo = YOLO(str(path))
+                if hasattr(self.engine, "_yolo_detectors") and isinstance(self.engine._yolo_detectors, dict):
+                    self.engine._yolo_detectors[str(path)] = loaded_yolo
+                    self.engine._yolo_detectors[path.name] = loaded_yolo
+                self.engine._yolo_detector = loaded_yolo
+                self.engine._yolo_model_name = path.name
+                self._active_yolo_models[index] = str(path)
+                self._update_yolo_button_ui()
+            except Exception as err:
+                LOGGER.exception("Failed to load custom YOLO model weights")
+                QMessageBox.critical(
+                    self,
+                    "Loading Error",
+                    f"Failed to load YOLO model from {path.name}:\n{err}",
+                )
+
+    def _set_yolo_model_preset(self, index: int, preset: str) -> None:
+        if 0 <= index < len(self._active_yolo_models):
+            self._active_yolo_models[index] = preset
+            self._update_yolo_button_ui()
+
+    def _remove_yolo_model(self, index: int) -> None:
+        if 0 <= index < len(self._active_yolo_models) and len(self._active_yolo_models) > 1:
+            self._active_yolo_models.pop(index)
+            self._update_yolo_button_ui()
+
+    def _reset_yolo_models(self) -> None:
+        self._active_yolo_models = ["yolo11n.pt"]
+        self._update_yolo_button_ui()
+
+    def _choose_custom_yolo_weights(self) -> None:
+        """Single model custom weights loader (legacy & testing compatibility)."""
+        self._replace_yolo_model(0)
 
     def _rebuild_class_cards(self) -> None:
         for card in self._class_cards:
@@ -2139,12 +2286,18 @@ class AutoLabelDialog(QDialog):
         florence_enabled = self.florence_chk.isChecked() if hasattr(self, "florence_chk") else False
         sam2_enabled = self.sam2_chk.isChecked() if hasattr(self, "sam2_chk") else True
 
+        active_yolos = list(getattr(self, "_active_yolo_models", ["yolo11n.pt"]))
+        if not active_yolos:
+            active_yolos = ["yolo11n.pt"]
+
         return AutoLabelConfig(
             mode=mode,
             confidence_threshold=conf,
             text_threshold=max(0.15, conf - 0.10),
             box_iou_threshold=iou,
             classes=self.classes,
+            yolo_model_name=active_yolos[0],
+            yolo_models=active_yolos[:3],
             enable_grounding_dino=dino_enabled,
             enable_yolo=yolo_enabled,
             enable_florence2=florence_enabled,

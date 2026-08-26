@@ -164,6 +164,7 @@ class AutoLabelConfig:
     classes: list[AutoLabelClass] = field(default_factory=lambda: list(DEFAULT_AUTO_LABEL_CLASSES))
     device: str = "auto"
     yolo_model_name: str = "yolo11n.pt"
+    yolo_models: list[str] = field(default_factory=lambda: ["yolo11n.pt"])
     # Multi-model detector toggles for ensemble fusion
     enable_grounding_dino: bool = True
     enable_yolo: bool = True

@@ -425,4 +425,46 @@ def test_annotation_canvas_clear(sample_images: list[Path], qapp: QApplication) 
     assert len(canvas._annotation_items) == 0
 
 
+def test_auto_label_dialog_multi_yolo_ui(sample_images: list[Path], qapp: QApplication) -> None:
+    """Test managing 2-3 simultaneous YOLO models in AutoLabelDialog."""
+    mock_engine = MagicMock()
+    dialog = AutoLabelDialog(image_paths=sample_images, engine=mock_engine)
+
+    # Initial state: 1 model (yolo11n.pt)
+    assert dialog._active_yolo_models == ["yolo11n.pt"]
+    assert "yolo11n.pt" in dialog.yolo_weights_btn.text()
+
+    # Add second model (yolov8m.pt)
+    dialog._add_yolo_model("yolov8m.pt")
+    assert len(dialog._active_yolo_models) == 2
+    assert dialog._active_yolo_models == ["yolo11n.pt", "yolov8m.pt"]
+    assert "2 YOLO" in dialog.yolo_weights_btn.text()
+    assert dialog.yolo_chk.isChecked()
+
+    # Add third model (yolo11s.pt)
+    dialog._add_yolo_model("yolo11s.pt")
+    assert len(dialog._active_yolo_models) == 3
+    assert "3 YOLO" in dialog.yolo_weights_btn.text()
+
+    # Attempt adding fourth model (should be capped at 3)
+    dialog._add_yolo_model("yolov8x.pt")
+    assert len(dialog._active_yolo_models) == 3
+
+    # Check that _get_current_config reflects all 3 active YOLO models
+    config = dialog._get_current_config()
+    assert len(config.yolo_models) == 3
+    assert config.yolo_models == ["yolo11n.pt", "yolov8m.pt", "yolo11s.pt"]
+
+    # Remove second model
+    dialog._remove_yolo_model(1)
+    assert len(dialog._active_yolo_models) == 2
+    assert dialog._active_yolo_models == ["yolo11n.pt", "yolo11s.pt"]
+
+    # Reset models to default
+    dialog._reset_yolo_models()
+    assert dialog._active_yolo_models == ["yolo11n.pt"]
+    assert "yolo11n.pt" in dialog.yolo_weights_btn.text()
+
+
+
 

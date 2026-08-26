@@ -53,6 +53,7 @@ class AutoLabelEngine:
     _vlm_helper: Any | None = None
     _polygon_processor: Any | None = None
     _yolo_detector: Any | None = None
+    _yolo_detectors: dict[str, Any] = {}
     _yolo_model_name: str = "yolo11n.pt"
     _device: str = "auto"
 
@@ -71,6 +72,9 @@ class AutoLabelEngine:
         self._vlm_helper = vlm_helper
         self._polygon_processor = polygon_processor
         self._yolo_detector = yolo_detector
+        self._yolo_detectors = {}
+        if yolo_detector is not None:
+            self._yolo_detectors[yolo_model_name] = yolo_detector
         self._yolo_model_name = yolo_model_name
         self._device = device
 
@@ -102,12 +106,20 @@ class AutoLabelEngine:
             self._polygon_processor = MaskToPolygonProcessor()
         return self._polygon_processor
 
-    def _get_yolo_detector(self) -> Any:
-        if self._yolo_detector is None:
-            from ultralytics import YOLO
+    def _get_yolo_detector(self, model_name: str | None = None) -> Any:
+        target_name = model_name or self._yolo_model_name
+        if target_name in self._yolo_detectors:
+            return self._yolo_detectors[target_name]
 
-            self._yolo_detector = YOLO(self._yolo_model_name)
-        return self._yolo_detector
+        if self._yolo_detector is not None and (model_name is None or model_name == self._yolo_model_name):
+            self._yolo_detectors[target_name] = self._yolo_detector
+            return self._yolo_detector
+
+        from ultralytics import YOLO
+
+        detector = YOLO(target_name)
+        self._yolo_detectors[target_name] = detector
+        return detector
 
     @property
     def yolo_model_name(self) -> str:
@@ -325,9 +337,13 @@ class AutoLabelEngine:
                 candidate_classes.append(matched_cls)
                 candidate_scores.append(score)
 
-        # 2. YOLO
+        # 2. YOLO (Support 1 to 3 models simultaneously)
         if run_yolo:
-            yolo = self._get_yolo_detector()
+            active_models = (
+                config.yolo_models
+                if config.yolo_models
+                else [config.yolo_model_name]
+            )[:3]
             from app.core.runtime import detect_gpu
 
             yolo_device = (
@@ -339,45 +355,64 @@ class AutoLabelEngine:
                 else "cpu"
             )
 
-            try:
-                yolo_results = yolo(
-                    image,
-                    conf=config.confidence_threshold,
-                    device=yolo_device,
-                    verbose=False,
-                )
-            except Exception as err:
-                LOGGER.warning("YOLO inference on PIL Image failed, trying filepath: %s", err)
-                yolo_results = yolo(
-                    str(path),
-                    conf=config.confidence_threshold,
-                    device=yolo_device,
-                    verbose=False,
-                )
-
-            if yolo_results:
-                res = yolo_results[0]
-                names = getattr(yolo, "names", {}) or getattr(res, "names", {})
-                boxes = getattr(res, "boxes", None)
-                if boxes is not None:
-                    for box in boxes:
-                        cls_val = box.cls[0].item() if hasattr(box.cls[0], "item") else box.cls[0]
-                        class_id = int(cls_val)
-                        raw_label = str(names.get(class_id, class_id))
-                        conf_val = (
-                            box.conf[0].item() if hasattr(box.conf[0], "item") else box.conf[0]
+            for model_name in active_models:
+                try:
+                    yolo = self._get_yolo_detector(model_name)
+                    try:
+                        yolo_results = yolo(
+                            image,
+                            conf=config.confidence_threshold,
+                            device=yolo_device,
+                            verbose=False,
                         )
-                        score = float(conf_val)
-                        raw_xyxy = box.xyxy[0]
-                        xyxy = raw_xyxy.tolist() if hasattr(raw_xyxy, "tolist") else list(raw_xyxy)
-
-                        matched_cls = self.match_detected_label(
-                            raw_label, active_classes, token_map
+                    except Exception as err:
+                        LOGGER.warning(
+                            "YOLO (%s) inference on PIL Image failed, trying filepath: %s",
+                            model_name,
+                            err,
                         )
-                        if matched_cls is not None:
-                            candidate_boxes_px.append([float(c) for c in xyxy])
-                            candidate_classes.append(matched_cls)
-                            candidate_scores.append(score)
+                        yolo_results = yolo(
+                            str(path),
+                            conf=config.confidence_threshold,
+                            device=yolo_device,
+                            verbose=False,
+                        )
+
+                    if yolo_results:
+                        res = yolo_results[0]
+                        names = getattr(yolo, "names", {}) or getattr(res, "names", {})
+                        boxes = getattr(res, "boxes", None)
+                        if boxes is not None:
+                            for box in boxes:
+                                cls_val = (
+                                    box.cls[0].item()
+                                    if hasattr(box.cls[0], "item")
+                                    else box.cls[0]
+                                )
+                                class_id = int(cls_val)
+                                raw_label = str(names.get(class_id, class_id))
+                                conf_val = (
+                                    box.conf[0].item()
+                                    if hasattr(box.conf[0], "item")
+                                    else box.conf[0]
+                                )
+                                score = float(conf_val)
+                                raw_xyxy = box.xyxy[0]
+                                xyxy = (
+                                    raw_xyxy.tolist()
+                                    if hasattr(raw_xyxy, "tolist")
+                                    else list(raw_xyxy)
+                                )
+
+                                matched_cls = self.match_detected_label(
+                                    raw_label, active_classes, token_map
+                                )
+                                if matched_cls is not None:
+                                    candidate_boxes_px.append([float(c) for c in xyxy])
+                                    candidate_classes.append(matched_cls)
+                                    candidate_scores.append(score)
+                except Exception as err:
+                    LOGGER.warning("Failed running YOLO model '%s': %s", model_name, err)
 
         # 3. Florence-2 VLM
         if run_florence2:
