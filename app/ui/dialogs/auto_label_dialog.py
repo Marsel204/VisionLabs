@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
+from collections import OrderedDict
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -461,15 +462,41 @@ class CherryPickDialog(QDialog):
         self.count_label.setText(f"Selected: {len(self.selected_images)} / 4")
 
 
-_THUMBNAIL_BASE_CACHE: dict[Path, QPixmap] = {}
-_MAX_THUMBNAIL_CACHE_SIZE = 300
+_THUMBNAIL_BASE_CACHE: OrderedDict[Path, QPixmap] = OrderedDict()
+_MAX_THUMBNAIL_CACHE_SIZE = 500
+_DEFAULT_AUTOLABEL_ICON: QIcon | None = None
+
+
+def _get_default_autolabel_icon(target_size: int = 60) -> QIcon:
+    """Singleton default placeholder icon to avoid repeated rendering on large datasets."""
+    global _DEFAULT_AUTOLABEL_ICON
+    if _DEFAULT_AUTOLABEL_ICON is not None:
+        return _DEFAULT_AUTOLABEL_ICON
+    pixmap = QPixmap(target_size, target_size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(QBrush(QColor("#1e2230")))
+    painter.setPen(QColor("#2c2f3b"))
+    painter.drawRoundedRect(1, 1, target_size - 2, target_size - 2, 6, 6)
+    painter.setPen(QColor("#697082"))
+    font = QFont("sans-serif", 16)
+    painter.setFont(font)
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "🖼")
+    cb_rect = QRectF(4, 4, 15, 15)
+    painter.setBrush(QBrush(QColor(15, 23, 42, 190)))
+    painter.setPen(QPen(QColor("#64748b"), 1.2))
+    painter.drawRoundedRect(cb_rect, 3, 3)
+    painter.end()
+    _DEFAULT_AUTOLABEL_ICON = QIcon(pixmap)
+    return _DEFAULT_AUTOLABEL_ICON
 
 
 def _get_base_thumbnail_pixmap(path: Path, target_size: int = 60) -> QPixmap:
     """Retrieve or compute a cached 60x60 cropped pixmap for lightning-fast rendering with zero redundant disk reads."""
-    cached = _THUMBNAIL_BASE_CACHE.get(path)
-    if cached is not None:
-        return cached
+    if path in _THUMBNAIL_BASE_CACHE:
+        _THUMBNAIL_BASE_CACHE.move_to_end(path)
+        return _THUMBNAIL_BASE_CACHE[path]
 
     base = QPixmap(target_size, target_size)
     base.fill(Qt.GlobalColor.transparent)
@@ -515,8 +542,8 @@ def _get_base_thumbnail_pixmap(path: Path, target_size: int = 60) -> QPixmap:
 
     painter.end()
 
-    if len(_THUMBNAIL_BASE_CACHE) >= _MAX_THUMBNAIL_CACHE_SIZE:
-        _THUMBNAIL_BASE_CACHE.clear()
+    while len(_THUMBNAIL_BASE_CACHE) >= _MAX_THUMBNAIL_CACHE_SIZE:
+        _THUMBNAIL_BASE_CACHE.popitem(last=False)
 
     _THUMBNAIL_BASE_CACHE[path] = base
     return base
@@ -1159,6 +1186,7 @@ class AutoLabelDialog(QDialog):
         return QIcon(pixmap)
 
     def _populate_image_list(self, filter_text: str = "") -> None:
+        self.image_list.setUpdatesEnabled(False)
         self.image_list.blockSignals(True)
         self.image_list.clear()
         filter_lower = filter_text.lower()
@@ -1176,13 +1204,19 @@ class AutoLabelDialog(QDialog):
         ]
         ordered_paths = pinned_selected + other_annotated + unannotated
 
-        for img_path in ordered_paths:
+        default_icon = _get_default_autolabel_icon()
+        eager_limit = 40
+
+        for idx, img_path in enumerate(ordered_paths):
             if filter_lower and filter_lower not in img_path.name.lower():
                 continue
             is_preview = img_path in self.preview_image_paths
             slot = (self.preview_image_paths.index(img_path) + 1) if is_preview else 0
             item = QListWidgetItem()
-            item.setIcon(self._create_thumbnail_icon(img_path, is_preview, slot))
+            if is_preview or idx < eager_limit or img_path in _THUMBNAIL_BASE_CACHE:
+                item.setIcon(self._create_thumbnail_icon(img_path, is_preview, slot))
+            else:
+                item.setIcon(default_icon)
             prefix = f"★ [Sample {slot}] " if is_preview else ""
             item.setToolTip(f"{prefix}{img_path.name}")
             item.setData(Qt.ItemDataRole.UserRole, str(img_path))
@@ -1194,6 +1228,7 @@ class AutoLabelDialog(QDialog):
         if self.image_list.count() > 0:
             self.image_list.setCurrentRow(selected_idx)
         self.image_list.blockSignals(False)
+        self.image_list.setUpdatesEnabled(True)
 
     def _filter_image_list(self, text: str) -> None:
         self._populate_image_list(text)
@@ -1226,7 +1261,11 @@ class AutoLabelDialog(QDialog):
             if path_str:
                 p = Path(path_str)
                 self.current_image_path = p
-                if p in self.preview_image_paths:
+                is_preview = p in self.preview_image_paths
+                slot = (self.preview_image_paths.index(p) + 1) if is_preview else 0
+                if p not in _THUMBNAIL_BASE_CACHE:
+                    item.setIcon(self._create_thumbnail_icon(p, is_preview, slot))
+                if is_preview:
                     self._on_card_zoomed(p)
 
     def _randomize_preview_samples(self) -> None:
@@ -2117,7 +2156,6 @@ class AutoLabelDialog(QDialog):
 
         self.result_stats_label.setText(f"⚡ {summary_str}")
         self._update_sample_tabs_ui()
-        self._populate_image_list(self.search_input.text() if hasattr(self, "search_input") else "")
         self._is_previewing = False
         self.inline_progress.setVisible(False)
 

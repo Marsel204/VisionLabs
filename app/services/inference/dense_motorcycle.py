@@ -143,49 +143,51 @@ class DenseMotorcycleInference:
                 for variant in variants
                 if prompt_class(variant) == "motorcycle"
             ]
-        for prompt_variant in variants:
-            expected_class = prompt_class(prompt_variant)
-            if expected_class is None:
-                continue
-            for crop, offset_x, offset_y, is_tile in self._crops(image):
-                inputs = self._grounding_processor(
-                    images=crop,
-                    text=prompt_variant,
-                    return_tensors="pt",
+        compound_prompt = " . ".join(dict.fromkeys(v.strip(" .") for v in variants)) + " ."
+        if not compound_prompt.strip(" ."):
+            return []
+
+        for crop, offset_x, offset_y, is_tile in self._crops(image):
+            inputs = self._grounding_processor(
+                images=crop,
+                text=compound_prompt,
+                return_tensors="pt",
+            )
+            device = next(self._grounding_model.parameters()).device
+            inputs = {
+                key: value.to(device) if hasattr(value, "to") else value
+                for key, value in inputs.items()
+            }
+            with torch.no_grad():
+                outputs = self._grounding_model(**inputs)
+            result = self._post_process(outputs, inputs["input_ids"], crop)
+            labels = result.get("text_labels", result.get("labels", ()))
+            for index, (box, score) in enumerate(
+                zip(result["boxes"], result["scores"], strict=True)
+            ):
+                if index >= len(labels):
+                    continue
+                class_name = grounding_class(str(labels[index]))
+                if class_name is None or class_name not in self.config.enabled_classes:
+                    continue
+                if motorcycle_only and class_name != "motorcycle":
+                    continue
+                score_value = float(score)
+                left, top, right, bottom = box.tolist()
+                if is_tile and self._tile_artifact(left, top, right, bottom, crop):
+                    continue
+                annotation = self._annotation(
+                    class_name,
+                    left + offset_x,
+                    top + offset_y,
+                    right + offset_x,
+                    bottom + offset_y,
+                    score_value,
+                    AnnotationSource.GROUNDING_DINO,
+                    document,
                 )
-                device = next(self._grounding_model.parameters()).device
-                inputs = {
-                    key: value.to(device) if hasattr(value, "to") else value
-                    for key, value in inputs.items()
-                }
-                with torch.no_grad():
-                    outputs = self._grounding_model(**inputs)
-                result = self._post_process(outputs, inputs["input_ids"], crop)
-                labels = result.get("text_labels", result.get("labels", ()))
-                for index, (box, score) in enumerate(
-                    zip(result["boxes"], result["scores"], strict=True)
-                ):
-                    if index >= len(labels):
-                        continue
-                    class_name = self._label_class(str(labels[index]), expected_class)
-                    if class_name is None:
-                        continue
-                    score_value = float(score)
-                    left, top, right, bottom = box.tolist()
-                    if is_tile and self._tile_artifact(left, top, right, bottom, crop):
-                        continue
-                    annotation = self._annotation(
-                        class_name,
-                        left + offset_x,
-                        top + offset_y,
-                        right + offset_x,
-                        bottom + offset_y,
-                        score_value,
-                        AnnotationSource.GROUNDING_DINO,
-                        document,
-                    )
-                    if annotation is not None and self._accept(annotation):
-                        predictions.append(annotation)
+                if annotation is not None and self._accept(annotation):
+                    predictions.append(annotation)
         return self._nms(predictions)
 
     def _accept(self, annotation: Annotation) -> bool:

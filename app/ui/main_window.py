@@ -12,7 +12,17 @@ from threading import Event
 from typing import Any
 
 from PySide6.QtCore import QEvent, QObject, QRunnable, QSize, Qt, QThreadPool, Signal
-from PySide6.QtGui import QAction, QActionGroup, QBrush, QColor, QIcon, QImage, QPainter, QPixmap
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QBrush,
+    QColor,
+    QIcon,
+    QImage,
+    QImageReader,
+    QPainter,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
@@ -719,6 +729,10 @@ class MainWindow(QMainWindow):
         cleanup_dataset = QAction("Remove Database Duplicates", self)
         cleanup_dataset.setShortcut("Ctrl+Shift+Alt+D")
         cleanup_dataset.triggered.connect(self._remove_database_duplicates)
+        delete_all_annotations = QAction("Delete All Annotations (Current Image)", self)
+        delete_all_annotations.setShortcut("Ctrl+Shift+X")
+        delete_all_annotations.setToolTip("Delete all annotations on current image (Ctrl+Shift+X)")
+        delete_all_annotations.triggered.connect(self._delete_all_annotations)
         toggle_occluded = QAction("Toggle Selected Occluded", self)
         toggle_occluded.triggered.connect(self._toggle_selected_occluded)
         toggle_truncated = QAction("Toggle Selected Truncated", self)
@@ -848,6 +862,7 @@ class MainWindow(QMainWindow):
         annotation_menu.addAction(fuse)
         annotation_menu.addAction(cleanup)
         annotation_menu.addAction(cleanup_dataset)
+        annotation_menu.addAction(delete_all_annotations)
         annotation_menu.addAction(toggle_occluded)
         annotation_menu.addAction(toggle_truncated)
         annotation_menu.addAction(fusion_colors)
@@ -1085,6 +1100,15 @@ class MainWindow(QMainWindow):
         clean_row.addWidget(clean_db_btn, 1)
         review_layout.addLayout(clean_row)
 
+        delete_all_btn = QToolButton(self)
+        delete_all_btn.setText("🗑 Delete All Annotations")
+        delete_all_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
+        delete_all_btn.setToolTip(
+            "Delete all bounding box annotations on the current image only (Ctrl+Shift+X)"
+        )
+        delete_all_btn.clicked.connect(self._delete_all_annotations)
+        review_layout.addWidget(delete_all_btn)
+
         self._fusion_colors_btn = QToolButton(self)
         self._fusion_colors_btn.setText("🎨 Show Fusion Colors")
         self._fusion_colors_btn.setCheckable(True)
@@ -1321,15 +1345,9 @@ class MainWindow(QMainWindow):
             path for path in Path(folder).iterdir()
             if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
         )
-        self._project_documents = {}
-        for path in paths:
-            image = QImage(str(path))
-            if not image.isNull():
-                self._project_documents[path] = AnnotationDocument(
-                    path,
-                    image.width(),
-                    image.height(),
-                )
+        self._project_documents = {
+            path: AnnotationDocument(path, 1920, 1080) for path in paths
+        }
         self._project_root = None
         self._refresh_image_browser_order(preserve_current=False)
         self.statusBar().showMessage(f"Imported {len(paths)} images")
@@ -1693,7 +1711,9 @@ class MainWindow(QMainWindow):
         """Persist the active document in the current imported project session."""
         if self._document is not None and self._document.image_path in self._project_documents:
             self._project_documents[self._document.image_path] = self._document
-            self._refresh_image_browser_order(preserve_current=True)
+            self.image_browser.update_annotation_count(
+                self._document.image_path, len(self._document.annotations)
+            )
 
     def _refresh_image_browser_order(self, preserve_current: bool = True) -> None:
         """Sort and refresh the Image Browser to keep annotated images at the top."""
@@ -2331,16 +2351,22 @@ class MainWindow(QMainWindow):
                 if self._vlm_helper is None:
                     self._load_vlm_model()
                 if self._vlm_helper is not None:
-                    from src.vlm_helper import crop_image, verify_crop_class
+                    from src.vlm_helper import crop_image, verify_crop_classes_batch
 
+                    crops = [
+                        crop_image(image, b_coords, normalized=False)
+                        for b_coords in candidate_boxes
+                    ]
+                    matches = verify_crop_classes_batch(
+                        crops, candidate_labels, vlm=self._vlm_helper
+                    )
                     vlm_boxes: list[list[float]] = []
                     vlm_labels: list[str] = []
                     vlm_scores: list[float] = []
-                    for b_coords, c_name, s_val in zip(
-                        candidate_boxes, candidate_labels, candidate_scores, strict=True
+                    for b_coords, c_name, s_val, is_matched in zip(
+                        candidate_boxes, candidate_labels, candidate_scores, matches, strict=True
                     ):
-                        crop = crop_image(image, b_coords, normalized=False)
-                        if verify_crop_class(crop, c_name, vlm=self._vlm_helper):
+                        if is_matched:
                             vlm_boxes.append(b_coords)
                             vlm_labels.append(c_name)
                             vlm_scores.append(s_val)
@@ -2713,13 +2739,42 @@ class MainWindow(QMainWindow):
         if not removed_count:
             self.statusBar().showMessage("No overlapping duplicate boxes found")
             return
-        kept_ids = {item.annotation_id for item in kept}
-        for annotation in self._document.annotations:
-            if annotation.annotation_id not in kept_ids:
-                self._document = self._history.execute(RemoveAnnotationCommand(annotation))
+        updated = AnnotationDocument(
+            self._document.image_path,
+            self._document.image_width,
+            self._document.image_height,
+            kept,
+        )
+        self._document = self._history.execute(
+            ReplaceDocumentCommand(self._document, updated)
+        )
         self._remember_current_document()
         self.canvas.set_document(self._document)
         self.statusBar().showMessage(f"Removed {removed_count} overlapping duplicate boxes")
+
+    def _delete_all_annotations(self) -> None:
+        """Clear all annotations on the current image only, preserving undo history."""
+        if self._document is None or self._history is None:
+            self.statusBar().showMessage("Select an image before deleting annotations")
+            return
+        if not self._document.annotations:
+            self.statusBar().showMessage("No annotations to delete on current image")
+            return
+        count = len(self._document.annotations)
+        cleared_document = AnnotationDocument(
+            self._document.image_path,
+            self._document.image_width,
+            self._document.image_height,
+            (),
+        )
+        self._document = self._history.execute(
+            ReplaceDocumentCommand(self._document, cleared_document)
+        )
+        self._selected_annotation_id = None
+        self._remember_current_document()
+        self.canvas.set_document(self._document)
+        self._update_selection_properties()
+        self.statusBar().showMessage(f"Deleted all {count} annotations on current image")
 
     def _remove_database_duplicates(self) -> None:
         """Remove redundant boxes from every imported document."""

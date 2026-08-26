@@ -529,6 +529,14 @@ class AutoLabelEngine:
                 )
 
         elapsed = time.perf_counter() - start_time
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
         return AutoLabelResult(
             image_path=path,
             image_width=width,

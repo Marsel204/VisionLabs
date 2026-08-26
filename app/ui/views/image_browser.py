@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import QRect, QSize, Qt, Signal
@@ -17,8 +18,32 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QListView, QListWidget, QListWidgetItem
 
-_IMAGE_BROWSER_CACHE: dict[tuple[Path, int], QPixmap] = {}
-_MAX_IMAGE_BROWSER_CACHE_SIZE = 300
+_BASE_IMAGE_CACHE: OrderedDict[Path, QPixmap] = OrderedDict()
+_MAX_BASE_CACHE_SIZE = 500
+_ICON_CACHE: OrderedDict[tuple[Path, int], QIcon] = OrderedDict()
+_MAX_ICON_CACHE_SIZE = 500
+_DEFAULT_ICON: QIcon | None = None
+
+
+def _get_default_icon(target_size: int = 60) -> QIcon:
+    """Singleton default placeholder icon to avoid repeated rendering on large datasets."""
+    global _DEFAULT_ICON
+    if _DEFAULT_ICON is not None:
+        return _DEFAULT_ICON
+    pixmap = QPixmap(target_size, target_size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(QBrush(QColor("#20222a")))
+    painter.setPen(QColor("#2c2f3b"))
+    painter.drawRoundedRect(1, 1, target_size - 2, target_size - 2, 6, 6)
+    painter.setPen(QColor("#697082"))
+    font = QFont("sans-serif", 16)
+    painter.setFont(font)
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "🖼")
+    painter.end()
+    _DEFAULT_ICON = QIcon(pixmap)
+    return _DEFAULT_ICON
 
 
 class ImageBrowser(QListWidget):
@@ -39,16 +64,15 @@ class ImageBrowser(QListWidget):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.itemSelectionChanged.connect(self._emit_selection)
         self._annotation_counts: dict[Path, int] = {}
+        self._items_by_path: dict[Path, QListWidgetItem] = {}
 
     @staticmethod
-    def _create_thumbnail_icon(path: Path, count: int = 0) -> QIcon:
-        """Create a thumbnail preview or sleek placeholder icon with memory caching."""
-        cache_key = (path, count)
-        cached = _IMAGE_BROWSER_CACHE.get(cache_key)
-        if cached is not None:
-            return QIcon(cached)
+    def _get_base_thumbnail(path: Path, target_size: int = 60) -> QPixmap:
+        """Retrieve or compute a base unbadged 60x60 thumbnail pixmap with LRU memory caching."""
+        if path in _BASE_IMAGE_CACHE:
+            _BASE_IMAGE_CACHE.move_to_end(path)
+            return _BASE_IMAGE_CACHE[path]
 
-        target_size = 60
         pixmap = QPixmap(target_size, target_size)
         pixmap.fill(Qt.GlobalColor.transparent)
 
@@ -73,10 +97,7 @@ class ImageBrowser(QListWidget):
                 cropped = reader_image.copy(x_off, y_off, target_size, target_size)
 
                 painter.setBrush(QBrush(cropped))
-                if count > 0:
-                    painter.setPen(QPen(QColor("#059669"), 1.8))
-                else:
-                    painter.setPen(QColor("#2c2f3b"))
+                painter.setPen(QColor("#2c2f3b"))
                 painter.drawRoundedRect(1, 1, target_size - 2, target_size - 2, 6, 6)
             else:
                 painter.setBrush(QBrush(QColor("#20222a")))
@@ -95,7 +116,34 @@ class ImageBrowser(QListWidget):
             painter.setFont(font)
             painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "🖼")
 
+        painter.end()
+
+        while len(_BASE_IMAGE_CACHE) >= _MAX_BASE_CACHE_SIZE:
+            _BASE_IMAGE_CACHE.popitem(last=False)
+
+        _BASE_IMAGE_CACHE[path] = pixmap
+        return pixmap
+
+    @classmethod
+    def _create_thumbnail_icon(cls, path: Path, count: int = 0) -> QIcon:
+        """Create a thumbnail preview or sleek placeholder icon with layered memory caching."""
+        cache_key = (path, count)
+        if cache_key in _ICON_CACHE:
+            _ICON_CACHE.move_to_end(cache_key)
+            return _ICON_CACHE[cache_key]
+
+        target_size = 60
+        base = cls._get_base_thumbnail(path, target_size)
+        pixmap = QPixmap(base)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
         if count > 0:
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor("#059669"), 1.8))
+            painter.drawRoundedRect(1, 1, target_size - 2, target_size - 2, 6, 6)
+
             badge_text = str(count) if count < 100 else "99+"
             badge_w = 20 if len(badge_text) > 1 else 15
             badge_rect = QRect(target_size - badge_w - 3, 3, badge_w, 13)
@@ -111,28 +159,57 @@ class ImageBrowser(QListWidget):
 
         painter.end()
 
-        if len(_IMAGE_BROWSER_CACHE) >= _MAX_IMAGE_BROWSER_CACHE_SIZE:
-            _IMAGE_BROWSER_CACHE.clear()
-
-        _IMAGE_BROWSER_CACHE[cache_key] = pixmap
-        return QIcon(pixmap)
+        icon = QIcon(pixmap)
+        while len(_ICON_CACHE) >= _MAX_ICON_CACHE_SIZE:
+            _ICON_CACHE.popitem(last=False)
+        _ICON_CACHE[cache_key] = icon
+        return icon
 
     def set_paths(
         self, paths: list[Path], annotation_counts: dict[Path, int] | None = None
     ) -> None:
-        """Replace visible paths with thumbnail cards and optional annotation counts."""
+        """Replace visible paths with thumbnail cards without blocking on massive datasets."""
         self._annotation_counts = annotation_counts or {}
+        self._items_by_path.clear()
+        self.setUpdatesEnabled(False)
+        self.blockSignals(True)
         self.clear()
-        for path in paths:
+
+        default_icon = _get_default_icon()
+        eager_limit = 40
+
+        for idx, path in enumerate(paths):
             count = self._annotation_counts.get(path, 0)
             item = QListWidgetItem()
-            item.setIcon(self._create_thumbnail_icon(path, count))
+            if idx < eager_limit or count > 0 or path in _BASE_IMAGE_CACHE:
+                item.setIcon(self._create_thumbnail_icon(path, count))
+            else:
+                item.setIcon(default_icon)
             ann_note = f" ({count} annotations)" if count > 0 else " (unannotated)"
             item.setToolTip(f"{path.name}{ann_note}")
             item.setData(256, str(path))
             self.addItem(item)
+            self._items_by_path[path] = item
+
+        self.blockSignals(False)
+        self.setUpdatesEnabled(True)
+
+    def update_annotation_count(self, path: Path, count: int) -> None:
+        """In-place O(1) thumbnail badge update for a single image without resetting the list."""
+        if self._annotation_counts.get(path) == count:
+            return
+        self._annotation_counts[path] = count
+        item = self._items_by_path.get(path)
+        if item is not None:
+            item.setIcon(self._create_thumbnail_icon(path, count))
+            ann_note = f" ({count} annotations)" if count > 0 else " (unannotated)"
+            item.setToolTip(f"{path.name}{ann_note}")
 
     def _emit_selection(self) -> None:
         item = self.currentItem()
         if item is not None:
-            self.image_selected.emit(Path(item.data(256)))
+            path = Path(item.data(256))
+            count = self._annotation_counts.get(path, 0)
+            if path not in _BASE_IMAGE_CACHE:
+                item.setIcon(self._create_thumbnail_icon(path, count))
+            self.image_selected.emit(path)

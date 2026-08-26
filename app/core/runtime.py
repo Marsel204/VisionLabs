@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 
 
@@ -15,6 +16,7 @@ class GpuStatus:
     memory_gb: float | None = None
 
 
+@functools.cache
 def detect_gpu() -> GpuStatus:
     """Detect CUDA, MPS, or CPU without importing torch at application import time."""
     try:

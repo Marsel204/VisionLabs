@@ -478,10 +478,103 @@ class Florence2VLM:
                 task=task_token,
                 image_size=(img.width, img.height),
             )
-            return parsed_answer
         except Exception as err:
-            LOGGER.warning("Florence-2 post-processing failed, returning raw text: %s", err)
-            return generated_text
+            LOGGER.warning("Post-processing failed for %s: %s", task_token, err)
+            parsed_answer = {task_token: generated_text}
+
+        return parsed_answer
+
+    def generate_captions_batch(
+        self,
+        images: Sequence[str | Path | Image.Image | np.ndarray],
+        task_token: str = "<CAPTION>",
+        max_new_tokens: int = 64,
+    ) -> list[str]:
+        """Generate captions for a batch of images efficiently in a single forward pass."""
+        if not images:
+            return []
+        if len(images) == 1:
+            return [self.generate_caption(images[0], task_token=task_token)]
+
+        self.ensure_loaded()
+        import torch
+
+        pil_images = [load_image(img) for img in images]
+        prompt = task_token
+
+        if hasattr(self._processor, "image_processor") and hasattr(self._processor, "tokenizer"):
+            image_inputs = self._processor.image_processor(pil_images, return_tensors="pt")
+            prompts = [prompt] * len(pil_images)
+            prompt_texts = (
+                self._processor._construct_prompts(prompts)
+                if hasattr(self._processor, "_construct_prompts")
+                else prompts
+            )
+            text_inputs = self._processor.tokenizer(prompt_texts, padding=True, return_tensors="pt")
+            inputs = {**text_inputs, "pixel_values": image_inputs["pixel_values"]}
+        else:
+            inputs = self._processor(
+                text=[prompt] * len(pil_images),
+                images=pil_images,
+                padding=True,
+                return_tensors="pt",
+            )
+
+        try:
+            device = next(self._model.parameters()).device
+            model_dtype = getattr(self._model, "dtype", None)
+            device_inputs = {}
+            for key, value in inputs.items():
+                if hasattr(value, "to"):
+                    if (
+                        model_dtype is not None
+                        and hasattr(value, "dtype")
+                        and value.dtype in (torch.float32, torch.float64)
+                        and model_dtype in (torch.float16, torch.bfloat16)
+                    ):
+                        device_inputs[key] = value.to(device=device, dtype=model_dtype)
+                    else:
+                        device_inputs[key] = value.to(device)
+                else:
+                    device_inputs[key] = value
+        except (StopIteration, AttributeError):
+            device_inputs = dict(inputs)
+
+        with torch.inference_mode():
+            generated_ids = self._model.generate(
+                input_ids=device_inputs.get("input_ids"),
+                pixel_values=device_inputs.get("pixel_values"),
+                max_new_tokens=max_new_tokens,
+                num_beams=1,
+                use_cache=False,
+                do_sample=False,
+            )
+
+        decoded_texts = self._processor.batch_decode(
+            generated_ids,
+            skip_special_tokens=False,
+        )
+
+        results: list[str] = []
+        for text, img in zip(decoded_texts, pil_images):
+            try:
+                parsed = self._processor.post_process_generation(
+                    text,
+                    task=task_token,
+                    image_size=(img.width, img.height),
+                )
+                if isinstance(parsed, dict):
+                    cap = parsed.get(task_token, "")
+                    if not cap and parsed:
+                        cap = next(iter(parsed.values()))
+                    results.append(str(cap).strip())
+                elif isinstance(parsed, str):
+                    results.append(re.sub(r"<[^>]+>", "", parsed).strip())
+                else:
+                    results.append(str(parsed).strip())
+            except Exception:
+                results.append(re.sub(r"<[^>]+>", "", text).strip())
+        return results
 
     def generate_caption(
         self,
@@ -628,6 +721,44 @@ def verify_crop_class(
         matched,
     )
     return matched
+
+
+def verify_crop_classes_batch(
+    crops: Sequence[Image.Image | np.ndarray | str | Path],
+    target_classes: Sequence[str],
+    vlm: Florence2VLM | None = None,
+    task_token: str = "<CAPTION>",
+) -> list[bool]:
+    """Pass multiple image crops to Florence-2 in a single batch and verify class matches.
+
+    Args:
+        crops: Sequence of image crops.
+        target_classes: Target class names corresponding to each crop.
+        vlm: Optional Florence2VLM instance.
+        task_token: Florence-2 task token.
+
+    Returns:
+        List of booleans indicating class verification match for each crop.
+    """
+    if not crops:
+        return []
+    if len(crops) != len(target_classes):
+        raise ValueError("crops and target_classes must have the same length")
+    model_runner = vlm if vlm is not None else get_default_vlm()
+    try:
+        captions = model_runner.generate_captions_batch(crops, task_token=task_token)
+        if not isinstance(captions, (list, tuple)) or len(captions) != len(crops):
+            raise TypeError("generate_captions_batch did not return matching list")
+    except Exception as err:
+        LOGGER.debug("Batched VLM verification failed, falling back to sequential: %s", err)
+        return [
+            verify_crop_class(crop, target_cls, vlm=model_runner, task_token=task_token)
+            for crop, target_cls in zip(crops, target_classes)
+        ]
+    return [
+        match_caption_to_class(caption=caption, target_class=target_cls)
+        for caption, target_cls in zip(captions, target_classes)
+    ]
 
 
 # ==============================================================================

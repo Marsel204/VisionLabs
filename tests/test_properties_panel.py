@@ -79,3 +79,43 @@ def test_selection_properties_synchronization(tmp_path: Path, qapp: object) -> N
     assert not window._occluded_btn.isEnabled()
     assert not window._truncated_btn.isEnabled()
     assert not window._refine_sam2_btn.isEnabled()
+
+
+def test_delete_all_annotations_current_image(tmp_path: Path, qapp: object) -> None:
+    """Verify that delete all annotations clears only the current image with full undo support."""
+    image1 = tmp_path / "img1.jpg"
+    image2 = tmp_path / "img2.jpg"
+    Image.new("RGB", (100, 100), color="white").save(image1)
+    Image.new("RGB", (100, 100), color="white").save(image2)
+
+    settings = AppSettings()
+    window = MainWindow(settings.fusion, settings.active_learning)
+
+    ann1 = Annotation("car", BoundingBox(0.1, 0.1, 0.5, 0.5))
+    ann2 = Annotation("bus", BoundingBox(0.2, 0.2, 0.6, 0.6))
+    ann3 = Annotation("motorcycle", BoundingBox(0.3, 0.3, 0.7, 0.7))
+
+    doc1 = AnnotationDocument(image1, 100, 100, [ann1, ann2])
+    doc2 = AnnotationDocument(image2, 100, 100, [ann3])
+
+    window._project_documents[image1] = doc1
+    window._project_documents[image2] = doc2
+    window._document = doc1
+    window._history = AnnotationHistory(doc1)
+
+    assert len(window._document.annotations) == 2
+    assert len(window._project_documents[image2].annotations) == 1
+
+    # Delete all on current image
+    window._delete_all_annotations()
+
+    assert len(window._document.annotations) == 0
+    assert len(window._project_documents[image1].annotations) == 0
+    # Verify image 2 remains untouched
+    assert len(window._project_documents[image2].annotations) == 1
+
+    # Test Undo (Ctrl+Z)
+    window._undo_annotation_edit()
+    assert len(window._document.annotations) == 2
+    assert len(window._project_documents[image1].annotations) == 2
+

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import numpy as np
+
 from app.models.contracts import Detection
 from app.services.fusion.iou import pairwise_iou
 
@@ -44,14 +46,15 @@ def _duplicate_count(detections: Sequence[Detection], threshold: float) -> int:
     count = 0
     for source in {item.source for item in detections}:
         source_items = [item for item in detections if item.source == source]
+        n = len(source_items)
+        if n < 2:
+            continue
         boxes = [item.box for item in source_items]
         matrix = pairwise_iou(boxes, boxes)
-        for row in range(len(source_items)):
-            count += sum(
-                matrix[row, column] >= threshold
-                and source_items[row].class_name == source_items[column].class_name
-                for column in range(row + 1, len(source_items))
-            )
+        classes = [item.class_name for item in source_items]
+        class_eq = np.equal.outer(classes, classes)
+        triu_mask = np.triu(np.ones((n, n), dtype=bool), k=1)
+        count += int(np.count_nonzero((matrix >= threshold) & class_eq & triu_mask))
     return count
 
 
@@ -60,9 +63,5 @@ def _occlusion(detections: Sequence[Detection]) -> float:
         return 0.0
     boxes = [item.box for item in detections]
     matrix = pairwise_iou(boxes, boxes)
-    values = [
-        matrix[row, column]
-        for row in range(len(detections))
-        for column in range(row + 1, len(detections))
-    ]
-    return float(max(values, default=0.0))
+    triu_vals = matrix[np.triu_indices(len(detections), k=1)]
+    return float(triu_vals.max()) if triu_vals.size > 0 else 0.0

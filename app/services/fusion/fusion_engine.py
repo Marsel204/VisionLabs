@@ -121,6 +121,7 @@ class FusionEngine:
         if not detections:
             return []
         groups = [_Group([item], {index}) for index, item in enumerate(detections)]
+        elem_to_group: list[_Group] = list(groups)
         all_boxes = [item.box for item in detections]
         matrix = pairwise_iou(all_boxes, all_boxes)
         candidates = sorted(
@@ -135,20 +136,28 @@ class FusionEngine:
             and matrix[first, second] >= self.config.iou_threshold
         )
         for iou, first, second in reversed(candidates):
-            left = next(group for group in groups if first in group.ids)
-            right = next(group for group in groups if second in group.ids)
-            same_source = any(
-                item.source == other.source
-                for item in left.members
-                for other in right.members
-            )
-            if left is right or same_source:
+            left = elem_to_group[first]
+            right = elem_to_group[second]
+            if left is right:
+                continue
+            left_sources = {item.source for item in left.members}
+            right_sources = {item.source for item in right.members}
+            if not left_sources.isdisjoint(right_sources):
                 continue
             left.members.extend(right.members)
             left.ids.update(right.ids)
             left.iou = max(left.iou, iou)
-            groups.remove(right)
-        return groups
+            for idx in right.ids:
+                elem_to_group[idx] = left
+
+        unique_groups: list[_Group] = []
+        seen_group_ids: set[int] = set()
+        for g in elem_to_group:
+            gid = id(g)
+            if gid not in seen_group_ids:
+                seen_group_ids.add(gid)
+                unique_groups.append(g)
+        return unique_groups
 
 
 def fuse_detections(

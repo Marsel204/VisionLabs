@@ -125,15 +125,37 @@ class AnnotationCanvas(QGraphicsView):
 
     def set_document(self, document: AnnotationDocument) -> None:
         """Load one image and render its current boxes."""
-        image = QImage(str(document.image_path))
-        if image.isNull():
-            raise ValueError(f"could not load image: {document.image_path}")
+        is_new_image = (
+            self._document is None
+            or self._document.image_path != document.image_path
+            or self._image_item is None
+        )
+
+        if is_new_image:
+            image = QImage(str(document.image_path))
+            if image.isNull():
+                raise ValueError(f"could not load image: {document.image_path}")
+            if document.image_width != image.width() or document.image_height != image.height():
+                document = AnnotationDocument(
+                    document.image_path,
+                    image.width(),
+                    image.height(),
+                    document.annotations,
+                )
+            self._scene.clear()
+            self._annotation_items.clear()
+            self._selected = None
+            self._image_item = self._scene.addPixmap(QPixmap.fromImage(image))
+            self._image_item.setZValue(-1)
+        else:
+            # Remove previous annotation items without reloading pixmap from disk
+            for item, _ in self._annotation_items:
+                self._scene.removeItem(item)
+            self._annotation_items.clear()
+            self._selected = None
+
         self._document = document
-        self._scene.clear()
-        self._annotation_items.clear()
-        self._selected = None
-        self._image_item = self._scene.addPixmap(QPixmap.fromImage(image))
-        self._image_item.setZValue(-1)
+
         for annotation in document.annotations:
             fusion_status = self._fusion_statuses.get(annotation.annotation_id)
             if self._status_filter is not None and fusion_status not in self._status_filter:
@@ -166,9 +188,11 @@ class AnnotationCanvas(QGraphicsView):
             )
             self._scene.addItem(item)
             self._annotation_items.append((item, annotation))
-        self._scene.setSceneRect(self._scene.itemsBoundingRect())
-        self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-        self._zoom = 1.0
+
+        if is_new_image:
+            self._scene.setSceneRect(self._scene.itemsBoundingRect())
+            self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            self._zoom = 1.0
         self._update_hover_cursor()
 
     def set_fusion_statuses(self, statuses: dict[object, FusionStatus]) -> None:

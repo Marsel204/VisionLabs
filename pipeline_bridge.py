@@ -402,7 +402,7 @@ class SamSegmenter:
         else:
             device = self._device_str
 
-        dtype = torch.float32
+        dtype = torch.float16 if device == "cuda" else torch.float32
         LOGGER.info("Loading SAM model '%s' on %s (dtype: %s)", self.model_id, device, dtype)
 
         if "sam2" in self.model_id.lower():
@@ -645,19 +645,33 @@ class AutoAnnotationPipeline:
 
         # Layer 1.5: Florence-2 VLM Crop Verification
         if self.enable_vlm and detections:
-            from src.vlm_helper import Florence2VLM, crop_image, verify_crop_class
+            from src.vlm_helper import (
+                Florence2VLM,
+                crop_image,
+                verify_crop_classes_batch,
+            )
 
             if self.vlm_verifier is None:
                 self.vlm_verifier = Florence2VLM(model_id=self.vlm_model_id, device=self._device)
 
-            verified_detections = []
-            for class_name, class_id, score, box in detections:
-                crop = crop_image(
+            crops = [
+                crop_image(
                     image,
                     (box.xmin, box.ymin, box.xmax, box.ymax),
                     normalized=False,
                 )
-                if verify_crop_class(crop, class_name, vlm=self.vlm_verifier):
+                for _, _, _, box in detections
+            ]
+            target_classes = [class_name for class_name, _, _, _ in detections]
+            matches = verify_crop_classes_batch(
+                crops, target_classes, vlm=self.vlm_verifier
+            )
+
+            verified_detections = []
+            for (class_name, class_id, score, box), is_matched in zip(
+                detections, matches, strict=True
+            ):
+                if is_matched:
                     verified_detections.append((class_name, class_id, score, box))
                 else:
                     LOGGER.info(

@@ -425,3 +425,42 @@ def test_generate_annotations_filters_by_enabled_classes() -> None:
 
     assert len(results) == 1
     assert results[0][0] == "motorcycle"
+
+
+def test_generate_captions_batch_and_verify_crop_classes_batch() -> None:
+    """Test batch caption generation and crop verification."""
+    from src.vlm_helper import verify_crop_classes_batch
+
+    mock_processor = MagicMock()
+    mock_model = MagicMock()
+
+    mock_processor.return_value = {
+        "input_ids": MagicMock(),
+        "pixel_values": MagicMock(),
+    }
+    mock_model.generate.return_value = MagicMock()
+    mock_processor.batch_decode.return_value = [
+        "a red sedan car",
+        "a person riding a motorbike",
+    ]
+    mock_processor.post_process_generation.side_effect = [
+        {"<CAPTION>": "a red sedan car"},
+        {"<CAPTION>": "a person riding a motorbike"},
+    ]
+
+    vlm = Florence2VLM(model=mock_model, processor=mock_processor, device="cpu")
+
+    crops = [
+        Image.new("RGB", (100, 100), color="red"),
+        Image.new("RGB", (100, 100), color="blue"),
+    ]
+    captions = vlm.generate_captions_batch(crops)
+    assert captions == ["a red sedan car", "a person riding a motorbike"]
+
+    mock_processor.post_process_generation.side_effect = [
+        {"<CAPTION>": "a red sedan car"},
+        {"<CAPTION>": "a person riding a motorbike"},
+    ]
+    matches = verify_crop_classes_batch(crops, ["car", "motorcycle"], vlm=vlm)
+    assert matches == [True, True]
+

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import shutil
 import zipfile
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -75,7 +76,7 @@ class YoloExporter(DatasetExporter):
             for document in split_documents_list:
                 image_target = images / document.image_path.name
                 label_target = labels / f"{document.image_path.stem}.txt"
-                image_target.write_bytes(document.image_path.read_bytes())
+                shutil.copyfile(document.image_path, image_target)
                 lines = []
                 for annotation in document.annotations:
                     center_x, center_y, width, height = annotation.box.to_yolo()
@@ -173,9 +174,7 @@ class CocoExporter(DatasetExporter):
         image_destination = destination / "images"
         image_destination.mkdir(exist_ok=True)
         for document in documents:
-            (image_destination / document.image_path.name).write_bytes(
-                document.image_path.read_bytes()
-            )
+            shutil.copyfile(document.image_path, image_destination / document.image_path.name)
         result = destination / "annotations.json"
         result.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         LOGGER.info("exported %d documents to COCO at %s", len(documents), result)
