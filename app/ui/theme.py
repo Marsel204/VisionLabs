@@ -1,34 +1,34 @@
-"""Modern design system and unified Dark Slate theme for Traffic Annotator."""
+"""Modern design system and unified Dark Slate theme (Option 4: macOS Pro / Raycast style)."""
 
 from __future__ import annotations
 
 # Semantic Palette Tokens
 PALETTE = {
     # Surfaces
-    "bg_base": "#0d0f14",
-    "bg_dock": "#131620",
-    "bg_card": "#181d2a",
-    "bg_card_elevated": "#1e2434",
-    "bg_control": "#23293a",
-    "bg_control_hover": "#2c344a",
-    "bg_control_active": "#37415d",
+    "bg_base": "#0c0e12",
+    "bg_dock": "#12151c",
+    "bg_card": "#171b24",
+    "bg_card_elevated": "#1e2330",
+    "bg_control": "#222736",
+    "bg_control_hover": "#2b3245",
+    "bg_control_active": "#353d54",
     # Borders
-    "border_subtle": "#1f2535",
-    "border_medium": "#2d354b",
-    "border_highlight": "#414d6b",
-    "border_focus": "#6366f1",
+    "border_subtle": "#1b202c",
+    "border_medium": "#283042",
+    "border_highlight": "#3b4660",
+    "border_focus": "#4f46e5",
     # Text
     "text_primary": "#f8fafc",
     "text_secondary": "#cbd5e1",
     "text_muted": "#64748b",
     # Accents & Semantic
-    "accent_primary": "#6366f1",
-    "accent_primary_hover": "#4f46e5",
+    "accent_primary": "#4f46e5",
+    "accent_primary_hover": "#4338ca",
     "accent_cyan": "#0ea5e9",
     "accent_emerald": "#10b981",
     "accent_amber": "#f59e0b",
     "accent_rose": "#f43f5e",
-    "accent_violet": "#a855f7",
+    "accent_violet": "#8b5cf6",
 }
 
 CLASS_COLORS = {
@@ -40,10 +40,10 @@ CLASS_COLORS = {
 
 
 def get_dark_stylesheet() -> str:
-    """Return the modernized, polished Dark Slate stylesheet for Traffic Annotator."""
+    """Return the modernized, polished Option 4 Dark Slate stylesheet for Traffic Annotator."""
     return f"""
     * {{
-        font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Display", "Segoe UI", Roboto, sans-serif;
     }}
     QWidget {{
         background: {PALETTE["bg_base"]};
@@ -54,6 +54,26 @@ def get_dark_stylesheet() -> str:
     }}
     QMainWindow {{
         background: {PALETTE["bg_base"]};
+    }}
+    QToolBar#topActionBar {{
+        background: {PALETTE["bg_dock"]};
+        border-bottom: 1px solid {PALETTE["border_subtle"]};
+        padding: 5px 12px;
+        spacing: 8px;
+    }}
+    QToolBar#topActionBar QToolButton {{
+        background: {PALETTE["bg_card"]};
+        border: 1px solid {PALETTE["border_medium"]};
+        border-radius: 6px;
+        padding: 5px 12px;
+        color: {PALETTE["text_secondary"]};
+        font-weight: 600;
+        font-size: 12px;
+    }}
+    QToolBar#topActionBar QToolButton:hover {{
+        background: {PALETTE["bg_control_hover"]};
+        border-color: {PALETTE["border_highlight"]};
+        color: {PALETTE["text_primary"]};
     }}
     QDockWidget {{
         background: {PALETTE["bg_dock"]};
@@ -67,7 +87,7 @@ def get_dark_stylesheet() -> str:
         padding: 8px 12px;
         font-size: 12px;
         font-weight: 700;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.4px;
         border-bottom: 1px solid {PALETTE["border_subtle"]};
     }}
     QDockWidget::close-button, QDockWidget::float-button {{
@@ -156,7 +176,7 @@ def get_dark_stylesheet() -> str:
         color: {PALETTE["text_primary"]};
     }}
     QToolButton:checked {{
-        background: rgba(99, 102, 241, 0.22);
+        background: rgba(79, 70, 229, 0.22);
         border: 1px solid {PALETTE["accent_primary"]};
         font-weight: 600;
         color: #a5b4fc;
@@ -240,7 +260,7 @@ def get_dark_stylesheet() -> str:
         background: {PALETTE["bg_dock"]};
         color: {PALETTE["text_muted"]};
         border-top: 1px solid {PALETTE["border_subtle"]};
-        padding: 4px 8px;
+        padding: 4px 10px;
         font-size: 12px;
     }}
     QScrollBar:vertical {{

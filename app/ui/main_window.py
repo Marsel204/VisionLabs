@@ -619,10 +619,10 @@ class MainWindow(QMainWindow):
         # Brand Title Widget
         brand_widget = QWidget()
         brand_layout = QHBoxLayout(brand_widget)
-        brand_layout.setContentsMargins(4, 2, 10, 2)
+        brand_layout.setContentsMargins(4, 2, 12, 2)
         brand_layout.setSpacing(6)
 
-        title_lbl = QLabel("🚦 VisionLabs Traffic Annotator")
+        title_lbl = QLabel("👁️ VisionLabs Annotator")
         title_lbl.setStyleSheet(
             "font-size: 13px; font-weight: 800; color: #f8fafc; letter-spacing: 0.3px;"
         )
@@ -631,18 +631,13 @@ class MainWindow(QMainWindow):
         ver_badge = QLabel("v2.4")
         ver_badge.setStyleSheet(
             "font-size: 10px; font-weight: 700; color: #818cf8; "
-            "background: rgba(99, 102, 241, 0.18); border: 1px solid rgba(99, 102, 241, 0.4); "
+            "background: rgba(79, 70, 229, 0.22); border: 1px solid rgba(99, 102, 241, 0.4); "
             "border-radius: 4px; padding: 1px 5px;"
         )
         brand_layout.addWidget(ver_badge)
         self._top_toolbar.addWidget(brand_widget)
 
-        # Quick Actions
-        auto_label_act = QAction("⚡ Auto Label", self)
-        auto_label_act.setToolTip("Open Roboflow-style Auto Label workspace (Ctrl+Shift+A)")
-        auto_label_act.triggered.connect(self._open_auto_label_dialog)
-        self._top_toolbar.addAction(auto_label_act)
-
+        # Quick Segmented Actions
         save_act = QAction("💾 Save", self)
         save_act.setToolTip("Save Annotations (Ctrl+S)")
         save_act.triggered.connect(self._save_annotations)
@@ -658,6 +653,18 @@ class MainWindow(QMainWindow):
         score_act.triggered.connect(self._score_active_image)
         self._top_toolbar.addAction(score_act)
 
+        # Primary Auto-Label AI button
+        auto_label_btn = QToolButton(self)
+        auto_label_btn.setText("✨ Auto-Label AI")
+        auto_label_btn.setToolTip("Open Roboflow-style Auto Label workspace (Ctrl+Shift+A)")
+        auto_label_btn.setStyleSheet(
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4f46e5, stop:1 #7c3aed); "
+            "border: 1px solid #6366f1; color: #ffffff; font-weight: 700; font-size: 12px; "
+            "border-radius: 6px; padding: 4px 14px; margin-left: 6px;"
+        )
+        auto_label_btn.clicked.connect(self._open_auto_label_dialog)
+        self._top_toolbar.addWidget(auto_label_btn)
+
         # Spacer
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -670,13 +677,14 @@ class MainWindow(QMainWindow):
         dev_bg = "rgba(16, 185, 129, 0.15)" if is_cuda else "rgba(14, 165, 233, 0.15)"
         dev_border = "rgba(16, 185, 129, 0.3)" if is_cuda else "rgba(14, 165, 233, 0.3)"
 
-        self._device_chip = QLabel(f"⚡ {gpu.device.upper()}: {gpu.name}")
+        self._device_chip = QLabel(f"🟢 GPU: {gpu.device.upper()} ({gpu.name})")
         self._device_chip.setStyleSheet(
             f"color: {dev_color}; font-size: 11px; font-weight: 600; "
             f"background: {dev_bg}; border: 1px solid {dev_border}; "
-            f"border-radius: 6px; padding: 3px 8px; margin-right: 6px;"
+            f"border-radius: 6px; padding: 4px 10px; margin-right: 6px;"
         )
         self._top_toolbar.addWidget(self._device_chip)
+
 
     def _setup_status_bar(self) -> None:
         """Create a modern segmented status bar."""
