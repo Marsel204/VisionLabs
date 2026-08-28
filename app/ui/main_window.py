@@ -644,19 +644,19 @@ class MainWindow(QMainWindow):
         # 3. Center Segmented View Buttons
         seg_container = QWidget()
         seg_layout = QHBoxLayout(seg_container)
-        seg_layout.setContentsMargins(4, 4, 4, 4)
-        seg_layout.setSpacing(4)
+        seg_layout.setContentsMargins(3, 3, 3, 3)
+        seg_layout.setSpacing(2)
         seg_container.setStyleSheet(
-            "background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px;"
+            "background: #12151e; border: 1px solid #1f2433; border-radius: 8px;"
         )
 
         active_tab_style = (
-            "background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.05); "
-            "border-radius: 6px; color: #ffffff; font-weight: 600; font-size: 12px; padding: 4px 12px;"
+            "background: #2a3143; border: none; border-radius: 6px; "
+            "color: #ffffff; font-weight: 600; font-size: 12px; padding: 6px 18px;"
         )
         inactive_tab_style = (
             "background: transparent; border: none; border-radius: 6px; "
-            "color: #94a3b8; font-weight: 500; font-size: 12px; padding: 4px 12px;"
+            "color: #8a93a6; font-weight: 500; font-size: 12px; padding: 6px 18px;"
         )
 
         ann_tab = QToolButton(self)
