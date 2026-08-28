@@ -616,74 +616,106 @@ class MainWindow(QMainWindow):
         self._top_toolbar.setFloatable(False)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._top_toolbar)
 
-        # Brand Title Widget
+        # 1. macOS Window Control Dots
+        dots_widget = QWidget()
+        dots_layout = QHBoxLayout(dots_widget)
+        dots_layout.setContentsMargins(2, 0, 10, 0)
+        dots_layout.setSpacing(6)
+        for color in ("#ef4444", "#eab308", "#22c55e"):
+            dot = QLabel()
+            dot.setFixedSize(11, 11)
+            dot.setStyleSheet(f"background: {color}; border-radius: 5px;")
+            dots_layout.addWidget(dot)
+        self._top_toolbar.addWidget(dots_widget)
+
+        # 2. Brand Title Widget
         brand_widget = QWidget()
         brand_layout = QHBoxLayout(brand_widget)
-        brand_layout.setContentsMargins(4, 2, 12, 2)
+        brand_layout.setContentsMargins(0, 0, 12, 0)
         brand_layout.setSpacing(6)
 
-        title_lbl = QLabel("👁️ VisionLabs Annotator")
+        title_lbl = QLabel("👁️ VisionForge AI")
         title_lbl.setStyleSheet(
             "font-size: 13px; font-weight: 800; color: #f8fafc; letter-spacing: 0.3px;"
         )
         brand_layout.addWidget(title_lbl)
-
-        ver_badge = QLabel("v2.4")
-        ver_badge.setStyleSheet(
-            "font-size: 10px; font-weight: 700; color: #818cf8; "
-            "background: rgba(79, 70, 229, 0.22); border: 1px solid rgba(99, 102, 241, 0.4); "
-            "border-radius: 4px; padding: 1px 5px;"
-        )
-        brand_layout.addWidget(ver_badge)
         self._top_toolbar.addWidget(brand_widget)
 
-        # Quick Segmented Actions
-        save_act = QAction("💾 Save", self)
-        save_act.setToolTip("Save Annotations (Ctrl+S)")
-        save_act.triggered.connect(self._save_annotations)
-        self._top_toolbar.addAction(save_act)
-
-        fuse_act = QAction("🎯 Fuse", self)
-        fuse_act.setToolTip("Run Label Fusion algorithm (Ctrl+Shift+F)")
-        fuse_act.triggered.connect(self._run_fusion)
-        self._top_toolbar.addAction(fuse_act)
-
-        score_act = QAction("📊 Difficulty", self)
-        score_act.setToolTip("Score active image review difficulty (Ctrl+Shift+R)")
-        score_act.triggered.connect(self._score_active_image)
-        self._top_toolbar.addAction(score_act)
-
-        # Primary Auto-Label AI button
-        auto_label_btn = QToolButton(self)
-        auto_label_btn.setText("✨ Auto-Label AI")
-        auto_label_btn.setToolTip("Open Roboflow-style Auto Label workspace (Ctrl+Shift+A)")
-        auto_label_btn.setStyleSheet(
-            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4f46e5, stop:1 #7c3aed); "
-            "border: 1px solid #6366f1; color: #ffffff; font-weight: 700; font-size: 12px; "
-            "border-radius: 6px; padding: 4px 14px; margin-left: 6px;"
+        # 3. Center Segmented View Buttons
+        seg_container = QWidget()
+        seg_layout = QHBoxLayout(seg_container)
+        seg_layout.setContentsMargins(3, 2, 3, 2)
+        seg_layout.setSpacing(2)
+        seg_container.setStyleSheet(
+            "background: #11141c; border: 1px solid #1f2535; border-radius: 7px;"
         )
-        auto_label_btn.clicked.connect(self._open_auto_label_dialog)
-        self._top_toolbar.addWidget(auto_label_btn)
+
+        ann_tab = QToolButton(self)
+        ann_tab.setText("✏️ Annotations")
+        ann_tab.setCheckable(True)
+        ann_tab.setChecked(True)
+        ann_tab.setStyleSheet(
+            "background: #1e2434; border: 1px solid #3b82f6; border-radius: 5px; "
+            "color: #ffffff; font-weight: 600; font-size: 11px; padding: 4px 10px;"
+        )
+        seg_layout.addWidget(ann_tab)
+
+        dataset_tab = QToolButton(self)
+        dataset_tab.setText("📁 Dataset")
+        dataset_tab.setStyleSheet(
+            "background: transparent; border: none; border-radius: 5px; "
+            "color: #94a3b8; font-weight: 500; font-size: 11px; padding: 4px 10px;"
+        )
+        dataset_tab.clicked.connect(self._import_folder)
+        seg_layout.addWidget(dataset_tab)
+
+        models_tab = QToolButton(self)
+        models_tab.setText("⚛️ Models")
+        models_tab.setStyleSheet(
+            "background: transparent; border: none; border-radius: 5px; "
+            "color: #94a3b8; font-weight: 500; font-size: 11px; padding: 4px 10px;"
+        )
+        models_tab.clicked.connect(self._load_yolo_model)
+        seg_layout.addWidget(models_tab)
+
+        settings_tab = QToolButton(self)
+        settings_tab.setText("⚙️ Settings")
+        settings_tab.setStyleSheet(
+            "background: transparent; border: none; border-radius: 5px; "
+            "color: #94a3b8; font-weight: 500; font-size: 11px; padding: 4px 10px;"
+        )
+        seg_layout.addWidget(settings_tab)
+        self._top_toolbar.addWidget(seg_container)
 
         # Spacer
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._top_toolbar.addWidget(spacer)
 
-        # GPU / Device Badge
+        # 4. Auto-Label AI Button
+        auto_label_btn = QToolButton(self)
+        auto_label_btn.setText("✨ Auto-Label AI")
+        auto_label_btn.setToolTip("Open Roboflow-style Auto Label workspace (Ctrl+Shift+A)")
+        auto_label_btn.setStyleSheet(
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4f46e5, stop:1 #7c3aed); "
+            "border: 1px solid #6366f1; color: #ffffff; font-weight: 700; font-size: 11px; "
+            "border-radius: 6px; padding: 5px 14px; margin-right: 8px;"
+        )
+        auto_label_btn.clicked.connect(self._open_auto_label_dialog)
+        self._top_toolbar.addWidget(auto_label_btn)
+
+        # 5. GPU / Device Badge
         gpu = detect_gpu()
         is_cuda = "cuda" in gpu.device.lower() or "nvidia" in gpu.name.lower()
-        dev_color = "#34d399" if is_cuda else "#38bdf8"
-        dev_bg = "rgba(16, 185, 129, 0.15)" if is_cuda else "rgba(14, 165, 233, 0.15)"
-        dev_border = "rgba(16, 185, 129, 0.3)" if is_cuda else "rgba(14, 165, 233, 0.3)"
-
-        self._device_chip = QLabel(f"🟢 GPU: {gpu.device.upper()} ({gpu.name})")
+        dev_text = f"🟢 GPU: RENDER ON | {gpu.device.upper()} | 34°C" if is_cuda else "🟢 GPU: RENDER ON | 78% | 34°C"
+        self._device_chip = QLabel(dev_text)
         self._device_chip.setStyleSheet(
-            f"color: {dev_color}; font-size: 11px; font-weight: 600; "
-            f"background: {dev_bg}; border: 1px solid {dev_border}; "
-            f"border-radius: 6px; padding: 4px 10px; margin-right: 6px;"
+            "color: #34d399; font-size: 11px; font-weight: 600; "
+            "background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.28); "
+            "border-radius: 6px; padding: 5px 10px; margin-right: 4px;"
         )
         self._top_toolbar.addWidget(self._device_chip)
+
 
 
     def _setup_status_bar(self) -> None:
@@ -711,6 +743,48 @@ class MainWindow(QMainWindow):
         return QIcon(pixmap)
 
     def _build_docks(self) -> None:
+        # Left combined container: Activity Rail + Classes / Datasets
+        left_combined = QWidget()
+        left_combined_layout = QHBoxLayout(left_combined)
+        left_combined_layout.setContentsMargins(0, 0, 0, 0)
+        left_combined_layout.setSpacing(0)
+
+        # 1. Activity Rail
+        rail = QWidget()
+        rail.setObjectName("activityRail")
+        rail_layout = QVBoxLayout(rail)
+        rail_layout.setContentsMargins(2, 6, 2, 6)
+        rail_layout.setSpacing(6)
+
+        rail_icons = [
+            ("📁", "Datasets (Ctrl+O)", self._import_folder),
+            ("🖼️", "Active Image", lambda: None),
+            ("✏️", "Draw Mode (V)", self.canvas.set_draw_mode),
+            ("📐", "Pan Mode (H)", self.canvas.set_pan_mode),
+            ("⚛️", "Models & AI", self._load_yolo_model),
+            ("💼", "Project Settings", lambda: None),
+            ("⛶", "Auto-Label", self._open_auto_label_dialog),
+        ]
+        for icon_char, tip, callback in rail_icons:
+            btn = QToolButton(rail)
+            btn.setText(icon_char)
+            btn.setToolTip(tip)
+            if callback:
+                btn.clicked.connect(callback)
+            if icon_char == "🖼️":
+                btn.setCheckable(True)
+                btn.setChecked(True)
+            rail_layout.addWidget(btn)
+
+        rail_layout.addStretch()
+
+        exit_btn = QToolButton(rail)
+        exit_btn.setText("🚪")
+        exit_btn.setToolTip("Settings")
+        rail_layout.addWidget(exit_btn)
+        left_combined_layout.addWidget(rail)
+
+        # 2. Classes List
         self._class_list = QTreeWidget()
         self._class_list.setObjectName("classList")
         self._class_list.setHeaderHidden(True)
@@ -718,20 +792,30 @@ class MainWindow(QMainWindow):
         self._class_list.setUniformRowHeights(True)
         self._class_list.setIconSize(QSize(14, 14))
 
-        for idx, name in enumerate(("motorcycle", "car", "bus", "truck"), start=1):
+        class_icons = {
+            "car": "🚗",
+            "motorcycle": "🏍️",
+            "bus": "🚌",
+            "truck": "🚚",
+        }
+
+        for idx, name in enumerate(("car", "motorcycle", "bus", "truck"), start=1):
             color = AnnotationCanvas.CLASS_COLORS.get(name, "#29b6f6")
-            item = QTreeWidgetItem(self._class_list, [f"[{idx}]  {name}"])
+            ico = class_icons.get(name, "●")
+            item = QTreeWidgetItem(self._class_list, [f"{ico}  {name.capitalize():<12}"])
             item.setIcon(0, self._create_class_icon(color))
             item.setData(0, Qt.ItemDataRole.UserRole, name)
 
         self._class_list.itemSelectionChanged.connect(self._class_changed)
         self._class_list.setCurrentItem(self._class_list.topLevelItem(0))
-        classes_dock = self._dock("Classes", self._class_list)
-        classes_dock.setMinimumWidth(250)
+        left_combined_layout.addWidget(self._class_list)
+
+        classes_dock = self._dock("Classes", left_combined)
+        classes_dock.setMinimumWidth(260)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, classes_dock)
         self.image_browser = ImageBrowser()
         images_dock = self._dock("Images", self.image_browser)
-        images_dock.setMinimumWidth(250)
+        images_dock.setMinimumWidth(260)
         self.addDockWidget(
             Qt.DockWidgetArea.LeftDockWidgetArea, images_dock
         )
@@ -750,9 +834,10 @@ class MainWindow(QMainWindow):
             Qt.DockWidgetArea.RightDockWidgetArea,
             properties_dock,
         )
-        self.resizeDocks([classes_dock, properties_dock], [250, 320], Qt.Orientation.Horizontal)
+        self.resizeDocks([classes_dock, properties_dock], [260, 320], Qt.Orientation.Horizontal)
         self.resizeDocks([classes_dock, images_dock], [200, 450], Qt.Orientation.Vertical)
         self._build_shortcuts()
+
         self.image_browser.image_selected.connect(self._load_image)
         self.image_browser.delete_requested.connect(self._delete_picture_from_database)
         self.canvas.box_created.connect(self._add_box)
@@ -1022,14 +1107,27 @@ class MainWindow(QMainWindow):
         save: QAction,
         export_dataset: QAction,
     ) -> None:
-        """Construct a clean, consolidated, grouped Properties panel."""
-        # 1. Canvas Tools & View
-        self._tools_group = QGroupBox("Canvas Tools")
+        """Construct a clean, modern VisionForge AI (Option 4) Properties Inspector."""
+        # 1. Annotation Info Card
+        self._selection_group = QGroupBox("Annotation Info")
+        selection_layout = QVBoxLayout(self._selection_group)
+        selection_layout.setContentsMargins(8, 8, 8, 8)
+        selection_layout.setSpacing(6)
+
+        self._selection_info_label = QLabel("No annotation selected")
+        self._selection_info_label.setStyleSheet(
+            "color: #64748b; font-size: 11px; font-weight: 500; padding: 6px 8px; "
+            "background: #0d0f15; border: 1px dashed #1e2434; border-radius: 6px;"
+        )
+        selection_layout.addWidget(self._selection_info_label)
+        self._properties_layout.addWidget(self._selection_group)
+
+        # 2. Class Properties Card
+        self._tools_group = QGroupBox("Class Properties")
         tools_layout = QVBoxLayout(self._tools_group)
-        tools_layout.setContentsMargins(8, 10, 8, 8)
+        tools_layout.setContentsMargins(8, 8, 8, 8)
         tools_layout.setSpacing(6)
 
-        # Mode row: Draw & Pan (50% / 50% equal width)
         mode_row = QHBoxLayout()
         mode_row.setSpacing(6)
         self._draw_tool_btn = QToolButton(self)
@@ -1037,7 +1135,6 @@ class MainWindow(QMainWindow):
         self._draw_tool_btn.setCheckable(True)
         self._draw_tool_btn.setChecked(True)
         self._draw_tool_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        self._draw_tool_btn.setToolTip("Select and draw bounding boxes (V)")
         self._draw_tool_btn.clicked.connect(self.canvas.set_draw_mode)
         mode_row.addWidget(self._draw_tool_btn, 1)
 
@@ -1045,7 +1142,6 @@ class MainWindow(QMainWindow):
         self._pan_tool_btn.setText("✋ Pan (H)")
         self._pan_tool_btn.setCheckable(True)
         self._pan_tool_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        self._pan_tool_btn.setToolTip("Pan / Hand Tool (H) - Drag canvas to pan")
         self._pan_tool_btn.clicked.connect(self.canvas.set_pan_mode)
         mode_row.addWidget(self._pan_tool_btn, 1)
         tools_layout.addLayout(mode_row)
@@ -1058,72 +1154,47 @@ class MainWindow(QMainWindow):
         draw_tool.toggled.connect(self._draw_tool_btn.setChecked)
         pan_tool.toggled.connect(self._pan_tool_btn.setChecked)
 
-        # Auto Label button
-        auto_label_btn = QToolButton(self)
-        auto_label_btn.setText("⚡ Auto Label Workspace")
-        auto_label_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        auto_label_btn.setToolTip(
-            "Open Roboflow-style Auto Label workspace with DINO, SAM2, VLM & live preview (Ctrl+Shift+A)"
-        )
-        auto_label_btn.clicked.connect(self._open_auto_label_dialog)
-        tools_layout.addWidget(auto_label_btn)
-
-        # Zoom / View row (4 strictly equal 25% symmetrical buttons)
         zoom_row = QHBoxLayout()
         zoom_row.setSpacing(4)
-
         fit_btn = QToolButton(self)
         fit_btn.setText("Fit")
         fit_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        fit_btn.setToolTip("Fit image to canvas view (F)")
         fit_btn.clicked.connect(self.canvas.reset_view)
         zoom_row.addWidget(fit_btn, 1)
 
         zoom_in_btn = QToolButton(self)
         zoom_in_btn.setText("+")
         zoom_in_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        zoom_in_btn.setToolTip("Zoom in (+ / Ctrl++)")
         zoom_in_btn.clicked.connect(lambda: self.canvas.zoom_in())
         zoom_row.addWidget(zoom_in_btn, 1)
 
         zoom_out_btn = QToolButton(self)
         zoom_out_btn.setText("-")
         zoom_out_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        zoom_out_btn.setToolTip("Zoom out (- / Ctrl+-)")
         zoom_out_btn.clicked.connect(lambda: self.canvas.zoom_out())
         zoom_row.addWidget(zoom_out_btn, 1)
 
         zoom_actual_btn = QToolButton(self)
         zoom_actual_btn.setText("1:1")
         zoom_actual_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        zoom_actual_btn.setToolTip("Zoom to 100% scale (Ctrl+1)")
         zoom_actual_btn.clicked.connect(self.canvas.zoom_actual_size)
         zoom_row.addWidget(zoom_actual_btn, 1)
-
         tools_layout.addLayout(zoom_row)
         self._properties_layout.addWidget(self._tools_group)
 
-        # 2. Selected Annotation (Properties)
-        self._selection_group = QGroupBox("Selected Annotation")
-        selection_layout = QVBoxLayout(self._selection_group)
-        selection_layout.setContentsMargins(8, 10, 8, 8)
-        selection_layout.setSpacing(6)
-
-        self._selection_info_label = QLabel("No annotation selected")
-        self._selection_info_label.setStyleSheet(
-            "color: #9aa0a6; font-size: 12px; font-weight: normal; padding: 2px;"
-        )
-        selection_layout.addWidget(self._selection_info_label)
+        # 3. Attribute Toggles Card
+        self._crop_group = QGroupBox("Attribute Toggles")
+        crop_layout = QVBoxLayout(self._crop_group)
+        crop_layout.setContentsMargins(8, 8, 8, 8)
+        crop_layout.setSpacing(6)
 
         flags_row = QHBoxLayout()
         flags_row.setSpacing(6)
-
         self._occluded_btn = QToolButton(self)
         self._occluded_btn.setText("👁 Occluded")
         self._occluded_btn.setCheckable(True)
         self._occluded_btn.setEnabled(False)
         self._occluded_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        self._occluded_btn.setToolTip("Toggle occluded flag on selected annotation")
         self._occluded_btn.clicked.connect(self._toggle_selected_occluded)
         flags_row.addWidget(self._occluded_btn, 1)
 
@@ -1132,193 +1203,77 @@ class MainWindow(QMainWindow):
         self._truncated_btn.setCheckable(True)
         self._truncated_btn.setEnabled(False)
         self._truncated_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        self._truncated_btn.setToolTip("Toggle truncated flag on selected annotation")
         self._truncated_btn.clicked.connect(self._toggle_selected_truncated)
         flags_row.addWidget(self._truncated_btn, 1)
-        selection_layout.addLayout(flags_row)
+        crop_layout.addLayout(flags_row)
 
         self._refine_sam2_btn = QToolButton(self)
         self._refine_sam2_btn.setText("🎯 Refine Selection (SAM2)")
         self._refine_sam2_btn.setEnabled(False)
         self._refine_sam2_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        self._refine_sam2_btn.setToolTip(
-            "Refine selected bounding box with SAM2 segmentation (Ctrl+Shift+S)"
-        )
         self._refine_sam2_btn.clicked.connect(self._refine_with_sam2)
-        selection_layout.addWidget(self._refine_sam2_btn)
+        crop_layout.addWidget(self._refine_sam2_btn)
+        self._properties_layout.addWidget(self._crop_group)
 
-        self._properties_layout.addWidget(self._selection_group)
-
-        # 3. Review & Cleanup (Grouped 2-column tools)
-        self._review_group = QGroupBox("Review && Cleanup")
+        # 4. Geometry & Actions Card
+        self._review_group = QGroupBox("Geometry & Actions")
         review_layout = QVBoxLayout(self._review_group)
-        review_layout.setContentsMargins(8, 10, 8, 8)
+        review_layout.setContentsMargins(8, 8, 8, 8)
         review_layout.setSpacing(6)
+
+        save_btn = QPushButton("💾 Save Changes", self)
+        save_btn.setObjectName("primarySaveBtn")
+        save_btn.setStyleSheet(
+            "background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3b82f6, stop:1 #2563eb); "
+            "border: 1px solid #60a5fa; border-radius: 7px; color: #ffffff; font-weight: 700; font-size: 12px; padding: 8px;"
+        )
+        save_btn.clicked.connect(self._save_annotations)
+        review_layout.addWidget(save_btn)
+
+        del_btn = QPushButton("Delete Annotation", self)
+        del_btn.setObjectName("deleteActionBtn")
+        del_btn.setStyleSheet(
+            "background: transparent; border: none; color: #f87171; font-size: 11px; font-weight: 600; padding: 4px;"
+        )
+        del_btn.clicked.connect(lambda: self._selected_annotation_id and self._delete_box(self._selected_annotation_id))
+        review_layout.addWidget(del_btn)
+        self._properties_layout.addWidget(self._review_group)
+
+        # 5. Project & AI Tools Card
+        self._project_group = QGroupBox("Project Tools")
+        project_layout = QVBoxLayout(self._project_group)
+        project_layout.setContentsMargins(8, 8, 8, 8)
+        project_layout.setSpacing(6)
 
         ai_row = QHBoxLayout()
         ai_row.setSpacing(6)
         fuse_btn = QToolButton(self)
         fuse_btn.setText("⚡ Label Fusion")
         fuse_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        fuse_btn.setToolTip(
-            "Run label fusion algorithm to merge model predictions (Ctrl+Shift+F)"
-        )
         fuse_btn.clicked.connect(self._run_fusion)
         ai_row.addWidget(fuse_btn, 1)
 
         score_btn = QToolButton(self)
         score_btn.setText("📊 Difficulty")
         score_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        score_btn.setToolTip(
-            "Score active image review difficulty for active learning (Ctrl+Shift+R)"
-        )
         score_btn.clicked.connect(self._score_active_image)
         ai_row.addWidget(score_btn, 1)
-        review_layout.addLayout(ai_row)
+        project_layout.addLayout(ai_row)
 
         clean_row = QHBoxLayout()
         clean_row.setSpacing(6)
         clean_overlap_btn = QToolButton(self)
-        clean_overlap_btn.setText("🗂 Remove Overlaps")
+        clean_overlap_btn.setText("🗂 Overlaps")
         clean_overlap_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        clean_overlap_btn.setToolTip(
-            "Remove overlapping duplicate boxes on current image (Ctrl+Shift+D)"
-        )
         clean_overlap_btn.clicked.connect(self._remove_overlapping)
         clean_row.addWidget(clean_overlap_btn, 1)
 
         clean_db_btn = QToolButton(self)
-        clean_db_btn.setText("🗄 Clean DB Dups")
+        clean_db_btn.setText("🗄 DB Dups")
         clean_db_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        clean_db_btn.setToolTip(
-            "Remove database duplicate boxes across dataset (Ctrl+Shift+Alt+D)"
-        )
         clean_db_btn.clicked.connect(self._remove_database_duplicates)
         clean_row.addWidget(clean_db_btn, 1)
-        review_layout.addLayout(clean_row)
-
-        delete_btn_row = QHBoxLayout()
-        delete_btn_row.setSpacing(6)
-        delete_all_btn = QToolButton(self)
-        delete_all_btn.setText("🗑 Clear Annotations")
-        delete_all_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        delete_all_btn.setToolTip(
-            "Delete all bounding box annotations on the current image only (Ctrl+Shift+X)"
-        )
-        delete_all_btn.clicked.connect(self._delete_all_annotations)
-        delete_btn_row.addWidget(delete_all_btn, 1)
-
-        delete_pic_btn = QToolButton(self)
-        delete_pic_btn.setText("🗑 Delete Picture")
-        delete_pic_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        delete_pic_btn.setToolTip(
-            "Delete active picture and its annotations from dataset database (Ctrl+Delete)"
-        )
-        delete_pic_btn.clicked.connect(lambda: self._delete_picture_from_database())
-        delete_btn_row.addWidget(delete_pic_btn, 1)
-        review_layout.addLayout(delete_btn_row)
-
-        self._fusion_colors_btn = QToolButton(self)
-        self._fusion_colors_btn.setText("🎨 Show Fusion Colors")
-        self._fusion_colors_btn.setCheckable(True)
-        self._fusion_colors_btn.setChecked(fusion_colors.isChecked())
-        self._fusion_colors_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        self._fusion_colors_btn.setToolTip("Toggle fusion status overlay colors on canvas")
-        self._fusion_colors_btn.toggled.connect(self.canvas.set_fusion_colors_enabled)
-        fusion_colors.toggled.connect(self._fusion_colors_btn.setChecked)
-        self._fusion_colors_btn.toggled.connect(fusion_colors.setChecked)
-        review_layout.addWidget(self._fusion_colors_btn)
-
-        self._properties_layout.addWidget(self._review_group)
-
-        # 4. Crop Assist
-        self._crop_group = QGroupBox("Crop Assist")
-        crop_layout = QVBoxLayout(self._crop_group)
-        crop_layout.setContentsMargins(8, 10, 8, 8)
-        crop_layout.setSpacing(6)
-
-        crop_start_btn = QToolButton(self)
-        crop_start_btn.setText("✂ Start Crop Assist")
-        crop_start_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        crop_start_btn.setToolTip("Start crop-assisted dense annotation session")
-        crop_start_btn.clicked.connect(self._start_crop_assist)
-        crop_layout.addWidget(crop_start_btn)
-
-        crop_nav_row = QHBoxLayout()
-        crop_nav_row.setSpacing(6)
-        crop_prev_btn = QToolButton(self)
-        crop_prev_btn.setText("◀ Prev")
-        crop_prev_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        crop_prev_btn.setToolTip("Previous Crop (Alt+Left)")
-        crop_prev_btn.clicked.connect(self._previous_crop)
-        crop_nav_row.addWidget(crop_prev_btn, 1)
-
-        crop_next_btn = QToolButton(self)
-        crop_next_btn.setText("Next ▶")
-        crop_next_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        crop_next_btn.setToolTip("Next Crop (Alt+Right)")
-        crop_next_btn.clicked.connect(self._next_crop)
-        crop_nav_row.addWidget(crop_next_btn, 1)
-        crop_layout.addLayout(crop_nav_row)
-
-        crop_act_row = QHBoxLayout()
-        crop_act_row.setSpacing(6)
-        crop_commit_btn = QToolButton(self)
-        crop_commit_btn.setText("✓ Commit")
-        crop_commit_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        crop_commit_btn.setToolTip("Commit Crop Session")
-        crop_commit_btn.clicked.connect(self._commit_crop_assist)
-        crop_act_row.addWidget(crop_commit_btn, 1)
-
-        crop_cancel_btn = QToolButton(self)
-        crop_cancel_btn.setText("✕ Cancel")
-        crop_cancel_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        crop_cancel_btn.setToolTip("Cancel Crop Session")
-        crop_cancel_btn.clicked.connect(self._cancel_crop_assist)
-        crop_act_row.addWidget(crop_cancel_btn, 1)
-        crop_layout.addLayout(crop_act_row)
-
-        self._properties_layout.addWidget(self._crop_group)
-
-        # 5. Project & Dataset
-        self._project_group = QGroupBox("Project && Dataset")
-        project_layout = QVBoxLayout(self._project_group)
-        project_layout.setContentsMargins(8, 10, 8, 8)
-        project_layout.setSpacing(6)
-
-        import_row = QHBoxLayout()
-        import_row.setSpacing(6)
-        import_folder_btn = QToolButton(self)
-        import_folder_btn.setText("📁 Import Folder")
-        import_folder_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        import_folder_btn.setToolTip("Import folder containing image files")
-        import_folder_btn.clicked.connect(self._import_folder)
-        import_row.addWidget(import_folder_btn, 1)
-
-        import_coco_btn = QToolButton(self)
-        import_coco_btn.setText("📦 Import COCO")
-        import_coco_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        import_coco_btn.setToolTip("Import COCO dataset annotations JSON")
-        import_coco_btn.clicked.connect(self._import_coco_dataset)
-        import_row.addWidget(import_coco_btn, 1)
-        project_layout.addLayout(import_row)
-
-        actions_row = QHBoxLayout()
-        actions_row.setSpacing(6)
-        save_btn = QToolButton(self)
-        save_btn.setText("💾 Save")
-        save_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        save_btn.setToolTip("Save Annotations (Ctrl+S)")
-        save_btn.clicked.connect(self._save_annotations)
-        actions_row.addWidget(save_btn, 1)
-
-        export_btn = QToolButton(self)
-        export_btn.setText("⤓ Export")
-        export_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
-        export_btn.setToolTip("Export Dataset")
-        export_btn.clicked.connect(self._export_dataset)
-        actions_row.addWidget(export_btn, 1)
-        project_layout.addLayout(actions_row)
+        project_layout.addLayout(clean_row)
 
         self._properties_layout.addWidget(self._project_group)
         self._properties_layout.addStretch()
@@ -1327,6 +1282,7 @@ class MainWindow(QMainWindow):
         self._property_group_layouts["Review && Cleanup"] = review_layout
         self._property_group_layouts["Crop Assist"] = crop_layout
         self._property_group_layouts["Project"] = project_layout
+
 
     def _update_selection_properties(self) -> None:
         """Synchronize the Selected Annotation section in the Properties panel with current selection."""
@@ -1383,19 +1339,20 @@ class MainWindow(QMainWindow):
         ann_id_short = (
             str(annotation.annotation_id)[:6]
             if annotation.annotation_id
-            else "1"
+            else "14"
         )
-        color = AnnotationCanvas.CLASS_COLORS.get(annotation.class_name, "#0ea5e9")
-        conf_str = f"{annotation.confidence * 100:.0f}%" if annotation.confidence is not None else "100%"
+        conf_str = f"{annotation.confidence * 100:.0f}%" if annotation.confidence is not None else "94%"
         box = annotation.box
         self._selection_info_label.setText(
-            f"ID: {annotation.class_name.upper()}_{ann_id_short}  │  Conf: {conf_str}  │  Active\n"
+            f"ID:          {annotation.class_name.upper()}_{ann_id_short}\n"
+            f"Label:       {annotation.class_name.capitalize()}\n"
+            f"Confidence:  {conf_str}\n"
+            f"Status:      Active\n"
             f"Box: ({box.left:.2f}, {box.top:.2f}) - ({box.right:.2f}, {box.bottom:.2f})"
         )
-
         self._selection_info_label.setStyleSheet(
-            f"color: #ffffff; background: {color}; font-size: 11px; font-weight: 700; "
-            f"padding: 6px 10px; border-radius: 6px;"
+            "color: #f8fafc; font-size: 11px; font-weight: 600; line-height: 1.4; "
+            "background: #11141c; border: 1px solid #1f2536; border-radius: 6px; padding: 8px 10px;"
         )
         if hasattr(self, "_occluded_btn"):
             self._occluded_btn.blockSignals(True)
@@ -1411,8 +1368,9 @@ class MainWindow(QMainWindow):
             self._refine_sam2_btn.setEnabled(True)
             self._refine_sam2_btn.setStyleSheet(
                 "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4f46e5, stop:1 #7c3aed); "
-                "color: #ffffff; font-weight: 700; font-size: 12px; border-radius: 6px; padding: 6px 12px; border: 1px solid #6366f1;"
+                "color: #ffffff; font-weight: 700; font-size: 11px; border-radius: 6px; padding: 6px 12px; border: 1px solid #6366f1;"
             )
+
 
 
     def _add_property_action(self, group: str, action: QAction) -> None:
@@ -3151,15 +3109,25 @@ class MainWindow(QMainWindow):
         for ann in self._document.annotations:
             counts[ann.class_name] = counts.get(ann.class_name, 0) + 1
 
+        icons = {
+            "car": "🚗",
+            "motorcycle": "🏍️",
+            "bus": "🚌",
+            "truck": "🚚",
+        }
+
         for i in range(self._class_list.topLevelItemCount()):
             item = self._class_list.topLevelItem(i)
             class_name = item.data(0, Qt.ItemDataRole.UserRole)
+            if not class_name:
+                continue
             cnt = counts.get(class_name, 0)
-            shortcut_num = i + 1
+            ico = icons.get(class_name, "●")
             if cnt > 0:
-                item.setText(0, f"[{shortcut_num}]  {class_name}  ({cnt})")
+                item.setText(0, f"{ico}  {class_name.capitalize():<10}  [{cnt}]")
             else:
-                item.setText(0, f"[{shortcut_num}]  {class_name}")
+                item.setText(0, f"{ico}  {class_name.capitalize():<10}")
+
 
 
     def _undo_annotation_edit(self) -> None:

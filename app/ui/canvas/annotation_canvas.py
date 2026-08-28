@@ -61,15 +61,15 @@ class AnnotationRectItem(QGraphicsRectItem):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         rect = self.rect()
-        base_color = QColor(self.color_hex)
+        base_color = QColor("#10b981") if self.is_selected else QColor(self.color_hex)
 
         # 1. Background translucent fill
         fill_color = QColor(base_color)
-        fill_color.setAlpha(45 if self.is_selected else 22)
+        fill_color.setAlpha(35 if self.is_selected else 18)
         painter.setBrush(QBrush(fill_color))
 
         # 2. Border
-        pen_width = 2.4 if self.is_selected else 1.8
+        pen_width = 2.4 if self.is_selected else 1.6
         border_pen = QPen(base_color, pen_width)
         painter.setPen(border_pen)
         painter.drawRect(rect)
@@ -102,15 +102,16 @@ class AnnotationRectItem(QGraphicsRectItem):
 
         # 4. Pill Label Badge above or inside top-left of box
         if self.is_selected:
-            ann_id_str = str(self.annotation_id)[:6] if self.annotation_id else "1"
+            ann_id_str = str(self.annotation_id)[:6] if self.annotation_id else "14"
             label_text = f" ID: {self.class_name.upper()}_{ann_id_str} "
             badge_bg = QColor("#10b981")
+            border_badge = None
         else:
             conf_str = f" [{int(self.confidence * 100)}%]" if self.confidence is not None else ""
             status_suffix = f" [{self.status_text}]" if self.status_text else ""
             label_text = f" {self.class_name.capitalize()}{conf_str}{status_suffix} "
-            badge_bg = QColor(base_color)
-            badge_bg.setAlpha(220)
+            badge_bg = QColor(16, 20, 28, 210)
+            border_badge = QPen(QColor(255, 255, 255, 60), 1.0)
 
         font = QFont("-apple-system, Inter, BlinkMacSystemFont, sans-serif", 8, QFont.Weight.Bold)
         painter.setFont(font)
@@ -126,13 +127,15 @@ class AnnotationRectItem(QGraphicsRectItem):
 
         # Draw badge pill background
         painter.setBrush(QBrush(badge_bg))
-        painter.setPen(Qt.PenStyle.NoPen)
+        if border_badge:
+            painter.setPen(border_badge)
+        else:
+            painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(label_rect, 4.0, 4.0)
 
         # Draw badge text
         painter.setPen(QColor("#ffffff"))
         painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, label_text)
-
 
         painter.restore()
 
@@ -148,11 +151,10 @@ class CanvasHud(QWidget):
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(6)
 
-        # Tool Pill
-        self.tool_label = QLabel("✏️ DRAW")
+        # Location / Image Breadcrumb
+        self.tool_label = QLabel("📍 Berlin, Germany")
         self.tool_label.setStyleSheet(
-            "color: #a5b4fc; font-weight: 700; font-size: 11px; padding: 2px 6px; "
-            "background: rgba(99, 102, 241, 0.25); border-radius: 4px; border: 1px solid #4f46e5;"
+            "color: #cbd5e1; font-weight: 600; font-size: 11px; padding: 2px 6px;"
         )
         layout.addWidget(self.tool_label)
 
@@ -169,6 +171,7 @@ class CanvasHud(QWidget):
         layout.addWidget(self.zoom_label)
 
         fit_btn = QToolButton(self)
+
         fit_btn.setText("Fit")
         fit_btn.setFixedSize(28, 22)
         fit_btn.setToolTip("Fit to View (F)")
