@@ -4,17 +4,22 @@ from __future__ import annotations
 
 from enum import Enum, auto
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPen, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsView,
+    QHBoxLayout,
+    QLabel,
+    QToolButton,
+    QWidget,
 )
 
 from app.services.annotation.domain import Annotation, AnnotationDocument, BoundingBox
 from app.services.fusion.fusion_models import FusionStatus
+from app.ui.theme import CLASS_COLORS, PALETTE
 
 
 class CanvasMode(Enum):
@@ -22,6 +27,190 @@ class CanvasMode(Enum):
 
     DRAW = auto()
     PAN = auto()
+
+
+class AnnotationRectItem(QGraphicsRectItem):
+    """Modern styled bounding box with antialiased borders, translucent fill, label pill badge, and selection handles."""
+
+    def __init__(
+        self,
+        rect: QRectF,
+        class_name: str,
+        confidence: float | None = None,
+        color_hex: str = "#0ea5e9",
+        status_text: str = "",
+        is_selected: bool = False,
+    ) -> None:
+        super().__init__(rect)
+        self.class_name = class_name
+        self.confidence = confidence
+        self.color_hex = color_hex
+        self.status_text = status_text
+        self.is_selected = is_selected
+
+    def set_selected_visual(self, selected: bool) -> None:
+        if self.is_selected != selected:
+            self.is_selected = selected
+            self.update()
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:  # type: ignore[no-untyped-def]
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect = self.rect()
+        base_color = QColor(self.color_hex)
+
+        # 1. Background translucent fill
+        fill_color = QColor(base_color)
+        fill_color.setAlpha(45 if self.is_selected else 22)
+        painter.setBrush(QBrush(fill_color))
+
+        # 2. Border
+        pen_width = 2.4 if self.is_selected else 1.8
+        border_pen = QPen(base_color, pen_width)
+        painter.setPen(border_pen)
+        painter.drawRect(rect)
+
+        # 3. Corner Handles when selected
+        if self.is_selected:
+            handle_size = 6.0
+            painter.setBrush(QBrush(QColor("#ffffff")))
+            painter.setPen(QPen(base_color, 1.5))
+
+            corners = [
+                rect.topLeft(),
+                rect.topRight(),
+                rect.bottomLeft(),
+                rect.bottomRight(),
+                QPointF(rect.center().x(), rect.top()),
+                QPointF(rect.center().x(), rect.bottom()),
+                QPointF(rect.left(), rect.center().y()),
+                QPointF(rect.right(), rect.center().y()),
+            ]
+            for pt in corners:
+                painter.drawRect(
+                    QRectF(
+                        pt.x() - handle_size / 2,
+                        pt.y() - handle_size / 2,
+                        handle_size,
+                        handle_size,
+                    )
+                )
+
+        # 4. Pill Label Badge above or inside top-left of box
+        conf_str = f" {self.confidence:.2f}" if self.confidence is not None else ""
+        status_suffix = f" [{self.status_text}]" if self.status_text else ""
+        label_text = f" {self.class_name.upper()}{conf_str}{status_suffix} "
+
+        font = QFont("-apple-system, Inter, BlinkMacSystemFont, sans-serif", 8, QFont.Weight.Bold)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        text_w = fm.horizontalAdvance(label_text) + 6
+        text_h = fm.height() + 3
+
+        # Position label above box if space, otherwise inside top-left
+        label_top = rect.top() - text_h - 2
+        if label_top < 0:
+            label_top = rect.top() + 2
+        label_rect = QRectF(rect.left(), label_top, text_w, text_h)
+
+        # Draw badge pill background
+        badge_bg = QColor(base_color)
+        badge_bg.setAlpha(235)
+        painter.setBrush(QBrush(badge_bg))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(label_rect, 3.5, 3.5)
+
+        # Draw badge text
+        painter.setPen(QColor("#ffffff"))
+        painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, label_text)
+
+        painter.restore()
+
+
+class CanvasHud(QWidget):
+    """Floating translucent HUD on canvas for tool modes, zoom, and image information."""
+
+    def __init__(self, parent: QWidget, canvas: AnnotationCanvas) -> None:
+        super().__init__(parent)
+        self.canvas = canvas
+        self.setObjectName("canvasHud")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(6)
+
+        # Tool Pill
+        self.tool_label = QLabel("✏️ DRAW")
+        self.tool_label.setStyleSheet(
+            "color: #a5b4fc; font-weight: 700; font-size: 11px; padding: 2px 6px; "
+            "background: rgba(99, 102, 241, 0.25); border-radius: 4px; border: 1px solid #4f46e5;"
+        )
+        layout.addWidget(self.tool_label)
+
+        # Separator
+        sep1 = QLabel("│")
+        sep1.setStyleSheet("color: #3b4256; font-size: 11px;")
+        layout.addWidget(sep1)
+
+        # Zoom Controls
+        self.zoom_label = QLabel("100%")
+        self.zoom_label.setStyleSheet(
+            "color: #cbd5e1; font-weight: 600; font-size: 11px; min-width: 36px;"
+        )
+        layout.addWidget(self.zoom_label)
+
+        fit_btn = QToolButton(self)
+        fit_btn.setText("Fit")
+        fit_btn.setFixedSize(28, 22)
+        fit_btn.setToolTip("Fit to View (F)")
+        fit_btn.clicked.connect(self.canvas.reset_view)
+        layout.addWidget(fit_btn)
+
+        zoom_in_btn = QToolButton(self)
+        zoom_in_btn.setText("+")
+        zoom_in_btn.setFixedSize(22, 22)
+        zoom_in_btn.setToolTip("Zoom In (+)")
+        zoom_in_btn.clicked.connect(lambda: self.canvas.zoom_in())
+        layout.addWidget(zoom_in_btn)
+
+        zoom_out_btn = QToolButton(self)
+        zoom_out_btn.setText("−")
+        zoom_out_btn.setFixedSize(22, 22)
+        zoom_out_btn.setToolTip("Zoom Out (-)")
+        zoom_out_btn.clicked.connect(lambda: self.canvas.zoom_out())
+        layout.addWidget(zoom_out_btn)
+
+        # Separator
+        sep2 = QLabel("│")
+        sep2.setStyleSheet("color: #3b4256; font-size: 11px;")
+        layout.addWidget(sep2)
+
+        # Stats Label
+        self.stats_label = QLabel("No Image")
+        self.stats_label.setStyleSheet("color: #94a3b8; font-size: 11px; font-weight: 500;")
+        layout.addWidget(self.stats_label)
+
+        self.setStyleSheet("""
+            QWidget#canvasHud {
+                background: rgba(19, 22, 32, 0.88);
+                border: 1px solid #2d354b;
+                border-radius: 8px;
+            }
+            QToolButton {
+                background: #23293a;
+                border: 1px solid #36415d;
+                border-radius: 4px;
+                color: #e2e8f0;
+                font-size: 11px;
+                font-weight: 600;
+                padding: 0;
+            }
+            QToolButton:hover {
+                background: #2c344a;
+                border-color: #6366f1;
+            }
+        """)
+        self.adjustSize()
 
 
 class AnnotationCanvas(QGraphicsView):
@@ -34,18 +223,18 @@ class AnnotationCanvas(QGraphicsView):
     mode_changed = Signal(object)
 
     CLASS_COLORS = {
-        "motorcycle": "#ff9800",
-        "car": "#29b6f6",
-        "bus": "#66bb6a",
-        "truck": "#ef5350",
+        "motorcycle": "#f59e0b",
+        "car": "#0ea5e9",
+        "bus": "#10b981",
+        "truck": "#f43f5e",
     }
 
     def __init__(self) -> None:
         super().__init__()
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
-        self.setBackgroundBrush(QBrush(QColor("#111215")))
-        self.setStyleSheet("border: none; background: #111215;")
+        self.setBackgroundBrush(QBrush(QColor(PALETTE["bg_base"])))
+        self.setStyleSheet(f"border: none; background: {PALETTE['bg_base']};")
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
@@ -65,13 +254,23 @@ class AnnotationCanvas(QGraphicsView):
         self._drawing = False
         self._draw_start = QPointF()
         self._preview: QGraphicsRectItem | None = None
-        self._annotation_items: list[tuple[QGraphicsRectItem, Annotation]] = []
-        self._resizing: tuple[Annotation, QGraphicsRectItem, str, QRectF] | None = None
-        self._moving: tuple[Annotation, QGraphicsRectItem, QPointF, QRectF] | None = None
+        self._annotation_items: list[tuple[AnnotationRectItem, Annotation]] = []
+        self._resizing: tuple[Annotation, AnnotationRectItem, str, QRectF] | None = None
+        self._moving: tuple[Annotation, AnnotationRectItem, QPointF, QRectF] | None = None
         self._selected: Annotation | None = None
         self._fusion_statuses: dict[object, FusionStatus] = {}
         self._status_filter: set[FusionStatus] | None = None
         self._show_fusion_colors = True
+
+        # Floating HUD Overlay
+        self._hud = CanvasHud(self.viewport(), self)
+        self._hud.move(12, 12)
+        self._hud.show()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "_hud") and self._hud is not None:
+            self._hud.move(12, 12)
 
     @property
     def mode(self) -> CanvasMode:
@@ -84,6 +283,7 @@ class AnnotationCanvas(QGraphicsView):
             self._mode = mode
             self.mode_changed.emit(mode)
             self._update_hover_cursor()
+            self._update_hud()
 
     def set_draw_mode(self) -> None:
         """Switch to bounding box drawing mode."""
@@ -98,12 +298,14 @@ class AnnotationCanvas(QGraphicsView):
         if self._zoom * factor <= 8.0:
             self._zoom *= factor
             self.scale(factor, factor)
+            self._update_hud()
 
     def zoom_out(self, factor: float = 1.15) -> None:
         """Zoom out of the canvas."""
         if self._zoom / factor >= 0.2:
             self._zoom /= factor
             self.scale(1 / factor, 1 / factor)
+            self._update_hud()
 
     def zoom_actual_size(self) -> None:
         """Reset zoom to 100% (1:1 pixel scale)."""
@@ -111,6 +313,7 @@ class AnnotationCanvas(QGraphicsView):
         self._zoom = 1.0
         if self._image_item is not None:
             self.centerOn(self._image_item)
+        self._update_hud()
 
     def pan_by(self, dx: int, dy: int) -> None:
         """Pan the canvas viewport by the specified delta in pixels."""
@@ -122,6 +325,46 @@ class AnnotationCanvas(QGraphicsView):
         if self._scene.sceneRect().isValid():
             self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
             self._zoom = 1.0
+            self._update_hud()
+
+    def select_annotation(self, annotation_id: object) -> None:
+        """Visually mark an annotation as selected on the canvas."""
+        for item, ann in self._annotation_items:
+            is_match = ann.annotation_id == annotation_id
+            item.set_selected_visual(is_match)
+            if is_match:
+                self._selected = ann
+
+    def _update_hud(self) -> None:
+        if not hasattr(self, "_hud") or self._hud is None:
+            return
+        # Tool mode
+        if self._mode == CanvasMode.DRAW:
+            self._hud.tool_label.setText("✏️ DRAW")
+            self._hud.tool_label.setStyleSheet(
+                "color: #a5b4fc; font-weight: 700; font-size: 11px; padding: 2px 6px; "
+                "background: rgba(99, 102, 241, 0.25); border-radius: 4px; border: 1px solid #4f46e5;"
+            )
+        else:
+            self._hud.tool_label.setText("✋ PAN")
+            self._hud.tool_label.setStyleSheet(
+                "color: #38bdf8; font-weight: 700; font-size: 11px; padding: 2px 6px; "
+                "background: rgba(14, 165, 233, 0.25); border-radius: 4px; border: 1px solid #0284c7;"
+            )
+
+        # Zoom level
+        self._hud.zoom_label.setText(f"{int(round(self._zoom * 100))}%")
+
+        # Stats
+        if self._document is not None:
+            count = len(self._document.annotations)
+            count_str = f"{count} box" if count == 1 else f"{count} boxes"
+            self._hud.stats_label.setText(
+                f"{self._document.image_width}×{self._document.image_height} | {count_str}"
+            )
+        else:
+            self._hud.stats_label.setText("No Image")
+        self._hud.adjustSize()
 
     def set_document(self, document: AnnotationDocument) -> None:
         """Load one image and render its current boxes."""
@@ -161,28 +404,33 @@ class AnnotationCanvas(QGraphicsView):
             if self._status_filter is not None and fusion_status not in self._status_filter:
                 continue
             box = annotation.box
-            item = QGraphicsRectItem(
+            rect = QRectF(
                 box.left * document.image_width,
                 box.top * document.image_height,
                 box.width * document.image_width,
                 box.height * document.image_height,
             )
             if fusion_status is None or not self._show_fusion_colors:
-                color = self.CLASS_COLORS.get(annotation.class_name, "#4fc3f7")
+                color = self.CLASS_COLORS.get(annotation.class_name, "#0ea5e9")
             else:
                 color = {
-                    FusionStatus.ACCEPTED: "#43a047",
-                    FusionStatus.NEEDS_REVIEW: "#ab47bc",
-                    FusionStatus.CONFLICT: "#e53935",
-                    FusionStatus.REJECTED: "#757575",
+                    FusionStatus.ACCEPTED: "#10b981",
+                    FusionStatus.NEEDS_REVIEW: "#a855f7",
+                    FusionStatus.CONFLICT: "#f43f5e",
+                    FusionStatus.REJECTED: "#64748b",
                 }[fusion_status]
-            qcol = QColor(color)
-            item.setPen(QPen(qcol, 2))
-            fill_col = QColor(qcol)
-            fill_col.setAlpha(30)
-            item.setBrush(QBrush(fill_col))
+
             status_text = fusion_status.value.replace("_", " ").title() if fusion_status else ""
             suffix = f" | {status_text}" if status_text else ""
+
+            item = AnnotationRectItem(
+                rect=rect,
+                class_name=annotation.class_name,
+                confidence=annotation.confidence,
+                color_hex=color,
+                status_text=status_text,
+                is_selected=False,
+            )
             item.setToolTip(
                 f"{annotation.class_name} ({annotation.confidence or 1.0:.2f}){suffix}"
             )
@@ -194,6 +442,7 @@ class AnnotationCanvas(QGraphicsView):
             self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
             self._zoom = 1.0
         self._update_hover_cursor()
+        self._update_hud()
 
     def set_fusion_statuses(self, statuses: dict[object, FusionStatus]) -> None:
         """Set fusion colors for the current document and repaint the canvas."""
@@ -209,6 +458,7 @@ class AnnotationCanvas(QGraphicsView):
         self._annotation_items.clear()
         self._scene.clear()
         self._update_hover_cursor()
+        self._update_hud()
 
     def clear_fusion_statuses(self) -> None:
         """Return rendering to normal class colors and show all annotations."""
@@ -302,12 +552,14 @@ class AnnotationCanvas(QGraphicsView):
                     if edge:
                         self.setFocus()
                         self._selected = annotation
+                        self.select_annotation(annotation.annotation_id)
                         self.box_selected.emit(annotation.annotation_id)
                         self._resizing = (annotation, item, edge, rect)
                         return
                     if rect.contains(point):
                         self.setFocus()
                         self._selected = annotation
+                        self.select_annotation(annotation.annotation_id)
                         self.box_selected.emit(annotation.annotation_id)
                         self._moving = (annotation, item, point - rect.topLeft(), rect)
                         return
@@ -315,7 +567,7 @@ class AnnotationCanvas(QGraphicsView):
                     self._drawing = True
                     self._draw_start = point
                     self._preview = self._scene.addRect(
-                        QRectF(point, point), QPen(QColor("#ffca28"), 2)
+                        QRectF(point, point), QPen(QColor("#f59e0b"), 2)
                     )
                     return
         super().mousePressEvent(event)
@@ -532,4 +784,5 @@ class AnnotationCanvas(QGraphicsView):
         if 0.2 <= self._zoom * factor <= 8.0:
             self._zoom *= factor
             self.scale(factor, factor)
+            self._update_hud()
         event.accept()

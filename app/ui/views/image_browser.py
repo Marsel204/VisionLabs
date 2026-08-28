@@ -148,21 +148,22 @@ class ImageBrowser(QListWidget):
 
         if count > 0:
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(QColor("#059669"), 1.8))
+            painter.setPen(QPen(QColor("#10b981"), 1.8))
             painter.drawRoundedRect(1, 1, target_size - 2, target_size - 2, 6, 6)
 
             badge_text = str(count) if count < 100 else "99+"
             badge_w = 20 if len(badge_text) > 1 else 15
-            badge_rect = QRect(target_size - badge_w - 3, 3, badge_w, 13)
-            painter.setBrush(QBrush(QColor("#059669")))
+            badge_rect = QRect(target_size - badge_w - 3, 3, badge_w, 14)
+            painter.setBrush(QBrush(QColor("#10b981")))
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(badge_rect, 3, 3)
+            painter.drawRoundedRect(badge_rect, 3.5, 3.5)
 
             painter.setPen(QColor("#ffffff"))
-            font = QFont("sans-serif", 7)
+            font = QFont("-apple-system, Inter, sans-serif", 8)
             font.setBold(True)
             painter.setFont(font)
             painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, badge_text)
+
 
         painter.end()
 

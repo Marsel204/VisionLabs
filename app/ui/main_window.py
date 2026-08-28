@@ -595,19 +595,100 @@ class MainWindow(QMainWindow):
         self._crop_index = 0
         self._crop_directory: Path | None = None
         self._enabled_classes = {"motorcycle", "car", "bus", "truck"}
+        self._build_top_header()
         self._build_docks()
         self._document: AnnotationDocument | None = None
         self._history: AnnotationHistory | None = None
         self._selected_class = "car"
         self._selected_annotation_id = None
-        self.setStatusBar(QStatusBar(self))
-        gpu = detect_gpu()
-        self.statusBar().showMessage(f"Ready | Device: {gpu.device} ({gpu.name})")
+        self._setup_status_bar()
         LOGGER.info("main window initialized")
 
     def _build_central_view(self) -> None:
         self.canvas = AnnotationCanvas()
         self.setCentralWidget(self.canvas)
+
+    def _build_top_header(self) -> None:
+        """Create a modern top application header bar with branding and quick actions."""
+        self._top_toolbar = QToolBar("Top Actions", self)
+        self._top_toolbar.setObjectName("topActionBar")
+        self._top_toolbar.setMovable(False)
+        self._top_toolbar.setFloatable(False)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._top_toolbar)
+
+        # Brand Title Widget
+        brand_widget = QWidget()
+        brand_layout = QHBoxLayout(brand_widget)
+        brand_layout.setContentsMargins(4, 2, 10, 2)
+        brand_layout.setSpacing(6)
+
+        title_lbl = QLabel("🚦 VisionLabs Traffic Annotator")
+        title_lbl.setStyleSheet(
+            "font-size: 13px; font-weight: 800; color: #f8fafc; letter-spacing: 0.3px;"
+        )
+        brand_layout.addWidget(title_lbl)
+
+        ver_badge = QLabel("v2.4")
+        ver_badge.setStyleSheet(
+            "font-size: 10px; font-weight: 700; color: #818cf8; "
+            "background: rgba(99, 102, 241, 0.18); border: 1px solid rgba(99, 102, 241, 0.4); "
+            "border-radius: 4px; padding: 1px 5px;"
+        )
+        brand_layout.addWidget(ver_badge)
+        self._top_toolbar.addWidget(brand_widget)
+
+        # Quick Actions
+        auto_label_act = QAction("⚡ Auto Label", self)
+        auto_label_act.setToolTip("Open Roboflow-style Auto Label workspace (Ctrl+Shift+A)")
+        auto_label_act.triggered.connect(self._open_auto_label_dialog)
+        self._top_toolbar.addAction(auto_label_act)
+
+        save_act = QAction("💾 Save", self)
+        save_act.setToolTip("Save Annotations (Ctrl+S)")
+        save_act.triggered.connect(self._save_annotations)
+        self._top_toolbar.addAction(save_act)
+
+        fuse_act = QAction("🎯 Fuse", self)
+        fuse_act.setToolTip("Run Label Fusion algorithm (Ctrl+Shift+F)")
+        fuse_act.triggered.connect(self._run_fusion)
+        self._top_toolbar.addAction(fuse_act)
+
+        score_act = QAction("📊 Difficulty", self)
+        score_act.setToolTip("Score active image review difficulty (Ctrl+Shift+R)")
+        score_act.triggered.connect(self._score_active_image)
+        self._top_toolbar.addAction(score_act)
+
+        # Spacer
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._top_toolbar.addWidget(spacer)
+
+        # GPU / Device Badge
+        gpu = detect_gpu()
+        is_cuda = "cuda" in gpu.device.lower() or "nvidia" in gpu.name.lower()
+        dev_color = "#34d399" if is_cuda else "#38bdf8"
+        dev_bg = "rgba(16, 185, 129, 0.15)" if is_cuda else "rgba(14, 165, 233, 0.15)"
+        dev_border = "rgba(16, 185, 129, 0.3)" if is_cuda else "rgba(14, 165, 233, 0.3)"
+
+        self._device_chip = QLabel(f"⚡ {gpu.device.upper()}: {gpu.name}")
+        self._device_chip.setStyleSheet(
+            f"color: {dev_color}; font-size: 11px; font-weight: 600; "
+            f"background: {dev_bg}; border: 1px solid {dev_border}; "
+            f"border-radius: 6px; padding: 3px 8px; margin-right: 6px;"
+        )
+        self._top_toolbar.addWidget(self._device_chip)
+
+    def _setup_status_bar(self) -> None:
+        """Create a modern segmented status bar."""
+        sb = QStatusBar(self)
+        sb.setSizeGripEnabled(False)
+        self.setStatusBar(sb)
+
+        shortcuts_hint = QLabel("⌨️ [V] Draw  [H] Pan  [1-4] Classes  [Del] Delete  [Ctrl+S] Save")
+        shortcuts_hint.setStyleSheet("color: #64748b; font-size: 11px; font-weight: 500; padding: 0 8px;")
+        sb.addPermanentWidget(shortcuts_hint)
+        sb.showMessage("Ready")
+
 
     @staticmethod
     def _create_class_icon(color_hex: str, size: int = 14) -> QIcon:
@@ -622,22 +703,22 @@ class MainWindow(QMainWindow):
         return QIcon(pixmap)
 
     def _build_docks(self) -> None:
-        class_list = QTreeWidget()
-        class_list.setObjectName("classList")
-        class_list.setHeaderHidden(True)
-        class_list.setIndentation(0)
-        class_list.setUniformRowHeights(True)
-        class_list.setIconSize(QSize(14, 14))
+        self._class_list = QTreeWidget()
+        self._class_list.setObjectName("classList")
+        self._class_list.setHeaderHidden(True)
+        self._class_list.setIndentation(0)
+        self._class_list.setUniformRowHeights(True)
+        self._class_list.setIconSize(QSize(14, 14))
 
-        for name in ("motorcycle", "car", "bus", "truck"):
+        for idx, name in enumerate(("motorcycle", "car", "bus", "truck"), start=1):
             color = AnnotationCanvas.CLASS_COLORS.get(name, "#29b6f6")
-            item = QTreeWidgetItem(class_list, [name])
+            item = QTreeWidgetItem(self._class_list, [f"[{idx}]  {name}"])
             item.setIcon(0, self._create_class_icon(color))
             item.setData(0, Qt.ItemDataRole.UserRole, name)
 
-        class_list.itemSelectionChanged.connect(self._class_changed)
-        class_list.setCurrentItem(class_list.topLevelItem(0))
-        classes_dock = self._dock("Classes", class_list)
+        self._class_list.itemSelectionChanged.connect(self._class_changed)
+        self._class_list.setCurrentItem(self._class_list.topLevelItem(0))
+        classes_dock = self._dock("Classes", self._class_list)
         classes_dock.setMinimumWidth(250)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, classes_dock)
         self.image_browser = ImageBrowser()
@@ -1245,6 +1326,10 @@ class MainWindow(QMainWindow):
             return
         if self._document is None or self._selected_annotation_id is None:
             self._selection_info_label.setText("No annotation selected")
+            self._selection_info_label.setStyleSheet(
+                "color: #64748b; font-size: 12px; font-weight: 500; padding: 4px 8px; "
+                "background: #12151f; border: 1px dashed #23293a; border-radius: 6px;"
+            )
             if hasattr(self, "_occluded_btn"):
                 self._occluded_btn.blockSignals(True)
                 self._occluded_btn.setChecked(False)
@@ -1270,7 +1355,8 @@ class MainWindow(QMainWindow):
         if annotation is None:
             self._selection_info_label.setText("No annotation selected")
             self._selection_info_label.setStyleSheet(
-                "color: #8b90a0; font-size: 12px; font-weight: normal; padding: 2px;"
+                "color: #64748b; font-size: 12px; font-weight: 500; padding: 4px 8px; "
+                "background: #12151f; border: 1px dashed #23293a; border-radius: 6px;"
             )
             if hasattr(self, "_occluded_btn"):
                 self._occluded_btn.blockSignals(True)
@@ -1291,12 +1377,14 @@ class MainWindow(QMainWindow):
             if annotation.annotation_id
             else ""
         )
-        color = AnnotationCanvas.CLASS_COLORS.get(annotation.class_name, "#4fc3f7")
+        color = AnnotationCanvas.CLASS_COLORS.get(annotation.class_name, "#0ea5e9")
+        conf_str = f" • {annotation.confidence * 100:.0f}%" if annotation.confidence is not None else ""
         self._selection_info_label.setText(
-            f"● {annotation.class_name.upper()} (ID: {ann_id_short})"
+            f"● {annotation.class_name.upper()} #{ann_id_short}{conf_str}"
         )
         self._selection_info_label.setStyleSheet(
-            f"color: {color}; font-size: 12px; font-weight: 600; padding: 2px;"
+            f"color: #ffffff; background: {color}; font-size: 12px; font-weight: 700; "
+            f"padding: 4px 8px; border-radius: 6px;"
         )
         if hasattr(self, "_occluded_btn"):
             self._occluded_btn.blockSignals(True)
@@ -1350,6 +1438,8 @@ class MainWindow(QMainWindow):
 
     def _select_annotation(self, annotation_id) -> None:  # type: ignore[no-untyped-def]
         self._selected_annotation_id = annotation_id
+        if hasattr(self, "canvas") and hasattr(self.canvas, "select_annotation"):
+            self.canvas.select_annotation(annotation_id)
         self._update_selection_properties()
 
     def _class_changed(self) -> None:
@@ -1665,8 +1755,12 @@ class MainWindow(QMainWindow):
         self.canvas.clear_fusion_statuses()
         self._selected_annotation_id = None
         self.canvas.set_document(self._document)
-        self.statusBar().showMessage(f"Annotating {path.name} | class: {self._selected_class}")
+        self.statusBar().showMessage(
+            f"📄 {path.name} ({image.width()}×{image.height()} px) | Class: {self._selected_class.capitalize()}"
+        )
         self._update_selection_properties()
+        self._update_class_counts()
+
 
     def _add_box(self, box) -> None:  # type: ignore[no-untyped-def]
         if self._history is None:
@@ -1678,6 +1772,7 @@ class MainWindow(QMainWindow):
         self.canvas.set_document(self._document)
         self.statusBar().showMessage(f"Added {self._selected_class} box")
         self._update_selection_properties()
+        self._update_class_counts()
 
     def _resize_box(self, annotation_id, box) -> None:  # type: ignore[no-untyped-def]
         if self._history is None:
@@ -1698,6 +1793,7 @@ class MainWindow(QMainWindow):
         self._remember_current_document()
         self.canvas.set_document(self._document)
         self.statusBar().showMessage("Resized annotation")
+        self._update_class_counts()
 
     def _delete_box(self, annotation_id) -> None:  # type: ignore[no-untyped-def]
         if self._history is None:
@@ -1717,8 +1813,9 @@ class MainWindow(QMainWindow):
         self._document = self._history.execute(RemoveAnnotationCommand(annotation))
         self._remember_current_document()
         self.canvas.set_document(self._document)
-        self.statusBar().showMessage("Deleted annotation")
+        self.statusBar().showMessage(f"Deleted {annotation.class_name} box")
         self._update_selection_properties()
+        self._update_class_counts()
 
     def _save_annotations(self) -> None:
         if self._crop_session is not None:
@@ -1744,6 +1841,7 @@ class MainWindow(QMainWindow):
             self.image_browser.update_annotation_count(
                 self._document.image_path, len(self._document.annotations)
             )
+        self._update_class_counts()
 
     def _refresh_image_browser_order(self, preserve_current: bool = True) -> None:
         """Sort and refresh the Image Browser to keep annotated images at the top."""
@@ -1751,6 +1849,7 @@ class MainWindow(QMainWindow):
             return
 
         current_path = self._document.image_path if self._document else None
+
 
         annotated_paths = [
             p
@@ -3016,6 +3115,36 @@ class MainWindow(QMainWindow):
         redo.triggered.connect(self._redo_annotation_edit)
         self.addAction(undo)
         self.addAction(redo)
+
+        for idx in range(4):
+            action = QAction(self)
+            action.setShortcut(f"{idx + 1}")
+            action.triggered.connect(lambda _, i=idx: self._select_class_by_index(i))
+            self.addAction(action)
+
+    def _select_class_by_index(self, idx: int) -> None:
+        if hasattr(self, "_class_list") and self._class_list.topLevelItemCount() > idx:
+            item = self._class_list.topLevelItem(idx)
+            self._class_list.setCurrentItem(item)
+
+    def _update_class_counts(self) -> None:
+        """Update annotation count tags in the class list widget."""
+        if not hasattr(self, "_class_list") or self._document is None:
+            return
+        counts: dict[str, int] = {}
+        for ann in self._document.annotations:
+            counts[ann.class_name] = counts.get(ann.class_name, 0) + 1
+
+        for i in range(self._class_list.topLevelItemCount()):
+            item = self._class_list.topLevelItem(i)
+            class_name = item.data(0, Qt.ItemDataRole.UserRole)
+            cnt = counts.get(class_name, 0)
+            shortcut_num = i + 1
+            if cnt > 0:
+                item.setText(0, f"[{shortcut_num}]  {class_name}  ({cnt})")
+            else:
+                item.setText(0, f"[{shortcut_num}]  {class_name}")
+
 
     def _undo_annotation_edit(self) -> None:
         """Undo the latest annotation edit and refresh the canvas."""
