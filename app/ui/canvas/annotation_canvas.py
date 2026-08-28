@@ -148,8 +148,8 @@ class CanvasHud(QWidget):
         self.canvas = canvas
         self.setObjectName("canvasHud")
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
-        layout.setSpacing(6)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
 
         # Location / Image Breadcrumb
         self.tool_label = QLabel("📍 Berlin, Germany")
@@ -160,7 +160,7 @@ class CanvasHud(QWidget):
 
         # Separator
         sep1 = QLabel("│")
-        sep1.setStyleSheet("color: #3b4256; font-size: 11px;")
+        sep1.setStyleSheet("color: rgba(255, 255, 255, 0.15); font-size: 11px; margin: 0 4px;")
         layout.addWidget(sep1)
 
         # Zoom Controls
@@ -194,7 +194,7 @@ class CanvasHud(QWidget):
 
         # Separator
         sep2 = QLabel("│")
-        sep2.setStyleSheet("color: #3b4256; font-size: 11px;")
+        sep2.setStyleSheet("color: rgba(255, 255, 255, 0.15); font-size: 11px; margin: 0 4px;")
         layout.addWidget(sep2)
 
         # Stats Label
@@ -204,22 +204,25 @@ class CanvasHud(QWidget):
 
         self.setStyleSheet("""
             QWidget#canvasHud {
-                background: rgba(19, 22, 32, 0.88);
-                border: 1px solid #2d354b;
-                border-radius: 8px;
+                background: rgba(15, 23, 42, 0.85);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 12px;
             }
             QToolButton {
-                background: #23293a;
-                border: 1px solid #36415d;
-                border-radius: 4px;
+                background: transparent;
+                border: none;
+                border-radius: 6px;
                 color: #e2e8f0;
                 font-size: 11px;
                 font-weight: 600;
                 padding: 0;
             }
             QToolButton:hover {
-                background: #2c344a;
-                border-color: #6366f1;
+                background: rgba(255, 255, 255, 0.1);
+                color: #ffffff;
+            }
+            QToolButton:pressed {
+                background: rgba(255, 255, 255, 0.15);
             }
         """)
         self.adjustSize()
@@ -354,14 +357,14 @@ class AnnotationCanvas(QGraphicsView):
         if self._mode == CanvasMode.DRAW:
             self._hud.tool_label.setText("✏️ DRAW")
             self._hud.tool_label.setStyleSheet(
-                "color: #a5b4fc; font-weight: 700; font-size: 11px; padding: 2px 6px; "
-                "background: rgba(99, 102, 241, 0.25); border-radius: 4px; border: 1px solid #4f46e5;"
+                "color: #a5b4fc; font-weight: 700; font-size: 11px; padding: 4px 8px; "
+                "background: rgba(99, 102, 241, 0.15); border-radius: 6px; border: none;"
             )
         else:
             self._hud.tool_label.setText("✋ PAN")
             self._hud.tool_label.setStyleSheet(
-                "color: #38bdf8; font-weight: 700; font-size: 11px; padding: 2px 6px; "
-                "background: rgba(14, 165, 233, 0.25); border-radius: 4px; border: 1px solid #0284c7;"
+                "color: #38bdf8; font-weight: 700; font-size: 11px; padding: 4px 8px; "
+                "background: rgba(14, 165, 233, 0.15); border-radius: 6px; border: none;"
             )
 
         # Zoom level

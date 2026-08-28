@@ -644,46 +644,43 @@ class MainWindow(QMainWindow):
         # 3. Center Segmented View Buttons
         seg_container = QWidget()
         seg_layout = QHBoxLayout(seg_container)
-        seg_layout.setContentsMargins(3, 2, 3, 2)
-        seg_layout.setSpacing(2)
+        seg_layout.setContentsMargins(4, 4, 4, 4)
+        seg_layout.setSpacing(4)
         seg_container.setStyleSheet(
-            "background: #11141c; border: 1px solid #1f2535; border-radius: 7px;"
+            "background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px;"
+        )
+
+        active_tab_style = (
+            "background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.05); "
+            "border-radius: 6px; color: #ffffff; font-weight: 600; font-size: 12px; padding: 4px 12px;"
+        )
+        inactive_tab_style = (
+            "background: transparent; border: none; border-radius: 6px; "
+            "color: #94a3b8; font-weight: 500; font-size: 12px; padding: 4px 12px;"
         )
 
         ann_tab = QToolButton(self)
         ann_tab.setText("✏️ Annotations")
         ann_tab.setCheckable(True)
         ann_tab.setChecked(True)
-        ann_tab.setStyleSheet(
-            "background: #1e2434; border: 1px solid #3b82f6; border-radius: 5px; "
-            "color: #ffffff; font-weight: 600; font-size: 11px; padding: 4px 10px;"
-        )
+        ann_tab.setStyleSheet(active_tab_style)
         seg_layout.addWidget(ann_tab)
 
         dataset_tab = QToolButton(self)
         dataset_tab.setText("📁 Dataset")
-        dataset_tab.setStyleSheet(
-            "background: transparent; border: none; border-radius: 5px; "
-            "color: #94a3b8; font-weight: 500; font-size: 11px; padding: 4px 10px;"
-        )
+        dataset_tab.setStyleSheet(inactive_tab_style)
         dataset_tab.clicked.connect(self._import_folder)
         seg_layout.addWidget(dataset_tab)
 
         models_tab = QToolButton(self)
         models_tab.setText("⚛️ Models")
-        models_tab.setStyleSheet(
-            "background: transparent; border: none; border-radius: 5px; "
-            "color: #94a3b8; font-weight: 500; font-size: 11px; padding: 4px 10px;"
-        )
+        models_tab.setStyleSheet(inactive_tab_style)
         models_tab.clicked.connect(self._load_yolo_model)
         seg_layout.addWidget(models_tab)
 
         settings_tab = QToolButton(self)
         settings_tab.setText("⚙️ Settings")
-        settings_tab.setStyleSheet(
-            "background: transparent; border: none; border-radius: 5px; "
-            "color: #94a3b8; font-weight: 500; font-size: 11px; padding: 4px 10px;"
-        )
+        settings_tab.setStyleSheet(inactive_tab_style)
         seg_layout.addWidget(settings_tab)
         self._top_toolbar.addWidget(seg_container)
 
@@ -697,9 +694,9 @@ class MainWindow(QMainWindow):
         auto_label_btn.setText("✨ Auto-Label AI")
         auto_label_btn.setToolTip("Open Roboflow-style Auto Label workspace (Ctrl+Shift+A)")
         auto_label_btn.setStyleSheet(
-            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4f46e5, stop:1 #7c3aed); "
-            "border: 1px solid #6366f1; color: #ffffff; font-weight: 700; font-size: 11px; "
-            "border-radius: 6px; padding: 5px 14px; margin-right: 8px;"
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4f46e5, stop:1 #9333ea); "
+            "border: 1px solid rgba(255, 255, 255, 0.2); color: #ffffff; font-weight: 600; font-size: 11px; "
+            "border-radius: 12px; padding: 4px 14px; margin-right: 8px;"
         )
         auto_label_btn.clicked.connect(self._open_auto_label_dialog)
         self._top_toolbar.addWidget(auto_label_btn)
@@ -710,9 +707,9 @@ class MainWindow(QMainWindow):
         dev_text = f"🟢 GPU: RENDER ON | {gpu.device.upper()} | 34°C" if is_cuda else "🟢 GPU: RENDER ON | 78% | 34°C"
         self._device_chip = QLabel(dev_text)
         self._device_chip.setStyleSheet(
-            "color: #34d399; font-size: 11px; font-weight: 600; "
-            "background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.28); "
-            "border-radius: 6px; padding: 5px 10px; margin-right: 4px;"
+            "color: #10b981; font-size: 11px; font-weight: 700; "
+            "background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); "
+            "border-radius: 12px; padding: 4px 12px; margin-right: 4px;"
         )
         self._top_toolbar.addWidget(self._device_chip)
 
@@ -1126,25 +1123,34 @@ class MainWindow(QMainWindow):
         self._tools_group = QGroupBox("Class Properties")
         tools_layout = QVBoxLayout(self._tools_group)
         tools_layout.setContentsMargins(8, 8, 8, 8)
-        tools_layout.setSpacing(6)
+        tools_layout.setSpacing(8)
 
-        mode_row = QHBoxLayout()
-        mode_row.setSpacing(6)
+        mode_container = QWidget()
+        mode_layout = QHBoxLayout(mode_container)
+        mode_layout.setContentsMargins(2, 2, 2, 2)
+        mode_layout.setSpacing(2)
+        mode_container.setStyleSheet(
+            "QWidget { background: rgba(15, 23, 42, 0.4); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; }"
+            "QToolButton { background: transparent; border: none; border-radius: 4px; color: #94a3b8; font-size: 11px; font-weight: 600; padding: 6px; }"
+            "QToolButton:checked { background: rgba(255, 255, 255, 0.1); color: #ffffff; }"
+            "QToolButton:hover:!checked { background: rgba(255, 255, 255, 0.05); }"
+        )
+
         self._draw_tool_btn = QToolButton(self)
         self._draw_tool_btn.setText("✏️ Draw (V)")
         self._draw_tool_btn.setCheckable(True)
         self._draw_tool_btn.setChecked(True)
         self._draw_tool_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
         self._draw_tool_btn.clicked.connect(self.canvas.set_draw_mode)
-        mode_row.addWidget(self._draw_tool_btn, 1)
+        mode_layout.addWidget(self._draw_tool_btn, 1)
 
         self._pan_tool_btn = QToolButton(self)
         self._pan_tool_btn.setText("✋ Pan (H)")
         self._pan_tool_btn.setCheckable(True)
         self._pan_tool_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
         self._pan_tool_btn.clicked.connect(self.canvas.set_pan_mode)
-        mode_row.addWidget(self._pan_tool_btn, 1)
-        tools_layout.addLayout(mode_row)
+        mode_layout.addWidget(self._pan_tool_btn, 1)
+        tools_layout.addWidget(mode_container)
 
         canvas_mode_group = QButtonGroup(self)
         canvas_mode_group.addButton(self._draw_tool_btn)
@@ -1154,32 +1160,41 @@ class MainWindow(QMainWindow):
         draw_tool.toggled.connect(self._draw_tool_btn.setChecked)
         pan_tool.toggled.connect(self._pan_tool_btn.setChecked)
 
-        zoom_row = QHBoxLayout()
-        zoom_row.setSpacing(4)
+        zoom_container = QWidget()
+        zoom_layout = QHBoxLayout(zoom_container)
+        zoom_layout.setContentsMargins(2, 2, 2, 2)
+        zoom_layout.setSpacing(2)
+        zoom_container.setStyleSheet(
+            "QWidget { background: rgba(15, 23, 42, 0.4); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; }"
+            "QToolButton { background: transparent; border: none; border-radius: 4px; color: #94a3b8; font-size: 11px; font-weight: 600; padding: 6px; }"
+            "QToolButton:hover { background: rgba(255, 255, 255, 0.08); color: #ffffff; }"
+            "QToolButton:pressed { background: rgba(255, 255, 255, 0.12); }"
+        )
+
         fit_btn = QToolButton(self)
         fit_btn.setText("Fit")
         fit_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
         fit_btn.clicked.connect(self.canvas.reset_view)
-        zoom_row.addWidget(fit_btn, 1)
+        zoom_layout.addWidget(fit_btn, 1)
 
         zoom_in_btn = QToolButton(self)
         zoom_in_btn.setText("+")
         zoom_in_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
         zoom_in_btn.clicked.connect(lambda: self.canvas.zoom_in())
-        zoom_row.addWidget(zoom_in_btn, 1)
+        zoom_layout.addWidget(zoom_in_btn, 1)
 
         zoom_out_btn = QToolButton(self)
         zoom_out_btn.setText("-")
         zoom_out_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
         zoom_out_btn.clicked.connect(lambda: self.canvas.zoom_out())
-        zoom_row.addWidget(zoom_out_btn, 1)
+        zoom_layout.addWidget(zoom_out_btn, 1)
 
         zoom_actual_btn = QToolButton(self)
         zoom_actual_btn.setText("1:1")
         zoom_actual_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
         zoom_actual_btn.clicked.connect(self.canvas.zoom_actual_size)
-        zoom_row.addWidget(zoom_actual_btn, 1)
-        tools_layout.addLayout(zoom_row)
+        zoom_layout.addWidget(zoom_actual_btn, 1)
+        tools_layout.addWidget(zoom_container)
         self._properties_layout.addWidget(self._tools_group)
 
         # 3. Attribute Toggles Card
