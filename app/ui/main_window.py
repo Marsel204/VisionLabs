@@ -641,48 +641,11 @@ class MainWindow(QMainWindow):
         brand_layout.addWidget(title_lbl)
         self._top_toolbar.addWidget(brand_widget)
 
-        # 3. Center Segmented View Buttons
-        seg_container = QWidget()
-        seg_layout = QHBoxLayout(seg_container)
-        seg_layout.setContentsMargins(3, 3, 3, 3)
-        seg_layout.setSpacing(2)
-        seg_container.setStyleSheet(
-            "background: #12151e; border: 1px solid #1f2433; border-radius: 8px;"
-        )
-
-        active_tab_style = (
-            "background: #2a3143; border: none; border-radius: 6px; "
-            "color: #ffffff; font-weight: 600; font-size: 12px; padding: 6px 18px;"
-        )
-        inactive_tab_style = (
-            "background: transparent; border: none; border-radius: 6px; "
-            "color: #8a93a6; font-weight: 500; font-size: 12px; padding: 6px 18px;"
-        )
-
-        ann_tab = QToolButton(self)
-        ann_tab.setText("✏️ Annotations")
-        ann_tab.setCheckable(True)
-        ann_tab.setChecked(True)
-        ann_tab.setStyleSheet(active_tab_style)
-        seg_layout.addWidget(ann_tab)
-
-        dataset_tab = QToolButton(self)
-        dataset_tab.setText("📁 Dataset")
-        dataset_tab.setStyleSheet(inactive_tab_style)
-        dataset_tab.clicked.connect(self._import_folder)
-        seg_layout.addWidget(dataset_tab)
-
-        models_tab = QToolButton(self)
-        models_tab.setText("⚛️ Models")
-        models_tab.setStyleSheet(inactive_tab_style)
-        models_tab.clicked.connect(self._load_yolo_model)
-        seg_layout.addWidget(models_tab)
-
-        settings_tab = QToolButton(self)
-        settings_tab.setText("⚙️ Settings")
-        settings_tab.setStyleSheet(inactive_tab_style)
-        seg_layout.addWidget(settings_tab)
-        self._top_toolbar.addWidget(seg_container)
+        # We removed the center segmented view tabs per user request.
+        # Now we just add a spacer so the right-side badges align to the right edge.
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._top_toolbar.addWidget(spacer)
 
         # Spacer
         spacer = QWidget()
@@ -753,8 +716,6 @@ class MainWindow(QMainWindow):
         rail_layout.setContentsMargins(4, 8, 4, 8)
         rail_layout.setSpacing(8)
 
-        # We keep only canvas interaction tools here.
-        # Global actions like Datasets and Models are in the Top Header.
         self._rail_select_btn = QToolButton(rail)
         self._rail_select_btn.setText("🖼️")
         self._rail_select_btn.setToolTip("Select (Esc)")
@@ -788,6 +749,20 @@ class MainWindow(QMainWindow):
         rail_mode_group.addButton(self._rail_draw_btn)
         rail_mode_group.addButton(self._rail_polygon_btn)
         rail_mode_group.setExclusive(True)
+
+        rail_layout.addSpacing(16)
+
+        self._rail_dataset_btn = QToolButton(rail)
+        self._rail_dataset_btn.setText("📁")
+        self._rail_dataset_btn.setToolTip("Dataset (Ctrl+O)")
+        self._rail_dataset_btn.clicked.connect(self._import_folder)
+        rail_layout.addWidget(self._rail_dataset_btn)
+
+        self._rail_models_btn = QToolButton(rail)
+        self._rail_models_btn.setText("⚛️")
+        self._rail_models_btn.setToolTip("Models")
+        self._rail_models_btn.clicked.connect(self._load_yolo_model)
+        rail_layout.addWidget(self._rail_models_btn)
 
         rail_layout.addStretch()
 
