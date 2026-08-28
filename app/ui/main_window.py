@@ -750,26 +750,8 @@ class MainWindow(QMainWindow):
         rail_mode_group.addButton(self._rail_polygon_btn)
         rail_mode_group.setExclusive(True)
 
-        rail_layout.addSpacing(16)
-
-        self._rail_dataset_btn = QToolButton(rail)
-        self._rail_dataset_btn.setText("📁")
-        self._rail_dataset_btn.setToolTip("Dataset (Ctrl+O)")
-        self._rail_dataset_btn.clicked.connect(self._import_folder)
-        rail_layout.addWidget(self._rail_dataset_btn)
-
-        self._rail_models_btn = QToolButton(rail)
-        self._rail_models_btn.setText("⚛️")
-        self._rail_models_btn.setToolTip("Models")
-        self._rail_models_btn.clicked.connect(self._load_yolo_model)
-        rail_layout.addWidget(self._rail_models_btn)
-
         rail_layout.addStretch()
 
-        exit_btn = QToolButton(rail)
-        exit_btn.setText("⚙️")
-        exit_btn.setToolTip("Workspace Settings")
-        rail_layout.addWidget(exit_btn)
         left_combined_layout.addWidget(rail)
 
         # 2. Classes List
