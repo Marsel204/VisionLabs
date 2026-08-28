@@ -1138,7 +1138,7 @@ class MainWindow(QMainWindow):
         self._properties_layout.addWidget(self._crop_group)
 
         # 4. Geometry & Actions Card
-        self._review_group = QGroupBox("Geometry & Actions")
+        self._review_group = QGroupBox("Geometry && Actions")
         review_layout = QVBoxLayout(self._review_group)
         review_layout.setContentsMargins(8, 8, 8, 8)
         review_layout.setSpacing(6)
@@ -1198,7 +1198,21 @@ class MainWindow(QMainWindow):
         project_layout.addLayout(clean_row)
 
         self._properties_layout.addWidget(self._project_group)
-        self._properties_layout.addStretch()
+
+        # 6. Notes / Metadata Card (Expands to fill remaining space)
+        self._notes_group = QGroupBox("Annotation Notes")
+        self._notes_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        notes_layout = QVBoxLayout(self._notes_group)
+        notes_layout.setContentsMargins(8, 8, 8, 8)
+        
+        from PySide6.QtWidgets import QTextEdit
+        self._notes_edit = QTextEdit()
+        self._notes_edit.setPlaceholderText("Add custom metadata or notes here...")
+        self._notes_edit.setStyleSheet(
+            "QTextEdit { background: #0d0f15; border: 1px dashed #1e2434; border-radius: 6px; padding: 6px; color: #94a3b8; font-size: 11px; }"
+        )
+        notes_layout.addWidget(self._notes_edit)
+        self._properties_layout.addWidget(self._notes_group)
 
         # Backward compatibility for _property_group_layouts
         self._property_group_layouts["Review && Cleanup"] = review_layout
@@ -1228,6 +1242,9 @@ class MainWindow(QMainWindow):
                 self._truncated_btn.blockSignals(False)
             if hasattr(self, "_refine_sam2_btn"):
                 self._refine_sam2_btn.setEnabled(False)
+            if hasattr(self, "_notes_edit"):
+                self._notes_edit.setEnabled(False)
+                self._notes_edit.clear()
             return
 
         annotation = next(
@@ -1256,6 +1273,9 @@ class MainWindow(QMainWindow):
                 self._truncated_btn.blockSignals(False)
             if hasattr(self, "_refine_sam2_btn"):
                 self._refine_sam2_btn.setEnabled(False)
+            if hasattr(self, "_notes_edit"):
+                self._notes_edit.setEnabled(False)
+                self._notes_edit.clear()
             return
 
         ann_id_short = (
@@ -1265,16 +1285,35 @@ class MainWindow(QMainWindow):
         )
         conf_str = f"{annotation.confidence * 100:.0f}%" if annotation.confidence is not None else "94%"
         box = annotation.box
-        self._selection_info_label.setText(
-            f"ID:          {annotation.class_name.upper()}_{ann_id_short}\n"
-            f"Label:       {annotation.class_name.capitalize()}\n"
-            f"Confidence:  {conf_str}\n"
-            f"Status:      Active\n"
-            f"Box: ({box.left:.2f}, {box.top:.2f}) - ({box.right:.2f}, {box.bottom:.2f})"
-        )
+        color = AnnotationCanvas.CLASS_COLORS.get(annotation.class_name, "#29b6f6")
+
+        html = f"""
+        <table style="width: 100%; border-spacing: 0px; margin: 0px;">
+            <tr>
+                <td style="color: #64748b; padding-bottom: 6px;">ID</td>
+                <td style="text-align: right; font-family: monospace; color: #e2e8f0; padding-bottom: 6px;">{annotation.class_name.upper()}_{ann_id_short.upper()}</td>
+            </tr>
+            <tr>
+                <td style="color: #64748b; padding-bottom: 6px;">Label</td>
+                <td style="text-align: right; padding-bottom: 6px;">
+                    <span style="color: {color};">●</span> {annotation.class_name.capitalize()}
+                </td>
+            </tr>
+            <tr>
+                <td style="color: #64748b; padding-bottom: 6px;">Confidence</td>
+                <td style="text-align: right; color: #10b981; padding-bottom: 6px;">{conf_str}</td>
+            </tr>
+            <tr>
+                <td style="color: #64748b; padding-bottom: 2px;">Box</td>
+                <td style="text-align: right; color: #94a3b8; font-size: 10px; padding-bottom: 2px;">
+                    [{box.left:.2f}, {box.top:.2f}, {box.right:.2f}, {box.bottom:.2f}]
+                </td>
+            </tr>
+        </table>
+        """
+        self._selection_info_label.setText(html)
         self._selection_info_label.setStyleSheet(
-            "color: #f8fafc; font-size: 11px; font-weight: 600; line-height: 1.4; "
-            "background: #11141c; border: 1px solid #1f2536; border-radius: 6px; padding: 8px 10px;"
+            "QLabel { background: #11141c; border: 1px solid #1f2536; border-radius: 8px; padding: 10px; font-size: 11px; font-weight: 500; }"
         )
         if hasattr(self, "_occluded_btn"):
             self._occluded_btn.blockSignals(True)
@@ -1292,6 +1331,8 @@ class MainWindow(QMainWindow):
                 "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4f46e5, stop:1 #7c3aed); "
                 "color: #ffffff; font-weight: 700; font-size: 11px; border-radius: 6px; padding: 6px 12px; border: 1px solid #6366f1;"
             )
+        if hasattr(self, "_notes_edit"):
+            self._notes_edit.setEnabled(True)
 
 
 
