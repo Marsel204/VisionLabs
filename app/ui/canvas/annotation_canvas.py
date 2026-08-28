@@ -40,6 +40,7 @@ class AnnotationRectItem(QGraphicsRectItem):
         color_hex: str = "#0ea5e9",
         status_text: str = "",
         is_selected: bool = False,
+        annotation_id: object = None,
     ) -> None:
         super().__init__(rect)
         self.class_name = class_name
@@ -47,6 +48,8 @@ class AnnotationRectItem(QGraphicsRectItem):
         self.color_hex = color_hex
         self.status_text = status_text
         self.is_selected = is_selected
+        self.annotation_id = annotation_id
+
 
     def set_selected_visual(self, selected: bool) -> None:
         if self.is_selected != selected:
@@ -98,15 +101,22 @@ class AnnotationRectItem(QGraphicsRectItem):
                 )
 
         # 4. Pill Label Badge above or inside top-left of box
-        conf_str = f" {self.confidence:.2f}" if self.confidence is not None else ""
-        status_suffix = f" [{self.status_text}]" if self.status_text else ""
-        label_text = f" {self.class_name.upper()}{conf_str}{status_suffix} "
+        if self.is_selected:
+            ann_id_str = str(self.annotation_id)[:6] if self.annotation_id else "1"
+            label_text = f" ID: {self.class_name.upper()}_{ann_id_str} "
+            badge_bg = QColor("#10b981")
+        else:
+            conf_str = f" [{int(self.confidence * 100)}%]" if self.confidence is not None else ""
+            status_suffix = f" [{self.status_text}]" if self.status_text else ""
+            label_text = f" {self.class_name.capitalize()}{conf_str}{status_suffix} "
+            badge_bg = QColor(base_color)
+            badge_bg.setAlpha(220)
 
         font = QFont("-apple-system, Inter, BlinkMacSystemFont, sans-serif", 8, QFont.Weight.Bold)
         painter.setFont(font)
         fm = painter.fontMetrics()
-        text_w = fm.horizontalAdvance(label_text) + 6
-        text_h = fm.height() + 3
+        text_w = fm.horizontalAdvance(label_text) + 8
+        text_h = fm.height() + 4
 
         # Position label above box if space, otherwise inside top-left
         label_top = rect.top() - text_h - 2
@@ -115,15 +125,14 @@ class AnnotationRectItem(QGraphicsRectItem):
         label_rect = QRectF(rect.left(), label_top, text_w, text_h)
 
         # Draw badge pill background
-        badge_bg = QColor(base_color)
-        badge_bg.setAlpha(235)
         painter.setBrush(QBrush(badge_bg))
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(label_rect, 3.5, 3.5)
+        painter.drawRoundedRect(label_rect, 4.0, 4.0)
 
         # Draw badge text
         painter.setPen(QColor("#ffffff"))
         painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, label_text)
+
 
         painter.restore()
 
@@ -430,7 +439,9 @@ class AnnotationCanvas(QGraphicsView):
                 color_hex=color,
                 status_text=status_text,
                 is_selected=False,
+                annotation_id=annotation.annotation_id,
             )
+
             item.setToolTip(
                 f"{annotation.class_name} ({annotation.confidence or 1.0:.2f}){suffix}"
             )

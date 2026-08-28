@@ -1381,18 +1381,21 @@ class MainWindow(QMainWindow):
             return
 
         ann_id_short = (
-            str(annotation.annotation_id)[:8]
+            str(annotation.annotation_id)[:6]
             if annotation.annotation_id
-            else ""
+            else "1"
         )
         color = AnnotationCanvas.CLASS_COLORS.get(annotation.class_name, "#0ea5e9")
-        conf_str = f" • {annotation.confidence * 100:.0f}%" if annotation.confidence is not None else ""
+        conf_str = f"{annotation.confidence * 100:.0f}%" if annotation.confidence is not None else "100%"
+        box = annotation.box
         self._selection_info_label.setText(
-            f"● {annotation.class_name.upper()} #{ann_id_short}{conf_str}"
+            f"ID: {annotation.class_name.upper()}_{ann_id_short}  │  Conf: {conf_str}  │  Active\n"
+            f"Box: ({box.left:.2f}, {box.top:.2f}) - ({box.right:.2f}, {box.bottom:.2f})"
         )
+
         self._selection_info_label.setStyleSheet(
-            f"color: #ffffff; background: {color}; font-size: 12px; font-weight: 700; "
-            f"padding: 4px 8px; border-radius: 6px;"
+            f"color: #ffffff; background: {color}; font-size: 11px; font-weight: 700; "
+            f"padding: 6px 10px; border-radius: 6px;"
         )
         if hasattr(self, "_occluded_btn"):
             self._occluded_btn.blockSignals(True)
@@ -1406,6 +1409,11 @@ class MainWindow(QMainWindow):
             self._truncated_btn.blockSignals(False)
         if hasattr(self, "_refine_sam2_btn"):
             self._refine_sam2_btn.setEnabled(True)
+            self._refine_sam2_btn.setStyleSheet(
+                "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4f46e5, stop:1 #7c3aed); "
+                "color: #ffffff; font-weight: 700; font-size: 12px; border-radius: 6px; padding: 6px 12px; border: 1px solid #6366f1;"
+            )
+
 
     def _add_property_action(self, group: str, action: QAction) -> None:
         """Add an action to its grouped tool section in the Properties dock."""
