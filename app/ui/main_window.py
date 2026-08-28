@@ -60,6 +60,7 @@ from app.services.annotation.domain import (
     AnnotationDocument,
     AnnotationSource,
     BoundingBox,
+    ReviewStatus,
 )
 from app.services.annotation.history import (
     AddAnnotationCommand,
@@ -552,6 +553,162 @@ class _DatasetAnnotationTask(QRunnable):
         return additions
 
 
+class _VlmBatchVerifySignals(QObject):
+    """Signals emitted while running VLM verification across a dataset."""
+
+    progress = Signal(int, str)
+    completed = Signal(object)
+    failed = Signal(str)
+    cancelled = Signal()
+
+
+class _VlmBatchVerifyTask(QRunnable):
+    """Verify annotation bounding boxes using Florence-2 reasoning off the UI thread."""
+
+    def __init__(
+        self,
+        documents: list[AnnotationDocument],
+        vlm_helper: Any,
+        confidence_threshold: float = 0.25,
+        suspicious_only: bool = True,
+    ) -> None:
+        super().__init__()
+        self.signals = _VlmBatchVerifySignals()
+        self._documents = documents
+        self._vlm_helper = vlm_helper
+        self._confidence_threshold = confidence_threshold
+        self._suspicious_only = suspicious_only
+        self._cancel_requested = Event()
+
+    def cancel(self) -> None:
+        """Request cancellation."""
+        self._cancel_requested.set()
+
+    def run(self) -> None:
+        try:
+            import gc
+            import os
+            import torch
+            from PIL import Image
+            from src.vlm_helper import crop_image, load_image, match_caption_to_class
+
+            # Guard against pinning all CPU cores on CPU-only machines
+            if not torch.cuda.is_available():
+                torch.set_num_threads(min(4, os.cpu_count() or 1))
+
+            results: dict[Path, AnnotationDocument] = {}
+            verifications: dict[Any, dict[str, Any]] = {}
+            total_checked = 0
+            total_flagged = 0
+
+            for index, document in enumerate(self._documents, start=1):
+                if self._cancel_requested.is_set():
+                    self.signals.cancelled.emit()
+                    return
+
+                if not document.annotations:
+                    results[document.image_path] = document
+                    self.signals.progress.emit(
+                        index,
+                        f"{document.image_path.name} | No annotations",
+                    )
+                    continue
+
+                if self._suspicious_only:
+                    # Only verify unaccepted AI or low-confidence annotations
+                    target_anns = [
+                        ann
+                        for ann in document.annotations
+                        if (
+                            ann.review_status != ReviewStatus.ACCEPTED
+                            and (
+                                ann.confidence is None
+                                or ann.confidence < self._confidence_threshold
+                                or ann.source != AnnotationSource.HUMAN
+                            )
+                        )
+                    ]
+                else:
+                    target_anns = list(document.annotations)
+
+                if not target_anns:
+                    results[document.image_path] = document
+                    self.signals.progress.emit(
+                        index,
+                        f"{document.image_path.name} | All annotations already verified",
+                    )
+                    continue
+
+                pil_img = load_image(document.image_path)
+                crops = [crop_image(pil_img, ann.box, normalized=True) for ann in target_anns]
+
+                try:
+                    captions = self._vlm_helper.generate_captions_batch(crops, task_token="<CAPTION>")
+                    if len(captions) != len(target_anns):
+                        captions = [
+                            self._vlm_helper.generate_caption(crop, task_token="<CAPTION>")
+                            for crop in crops
+                        ]
+                except Exception as err:
+                    LOGGER.debug("Batch VLM captioning fallback to sequential: %s", err)
+                    captions = [
+                        self._vlm_helper.generate_caption(crop, task_token="<CAPTION>")
+                        for crop in crops
+                    ]
+
+                updated_ann_map = {}
+                doc_flagged = 0
+
+                for ann, caption in zip(target_anns, captions):
+                    matched = match_caption_to_class(caption, ann.class_name)
+                    total_checked += 1
+
+                    verifications[ann.annotation_id] = {
+                        "matched": matched,
+                        "caption": caption,
+                        "expected": ann.class_name,
+                    }
+
+                    if not matched:
+                        # VLM reasoning failed -> Flag as mismatch
+                        doc_flagged += 1
+                        total_flagged += 1
+                        flagged_ann = replace(
+                            ann,
+                            confidence=min(ann.confidence if ann.confidence is not None else 0.10, 0.10),
+                            review_status=ReviewStatus.PENDING,
+                        )
+                        updated_ann_map[ann.annotation_id] = flagged_ann
+                    else:
+                        updated_ann_map[ann.annotation_id] = ann
+
+                full_updated_annotations = [
+                    updated_ann_map.get(ann.annotation_id, ann)
+                    for ann in document.annotations
+                ]
+
+                updated_doc = AnnotationDocument(
+                    document.image_path,
+                    document.image_width,
+                    document.image_height,
+                    tuple(full_updated_annotations),
+                )
+                results[document.image_path] = updated_doc
+
+                if index % 20 == 0:
+                    gc.collect()
+
+                self.signals.progress.emit(
+                    index,
+                    f"{document.image_path.name} | Verified {len(target_anns)} boxes ({doc_flagged} flagged)",
+                )
+
+            self.signals.completed.emit((results, verifications, total_checked, total_flagged))
+        except Exception as error:
+            LOGGER.exception("VLM batch verification failed")
+            self.signals.failed.emit(str(error))
+
+
 class MainWindow(QMainWindow):
     """Primary shell; feature views can be added without changing application startup."""
 
@@ -587,6 +744,9 @@ class MainWindow(QMainWindow):
         self._active_learning_task: _ActiveLearningTask | None = None
         self._dataset_annotation_task: _DatasetAnnotationTask | None = None
         self._dataset_progress: _DatasetProgressDialog | None = None
+        self._vlm_batch_task: _VlmBatchVerifyTask | None = None
+        self._vlm_progress: _DatasetProgressDialog | None = None
+        self._vlm_verifications: dict[Any, dict[str, Any]] = {}
         self._project_documents: dict[Path, AnnotationDocument] = {}
         self._project_root: Path | None = None
         self._crop_session: CropSession | None = None
@@ -595,6 +755,7 @@ class MainWindow(QMainWindow):
         self._crop_index = 0
         self._crop_directory: Path | None = None
         self._enabled_classes = {"motorcycle", "car", "bus", "truck"}
+        self._sort_by_suspicion: bool = False
         self._build_docks()
         self._document: AnnotationDocument | None = None
         self._history: AnnotationHistory | None = None
@@ -906,6 +1067,37 @@ class MainWindow(QMainWindow):
             export_dataset=export_dataset,
         )
 
+        # Smart Review keyboard shortcuts
+        next_suspicious_action = QAction("Next Suspicious Annotation", self)
+        next_suspicious_action.setShortcut("N")
+        next_suspicious_action.setToolTip("Jump to next low-confidence pending annotation (N)")
+        next_suspicious_action.triggered.connect(self._jump_to_next_suspicious)
+        self.addAction(next_suspicious_action)
+        annotation_menu.addAction(next_suspicious_action)
+
+        accept_annotation_action = QAction("Accept Selected Annotation", self)
+        accept_annotation_action.setShortcut("A")
+        accept_annotation_action.setToolTip("Accept currently selected annotation (A)")
+        accept_annotation_action.triggered.connect(self._accept_selected_annotation)
+        self.addAction(accept_annotation_action)
+        annotation_menu.addAction(accept_annotation_action)
+
+        vlm_verify_img_action = QAction("VLM Verify Active Image", self)
+        vlm_verify_img_action.setShortcut("Ctrl+Alt+V")
+        vlm_verify_img_action.setToolTip("Run Florence-2 reasoning to verify annotations on current image (Ctrl+Alt+V)")
+        vlm_verify_img_action.triggered.connect(self._vlm_check_active_image)
+        self.addAction(vlm_verify_img_action)
+        annotation_menu.addAction(vlm_verify_img_action)
+
+        vlm_verify_all_action = QAction("VLM Verify Suspicious Annotations (Fast)", self)
+        vlm_verify_all_action.setShortcut("Ctrl+Alt+Shift+V")
+        vlm_verify_all_action.setToolTip("Run Florence-2 reasoning on suspicious/low-confidence annotations (Ctrl+Alt+Shift+V)")
+        vlm_verify_all_action.triggered.connect(lambda: self._vlm_check_all_annotations(suspicious_only=True))
+        self.addAction(vlm_verify_all_action)
+        annotation_menu.addAction(vlm_verify_all_action)
+
+
+
     def _setup_properties_panel(
         self,
         draw_tool: QAction,
@@ -1026,6 +1218,42 @@ class MainWindow(QMainWindow):
         )
         selection_layout.addWidget(self._selection_info_label)
 
+        # Confidence score display — color-coded green/amber/red
+        self._confidence_label = QLabel("")
+        self._confidence_label.setStyleSheet("font-size: 11px; color: #9aa0a6; padding: 1px 2px;")
+        selection_layout.addWidget(self._confidence_label)
+
+        # VLM Reasoning display (explains what VLM identified in the box)
+        self._vlm_reasoning_label = QLabel("")
+        self._vlm_reasoning_label.setWordWrap(True)
+        self._vlm_reasoning_label.setStyleSheet("font-size: 11px; padding: 2px; border-radius: 4px;")
+        selection_layout.addWidget(self._vlm_reasoning_label)
+
+        # Accept / Reject row for AI annotations
+        accept_reject_row = QHBoxLayout()
+        accept_reject_row.setSpacing(6)
+
+        self._accept_btn = QToolButton(self)
+        self._accept_btn.setText("✓ Accept (A)")
+        self._accept_btn.setEnabled(False)
+        self._accept_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
+        self._accept_btn.setToolTip(
+            "Mark selected annotation as accepted — confirms it is correct (A)"
+        )
+        self._accept_btn.clicked.connect(self._accept_selected_annotation)
+        accept_reject_row.addWidget(self._accept_btn, 1)
+
+        self._reject_btn = QToolButton(self)
+        self._reject_btn.setText("✗ Reject")
+        self._reject_btn.setEnabled(False)
+        self._reject_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
+        self._reject_btn.setToolTip(
+            "Delete the selected annotation — it is incorrect or a false positive"
+        )
+        self._reject_btn.clicked.connect(self._reject_selected_annotation)
+        accept_reject_row.addWidget(self._reject_btn, 1)
+        selection_layout.addLayout(accept_reject_row)
+
         flags_row = QHBoxLayout()
         flags_row.setSpacing(6)
 
@@ -1065,6 +1293,29 @@ class MainWindow(QMainWindow):
         review_layout = QVBoxLayout(self._review_group)
         review_layout.setContentsMargins(8, 10, 8, 8)
         review_layout.setSpacing(6)
+
+        # --- VLM Reasoning & Verification row ---
+        vlm_row = QHBoxLayout()
+        vlm_row.setSpacing(6)
+
+        vlm_check_suspicious_btn = QToolButton(self)
+        vlm_check_suspicious_btn.setText("🧠 VLM Check Suspicious")
+        vlm_check_suspicious_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
+        vlm_check_suspicious_btn.setToolTip(
+            "Fast CPU Mode: Run Florence-2 reasoning only on suspicious/low-confidence annotations across dataset"
+        )
+        vlm_check_suspicious_btn.clicked.connect(lambda: self._vlm_check_all_annotations(suspicious_only=True))
+        vlm_row.addWidget(vlm_check_suspicious_btn, 1)
+
+        vlm_check_img_btn = QToolButton(self)
+        vlm_check_img_btn.setText("🧠 VLM Active Image")
+        vlm_check_img_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
+        vlm_check_img_btn.setToolTip(
+            "Use Florence-2 VLM to verify annotations on current image (Ctrl+Alt+V)"
+        )
+        vlm_check_img_btn.clicked.connect(self._vlm_check_active_image)
+        vlm_row.addWidget(vlm_check_img_btn, 1)
+        review_layout.addLayout(vlm_row)
 
         ai_row = QHBoxLayout()
         ai_row.setSpacing(6)
@@ -1139,6 +1390,40 @@ class MainWindow(QMainWindow):
         fusion_colors.toggled.connect(self._fusion_colors_btn.setChecked)
         self._fusion_colors_btn.toggled.connect(fusion_colors.setChecked)
         review_layout.addWidget(self._fusion_colors_btn)
+
+        # --- Smart Review row: navigate suspicious + batch accept ---
+        smart_review_row = QHBoxLayout()
+        smart_review_row.setSpacing(6)
+
+        self._next_suspicious_btn = QToolButton(self)
+        self._next_suspicious_btn.setText("🔍 Next Suspicious (N)")
+        self._next_suspicious_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
+        self._next_suspicious_btn.setToolTip(
+            "Jump to the next low-confidence pending annotation across all images (N)"
+        )
+        self._next_suspicious_btn.clicked.connect(self._jump_to_next_suspicious)
+        smart_review_row.addWidget(self._next_suspicious_btn, 1)
+
+        self._batch_accept_btn = QToolButton(self)
+        self._batch_accept_btn.setText("✅ Accept High-Conf")
+        self._batch_accept_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
+        self._batch_accept_btn.setToolTip(
+            "Accept all annotations on this image with confidence ≥ threshold"
+        )
+        self._batch_accept_btn.clicked.connect(self._batch_accept_high_confidence)
+        smart_review_row.addWidget(self._batch_accept_btn, 1)
+        review_layout.addLayout(smart_review_row)
+
+        # --- Sort by Suspicion toggle ---
+        self._sort_suspicion_btn = QToolButton(self)
+        self._sort_suspicion_btn.setText("⚠ Sort by Suspicion")
+        self._sort_suspicion_btn.setCheckable(True)
+        self._sort_suspicion_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Fixed)
+        self._sort_suspicion_btn.setToolTip(
+            "Re-order image browser: images with most low-confidence pending annotations first"
+        )
+        self._sort_suspicion_btn.toggled.connect(self._toggle_suspicion_sort)
+        review_layout.addWidget(self._sort_suspicion_btn)
 
         self._properties_layout.addWidget(self._review_group)
 
@@ -1245,6 +1530,14 @@ class MainWindow(QMainWindow):
             return
         if self._document is None or self._selected_annotation_id is None:
             self._selection_info_label.setText("No annotation selected")
+            if hasattr(self, "_confidence_label"):
+                self._confidence_label.setText("")
+            if hasattr(self, "_vlm_reasoning_label"):
+                self._vlm_reasoning_label.setText("")
+            if hasattr(self, "_accept_btn"):
+                self._accept_btn.setEnabled(False)
+            if hasattr(self, "_reject_btn"):
+                self._reject_btn.setEnabled(False)
             if hasattr(self, "_occluded_btn"):
                 self._occluded_btn.blockSignals(True)
                 self._occluded_btn.setChecked(False)
@@ -1272,6 +1565,14 @@ class MainWindow(QMainWindow):
             self._selection_info_label.setStyleSheet(
                 "color: #8b90a0; font-size: 12px; font-weight: normal; padding: 2px;"
             )
+            if hasattr(self, "_confidence_label"):
+                self._confidence_label.setText("")
+            if hasattr(self, "_vlm_reasoning_label"):
+                self._vlm_reasoning_label.setText("")
+            if hasattr(self, "_accept_btn"):
+                self._accept_btn.setEnabled(False)
+            if hasattr(self, "_reject_btn"):
+                self._reject_btn.setEnabled(False)
             if hasattr(self, "_occluded_btn"):
                 self._occluded_btn.blockSignals(True)
                 self._occluded_btn.setChecked(False)
@@ -1292,12 +1593,64 @@ class MainWindow(QMainWindow):
             else ""
         )
         color = AnnotationCanvas.CLASS_COLORS.get(annotation.class_name, "#4fc3f7")
+        review_badge = f" [{annotation.review_status.value.upper()}]" if annotation.review_status else ""
         self._selection_info_label.setText(
-            f"● {annotation.class_name.upper()} (ID: {ann_id_short})"
+            f"● {annotation.class_name.upper()}{review_badge} (ID: {ann_id_short})"
         )
         self._selection_info_label.setStyleSheet(
             f"color: {color}; font-size: 12px; font-weight: 600; padding: 2px;"
         )
+
+        # Confidence display: color-coded green/amber/red
+        if hasattr(self, "_confidence_label"):
+            if annotation.confidence is not None:
+                conf = annotation.confidence
+                if conf >= self._confidence_threshold:
+                    conf_color = "#43a047"  # green — above threshold
+                    conf_icon = "✓"
+                elif conf >= self._confidence_threshold * 0.6:
+                    conf_color = "#ff9800"  # amber — borderline
+                    conf_icon = "⚠"
+                else:
+                    conf_color = "#ef5350"  # red — very low
+                    conf_icon = "✗"
+                self._confidence_label.setText(
+                    f"Confidence: {conf:.2%} {conf_icon}  |  src: {annotation.source}"
+                )
+                self._confidence_label.setStyleSheet(
+                    f"font-size: 11px; color: {conf_color}; padding: 1px 2px;"
+                )
+            else:
+                self._confidence_label.setText(f"Confidence: manual  |  src: {annotation.source}")
+                self._confidence_label.setStyleSheet(
+                    "font-size: 11px; color: #9aa0a6; padding: 1px 2px;"
+                )
+
+        # VLM Reasoning display
+        if hasattr(self, "_vlm_reasoning_label"):
+            vlm_info = self._vlm_verifications.get(annotation.annotation_id)
+            if vlm_info is not None:
+                matched = vlm_info.get("matched", True)
+                caption = vlm_info.get("caption", "")
+                if not matched:
+                    self._vlm_reasoning_label.setText(f"⚠️ VLM Mismatch: saw \"{caption}\"")
+                    self._vlm_reasoning_label.setStyleSheet(
+                        "font-size: 11px; color: #ef5350; background: #2a1515; padding: 4px; border-radius: 4px; border: 1px solid #5a2020;"
+                    )
+                else:
+                    self._vlm_reasoning_label.setText(f"✓ VLM Verified: \"{caption}\"")
+                    self._vlm_reasoning_label.setStyleSheet(
+                        "font-size: 11px; color: #43a047; background: #152a15; padding: 4px; border-radius: 4px; border: 1px solid #205a20;"
+                    )
+            else:
+                self._vlm_reasoning_label.setText("")
+
+        # Accept / Reject buttons: enabled for any annotation (human can review their own too)
+        if hasattr(self, "_accept_btn"):
+            self._accept_btn.setEnabled(True)
+        if hasattr(self, "_reject_btn"):
+            self._reject_btn.setEnabled(True)
+
         if hasattr(self, "_occluded_btn"):
             self._occluded_btn.blockSignals(True)
             self._occluded_btn.setEnabled(True)
@@ -1310,6 +1663,7 @@ class MainWindow(QMainWindow):
             self._truncated_btn.blockSignals(False)
         if hasattr(self, "_refine_sam2_btn"):
             self._refine_sam2_btn.setEnabled(True)
+
 
     def _add_property_action(self, group: str, action: QAction) -> None:
         """Add an action to its grouped tool section in the Properties dock."""
@@ -1325,6 +1679,7 @@ class MainWindow(QMainWindow):
 
     def _set_confidence_threshold(self, value: float) -> None:
         self._confidence_threshold = value
+        self.canvas.set_confidence_threshold(value)
 
     def _set_enabled_classes(self, value: str) -> None:
         supported = {"motorcycle", "car", "bus", "truck"}
@@ -1352,10 +1707,165 @@ class MainWindow(QMainWindow):
         self._selected_annotation_id = annotation_id
         self._update_selection_properties()
 
+    def _accept_selected_annotation(self) -> None:
+        """Mark the selected annotation as accepted via an undoable command."""
+        if self._history is None or self._document is None or self._selected_annotation_id is None:
+            return
+        annotation = next(
+            (a for a in self._document.annotations if a.annotation_id == self._selected_annotation_id),
+            None,
+        )
+        if annotation is None:
+            return
+        accepted = annotation.accept()
+        self._document = self._history.execute(UpdateAnnotationCommand(annotation, accepted))
+        self._remember_current_document()
+        self.canvas.set_document(self._document)
+        self._update_selection_properties()
+        remaining = self._count_suspicious_annotations()
+        self.statusBar().showMessage(
+            f"Accepted {annotation.class_name} | {remaining} suspicious annotations remaining"
+        )
+        # Auto-advance to the next suspicious annotation for faster review
+        self._jump_to_next_suspicious()
+
+    def _reject_selected_annotation(self) -> None:
+        """Delete the selected annotation (reject = remove false positive)."""
+        if self._selected_annotation_id is None:
+            return
+        self._delete_box(self._selected_annotation_id)
+        remaining = self._count_suspicious_annotations()
+        self.statusBar().showMessage(
+            f"Rejected annotation | {remaining} suspicious annotations remaining"
+        )
+
+    def _count_suspicious_annotations(self) -> int:
+        """Count pending low-confidence annotations across all project images."""
+        threshold = self._confidence_threshold
+        count = 0
+        for doc in self._project_documents.values():
+            if doc is None:
+                continue
+            for ann in doc.annotations:
+                if (
+                    ann.confidence is not None
+                    and ann.confidence < threshold
+                    and ann.review_status == ReviewStatus.PENDING
+                ):
+                    count += 1
+        return count
+
+    def _jump_to_next_suspicious(self) -> None:
+        """Navigate to the next low-confidence PENDING annotation across all images."""
+        if not self._project_documents:
+            self.statusBar().showMessage("No project loaded")
+            return
+
+        threshold = self._confidence_threshold
+
+        # Build ordered list of image paths matching the browser's current order
+        browser_paths: list[Path] = list(self.image_browser._items_by_path.keys())
+        if not browser_paths:
+            return
+
+        # Determine starting point: current image position in browser
+        current_path = self._document.image_path if self._document else None
+        start_image_idx = 0
+        if current_path in browser_paths:
+            start_image_idx = browser_paths.index(current_path)
+
+        # Build search order: start from current image, then wrap around
+        search_order = browser_paths[start_image_idx:] + browser_paths[:start_image_idx]
+
+        def _suspicious(ann: Annotation) -> bool:
+            return (
+                ann.confidence is not None
+                and ann.confidence < threshold
+                and ann.review_status == ReviewStatus.PENDING
+            )
+
+        for image_idx, path in enumerate(search_order):
+            doc = self._project_documents.get(path)
+            if doc is None:
+                continue
+
+            # Sort annotations by confidence ascending so worst comes first
+            suspicious = sorted(
+                [a for a in doc.annotations if _suspicious(a)],
+                key=lambda a: a.confidence or 0.0,
+            )
+
+            if not suspicious:
+                continue
+
+            # If this is the current image, skip already-selected annotation and look for the next one
+            if image_idx == 0 and path == current_path and self._selected_annotation_id is not None:
+                remaining = [a for a in suspicious if a.annotation_id != self._selected_annotation_id]
+                if remaining:
+                    target = remaining[0]
+                elif len(search_order) > 1:
+                    # No more on this image — continue to next image
+                    continue
+                else:
+                    target = suspicious[0]
+            else:
+                target = suspicious[0]
+
+            # Load the image if it's not already active
+            if path != current_path:
+                self._load_image(path)
+
+            # Select the annotation on the canvas
+            self._selected_annotation_id = target.annotation_id
+            self._update_selection_properties()
+            self.canvas.box_selected.emit(target.annotation_id)
+
+            remaining = self._count_suspicious_annotations()
+            self.statusBar().showMessage(
+                f"Reviewing {target.class_name} conf={target.confidence:.2f} | "
+                f"{remaining} suspicious remaining"
+            )
+            return
+
+        # Nothing found
+        self.statusBar().showMessage("✓ No more suspicious annotations to review!")
+
+    def _batch_accept_high_confidence(self) -> None:
+        """Accept all annotations on the current image with confidence ≥ threshold."""
+        if self._history is None or self._document is None:
+            self.statusBar().showMessage("No image loaded")
+            return
+        threshold = self._confidence_threshold
+        accepted_count = 0
+        for annotation in list(self._document.annotations):
+            if (
+                annotation.confidence is not None
+                and annotation.confidence >= threshold
+                and annotation.review_status == ReviewStatus.PENDING
+            ):
+                accepted = annotation.accept()
+                self._document = self._history.execute(UpdateAnnotationCommand(annotation, accepted))
+                accepted_count += 1
+        if accepted_count > 0:
+            self._remember_current_document()
+            self.canvas.set_document(self._document)
+            self._update_selection_properties()
+        remaining = self._count_suspicious_annotations()
+        self.statusBar().showMessage(
+            f"Accepted {accepted_count} high-confidence annotations | "
+            f"{remaining} suspicious remaining in project"
+        )
+
+    def _toggle_suspicion_sort(self, enabled: bool) -> None:
+        """Toggle image browser ordering between default and suspicion-priority sort."""
+        self._sort_by_suspicion = enabled
+        self._refresh_image_browser_order(preserve_current=True)
+
     def _class_changed(self) -> None:
         selected = self.sender().currentItem()  # type: ignore[union-attr]
         if selected is not None:
             self._selected_class = selected.data(0, Qt.ItemDataRole.UserRole) or selected.text(0)
+
 
     def _import_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Import image folder")
@@ -1746,28 +2256,53 @@ class MainWindow(QMainWindow):
             )
 
     def _refresh_image_browser_order(self, preserve_current: bool = True) -> None:
-        """Sort and refresh the Image Browser to keep annotated images at the top."""
+        """Sort and refresh the Image Browser.
+
+        Default mode: annotated images float to the top, unannotated below.
+        Suspicion mode: images with the most low-confidence PENDING annotations first.
+        """
         if not self._project_documents:
             return
 
         current_path = self._document.image_path if self._document else None
 
-        annotated_paths = [
-            p
-            for p, doc in self._project_documents.items()
-            if doc and doc.annotations
-        ]
-        unannotated_paths = [
-            p
-            for p, doc in self._project_documents.items()
-            if not doc or not doc.annotations
-        ]
-
-        # Put annotated images at the top!
-        sorted_paths = sorted(annotated_paths) + sorted(unannotated_paths)
         counts = {
             p: len(doc.annotations) for p, doc in self._project_documents.items() if doc
         }
+
+        if self._sort_by_suspicion:
+            # Sort by number of suspicious (low-conf PENDING) annotations, descending
+            threshold = self._confidence_threshold
+
+            def _suspicion_count(path: Path) -> int:
+                doc = self._project_documents.get(path)
+                if doc is None:
+                    return 0
+                return sum(
+                    1
+                    for ann in doc.annotations
+                    if (
+                        ann.confidence is not None
+                        and ann.confidence < threshold
+                        and ann.review_status == ReviewStatus.PENDING
+                    )
+                )
+
+            all_paths = list(self._project_documents.keys())
+            sorted_paths = sorted(all_paths, key=_suspicion_count, reverse=True)
+        else:
+            annotated_paths = [
+                p
+                for p, doc in self._project_documents.items()
+                if doc and doc.annotations
+            ]
+            unannotated_paths = [
+                p
+                for p, doc in self._project_documents.items()
+                if not doc or not doc.annotations
+            ]
+            # Put annotated images at the top!
+            sorted_paths = sorted(annotated_paths) + sorted(unannotated_paths)
 
         # Fast path: If the paths in the browser already match sorted_paths,
         # simply update the annotation count badges in-place without rebuilding the widget!
@@ -1786,6 +2321,7 @@ class MainWindow(QMainWindow):
         elif sorted_paths:
             self.image_browser.setCurrentRow(0)
         self.image_browser.blockSignals(False)
+
 
     def _load_yolo_model(self) -> None:
         """Load YOLO weights once for reuse across images."""
@@ -1925,6 +2461,197 @@ class MainWindow(QMainWindow):
         except Exception as error:
             LOGGER.exception("VLM auto-annotate failed")
             self.statusBar().showMessage(f"VLM auto-annotate failed: {error}")
+
+    def _vlm_check_active_image(self) -> None:
+        """Run Florence-2 VLM to verify and reason each annotation on the active image."""
+        if self._document is None or self._history is None:
+            self.statusBar().showMessage("Select an image before running VLM verification")
+            return
+
+        if not self._document.annotations:
+            self.statusBar().showMessage("No annotations to verify on active image")
+            return
+
+        if self._vlm_helper is None:
+            self._load_vlm_model()
+        if self._vlm_helper is None:
+            return
+
+        from src.vlm_helper import crop_image, load_image, match_caption_to_class
+
+        try:
+            pil_img = load_image(self._document.image_path)
+            ann_list = list(self._document.annotations)
+            crops = [crop_image(pil_img, ann.box, normalized=True) for ann in ann_list]
+
+            self.statusBar().showMessage(f"Running VLM verification on {len(ann_list)} annotations...")
+            QApplication.processEvents()
+
+            try:
+                captions = self._vlm_helper.generate_captions_batch(crops, task_token="<CAPTION>")
+                if len(captions) != len(ann_list):
+                    captions = [
+                        self._vlm_helper.generate_caption(crop, task_token="<CAPTION>")
+                        for crop in crops
+                    ]
+            except Exception:
+                captions = [
+                    self._vlm_helper.generate_caption(crop, task_token="<CAPTION>")
+                    for crop in crops
+                ]
+
+            flagged_count = 0
+            for ann, caption in zip(ann_list, captions):
+                matched = match_caption_to_class(caption, ann.class_name)
+                self._vlm_verifications[ann.annotation_id] = {
+                    "matched": matched,
+                    "caption": caption,
+                    "expected": ann.class_name,
+                }
+                if not matched:
+                    flagged_count += 1
+                    flagged_ann = replace(
+                        ann,
+                        confidence=min(ann.confidence if ann.confidence is not None else 0.10, 0.10),
+                        review_status=ReviewStatus.PENDING,
+                    )
+                    self._document = self._history.execute(UpdateAnnotationCommand(ann, flagged_ann))
+
+            self._remember_current_document()
+            self.canvas.set_vlm_verifications(self._vlm_verifications)
+            self.canvas.set_document(self._document)
+            self._update_selection_properties()
+            self._refresh_image_browser_order(preserve_current=True)
+
+            if flagged_count > 0:
+                self.statusBar().showMessage(
+                    f"VLM Verification: {len(ann_list)} checked, {flagged_count} flagged as mismatches! Press 'N' to review."
+                )
+            else:
+                self.statusBar().showMessage(
+                    f"✓ VLM Verification: All {len(ann_list)} annotations verified correct!"
+                )
+        except Exception as error:
+            LOGGER.exception("VLM active image check failed")
+            self.statusBar().showMessage(f"VLM verification failed: {error}")
+
+    def _vlm_check_all_annotations(self, suspicious_only: bool = True) -> None:
+        """Run batch Florence-2 VLM verification across annotations in the dataset.
+
+        Args:
+            suspicious_only: If True, only verifies unaccepted AI or low-confidence annotations
+                to minimize CPU usage and prevent freezing on large datasets.
+        """
+        if not self._project_documents:
+            self.statusBar().showMessage("Import a folder or dataset before running VLM verification")
+            return
+
+        if self._vlm_batch_task is not None:
+            self.statusBar().showMessage("A VLM verification task is already in progress")
+            return
+
+        if self._vlm_helper is None:
+            self._load_vlm_model()
+        if self._vlm_helper is None:
+            return
+
+        documents = list(self._project_documents.values())
+        if suspicious_only:
+            target_count = sum(
+                len([
+                    a
+                    for a in doc.annotations
+                    if (
+                        a.review_status != ReviewStatus.ACCEPTED
+                        and (
+                            a.confidence is None
+                            or a.confidence < self._confidence_threshold
+                            or a.source != AnnotationSource.HUMAN
+                        )
+                    )
+                ])
+                for doc in documents
+                if doc
+            )
+            mode_str = "Suspicious Annotations (Fast CPU Mode)"
+        else:
+            target_count = sum(len(doc.annotations) for doc in documents if doc)
+            mode_str = "All Annotations"
+
+        if target_count == 0:
+            self.statusBar().showMessage("✓ No unverified / suspicious annotations found in dataset to verify!")
+            return
+
+        progress = _DatasetProgressDialog(
+            f"VLM Verification — {mode_str}",
+            len(documents),
+            self,
+        )
+        task = _VlmBatchVerifyTask(
+            documents=documents,
+            vlm_helper=self._vlm_helper,
+            confidence_threshold=self._confidence_threshold,
+            suspicious_only=suspicious_only,
+        )
+        task.signals.progress.connect(progress.update_progress)
+        progress.cancelled.connect(task.cancel)
+
+        def _on_completed(payload: tuple[dict[Path, AnnotationDocument], dict[Any, dict[str, Any]], int, int]) -> None:
+            results, verifications, total_checked, total_flagged = payload
+            self._vlm_batch_task = None
+            if self._vlm_progress is not None:
+                self._vlm_progress.close()
+                self._vlm_progress = None
+
+            self._project_documents.update(results)
+            self._vlm_verifications.update(verifications)
+            self.canvas.set_vlm_verifications(self._vlm_verifications)
+
+            if self._document is not None and self._document.image_path in self._project_documents:
+                self._document = self._project_documents[self._document.image_path]
+                self._history = AnnotationHistory(self._document)
+                self.canvas.set_document(self._document)
+                self._update_selection_properties()
+
+            # Enable suspicion sort so images with flagged errors bubble to top
+            self._sort_by_suspicion = True
+            if hasattr(self, "_sort_suspicion_btn"):
+                self._sort_suspicion_btn.blockSignals(True)
+                self._sort_suspicion_btn.setChecked(True)
+                self._sort_suspicion_btn.blockSignals(False)
+            self._refresh_image_browser_order(preserve_current=True)
+
+            self.statusBar().showMessage(
+                f"VLM Verification Completed: Checked {total_checked} annotations | "
+                f"{total_flagged} flagged for human review (Press 'N' to review)"
+            )
+
+            if total_flagged > 0:
+                self._jump_to_next_suspicious()
+
+        def _on_failed(error_message: str) -> None:
+            self._vlm_batch_task = None
+            if self._vlm_progress is not None:
+                self._vlm_progress.close()
+                self._vlm_progress = None
+            QMessageBox.critical(self, "VLM Verification Failed", error_message)
+
+        def _on_cancelled() -> None:
+            self._vlm_batch_task = None
+            if self._vlm_progress is not None:
+                self._vlm_progress.close()
+                self._vlm_progress = None
+            self.statusBar().showMessage("VLM verification cancelled")
+
+        task.signals.completed.connect(_on_completed)
+        task.signals.failed.connect(_on_failed)
+        task.signals.cancelled.connect(_on_cancelled)
+
+        self._vlm_batch_task = task
+        self._vlm_progress = progress
+        progress.show()
+        QThreadPool.globalInstance().start(task)
+
 
 
     def _annotate_entire_dataset(self) -> None:

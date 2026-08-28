@@ -13,7 +13,13 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
-from app.services.annotation.domain import Annotation, AnnotationDocument, BoundingBox
+from app.services.annotation.domain import (
+    Annotation,
+    AnnotationDocument,
+    AnnotationSource,
+    BoundingBox,
+    ReviewStatus,
+)
 from app.services.fusion.fusion_models import FusionStatus
 
 
@@ -72,6 +78,8 @@ class AnnotationCanvas(QGraphicsView):
         self._fusion_statuses: dict[object, FusionStatus] = {}
         self._status_filter: set[FusionStatus] | None = None
         self._show_fusion_colors = True
+        self._confidence_threshold: float = 0.25
+        self._vlm_verifications: dict[object, dict[str, Any]] = {}
 
     @property
     def mode(self) -> CanvasMode:
@@ -92,6 +100,12 @@ class AnnotationCanvas(QGraphicsView):
     def set_pan_mode(self) -> None:
         """Switch to pan / hand tool mode."""
         self.set_mode(CanvasMode.PAN)
+
+    def set_confidence_threshold(self, threshold: float) -> None:
+        """Update the confidence threshold for low-confidence visual highlighting."""
+        self._confidence_threshold = threshold
+        if self._document is not None:
+            self.set_document(self._document)
 
     def zoom_in(self, factor: float = 1.15) -> None:
         """Zoom into the canvas around the mouse cursor or center."""
@@ -167,24 +181,69 @@ class AnnotationCanvas(QGraphicsView):
                 box.width * document.image_width,
                 box.height * document.image_height,
             )
-            if fusion_status is None or not self._show_fusion_colors:
-                color = self.CLASS_COLORS.get(annotation.class_name, "#4fc3f7")
-            else:
+
+            # --- Determine base color ---
+            if fusion_status is not None and self._show_fusion_colors:
                 color = {
                     FusionStatus.ACCEPTED: "#43a047",
                     FusionStatus.NEEDS_REVIEW: "#ab47bc",
                     FusionStatus.CONFLICT: "#e53935",
                     FusionStatus.REJECTED: "#757575",
                 }[fusion_status]
-            qcol = QColor(color)
-            item.setPen(QPen(qcol, 2))
+                qcol = QColor(color)
+                pen = QPen(qcol, 2)
+            else:
+                is_ai = annotation.source != AnnotationSource.HUMAN
+                conf = annotation.confidence
+                review = annotation.review_status
+                vlm_info = self._vlm_verifications.get(annotation.annotation_id)
+                vlm_matched = vlm_info.get("matched", True) if vlm_info else True
+                vlm_caption = vlm_info.get("caption", "") if vlm_info else ""
+
+                if not vlm_matched:
+                    # Explicit VLM reasoning failure — thick red dashed outline
+                    qcol = QColor("#ef5350")
+                    pen = QPen(qcol, 3, Qt.PenStyle.DashLine)
+                elif review == ReviewStatus.REJECTED:
+                    # Greyed-out dotted box — visually "struck through"
+                    qcol = QColor("#757575")
+                    pen = QPen(qcol, 2, Qt.PenStyle.DotLine)
+                elif review == ReviewStatus.ACCEPTED:
+                    # Solid green — confirmed good
+                    qcol = QColor("#43a047")
+                    pen = QPen(qcol, 2)
+                elif is_ai and conf is not None and conf < self._confidence_threshold:
+                    # Dashed border: severity scales red ↔ orange based on confidence
+                    if conf < self._confidence_threshold * 0.6:
+                        qcol = QColor("#ef5350")  # red — very low confidence
+                    else:
+                        qcol = QColor("#ff9800")  # orange — borderline confidence
+                    pen = QPen(qcol, 3, Qt.PenStyle.DashLine)
+                else:
+                    # Normal solid class color
+                    qcol = QColor(self.CLASS_COLORS.get(annotation.class_name, "#4fc3f7"))
+                    pen = QPen(qcol, 2)
+
+            item.setPen(pen)
             fill_col = QColor(qcol)
             fill_col.setAlpha(30)
             item.setBrush(QBrush(fill_col))
+
+            # Build a rich tooltip: class, confidence, source, review status, VLM explanation
+            conf_str = f"{annotation.confidence:.2f}" if annotation.confidence is not None else "manual"
+            review_str = annotation.review_status.value
             status_text = fusion_status.value.replace("_", " ").title() if fusion_status else ""
-            suffix = f" | {status_text}" if status_text else ""
+            fusion_suffix = f" | {status_text}" if status_text else ""
+            
+            vlm_prefix = ""
+            if vlm_info is not None:
+                if not vlm_matched:
+                    vlm_prefix = f"⚠️ VLM Mismatch: saw \"{vlm_caption}\"\n"
+                else:
+                    vlm_prefix = f"✓ VLM Verified: \"{vlm_caption}\"\n"
+
             item.setToolTip(
-                f"{annotation.class_name} ({annotation.confidence or 1.0:.2f}){suffix}"
+                f"{vlm_prefix}{annotation.class_name} | conf: {conf_str} | {annotation.source} | {review_str}{fusion_suffix}"
             )
             self._scene.addItem(item)
             self._annotation_items.append((item, annotation))
@@ -194,6 +253,18 @@ class AnnotationCanvas(QGraphicsView):
             self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
             self._zoom = 1.0
         self._update_hover_cursor()
+
+    def set_vlm_verifications(self, verifications: dict[object, dict[str, Any]]) -> None:
+        """Update VLM reasoning/verification records and refresh canvas overlays."""
+        self._vlm_verifications = verifications
+        if self._document is not None:
+            self.set_document(self._document)
+
+    def clear_vlm_verifications(self) -> None:
+        """Clear all stored VLM verification records."""
+        self._vlm_verifications = {}
+        if self._document is not None:
+            self.set_document(self._document)
 
     def set_fusion_statuses(self, statuses: dict[object, FusionStatus]) -> None:
         """Set fusion colors for the current document and repaint the canvas."""
