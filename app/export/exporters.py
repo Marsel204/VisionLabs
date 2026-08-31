@@ -68,50 +68,79 @@ class YoloExporter(DatasetExporter):
         destination.mkdir(parents=True, exist_ok=True)
         split_documents_map = self.splits or {"": documents}
         metadata: dict[str, list[dict[str, object]]] = {}
+        import concurrent.futures
+        import os
+
+        max_workers = min(32, max(4, (os.cpu_count() or 4) * 2))
+
+        export_tasks = []
         for split, split_documents_list in split_documents_map.items():
             images = destination / "images" / split if split else destination / "images"
             labels = destination / "labels" / split if split else destination / "labels"
             images.mkdir(parents=True, exist_ok=True)
             labels.mkdir(parents=True, exist_ok=True)
             for document in split_documents_list:
-                image_target = images / document.image_path.name
-                label_target = labels / f"{document.image_path.stem}.txt"
+                export_tasks.append((split, document, images, labels))
+
+        def _write_single_yolo_doc(
+            task: tuple[str, AnnotationDocument, Path, Path],
+        ) -> tuple[str, list[dict[str, object]]]:
+            split, document, images, labels = task
+            image_target = images / document.image_path.name
+            label_target = labels / f"{document.image_path.stem}.txt"
+            if document.image_path.resolve() != image_target.resolve():
                 shutil.copyfile(document.image_path, image_target)
-                lines = []
-                for annotation in document.annotations:
-                    center_x, center_y, width, height = annotation.box.to_yolo()
-                    lines.append(
-                        f"{CLASS_ORDER.index(annotation.class_name)} {center_x:.6f} "
-                        f"{center_y:.6f} {width:.6f} {height:.6f}"
-                    )
-                label_target.write_text(
-                    "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8"
+            lines = []
+            for annotation in document.annotations:
+                center_x, center_y, width, height = annotation.box.to_yolo()
+                lines.append(
+                    f"{CLASS_ORDER.index(annotation.class_name)} {center_x:.6f} "
+                    f"{center_y:.6f} {width:.6f} {height:.6f}"
                 )
-                metadata_key = f"{split}/{document.image_path.name}" if split else document.image_path.name
-                metadata[metadata_key] = [
-                    {
-                        "class_name": annotation.class_name,
-                        "occluded": annotation.occluded,
-                        "truncated": annotation.truncated,
-                    }
-                    for annotation in document.annotations
-                ]
+            label_target.write_text(
+                "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8"
+            )
+            metadata_key = f"{split}/{document.image_path.name}" if split else document.image_path.name
+            doc_meta = [
+                {
+                    "class_name": annotation.class_name,
+                    "occluded": annotation.occluded,
+                    "truncated": annotation.truncated,
+                }
+                for annotation in document.annotations
+            ]
+            return metadata_key, doc_meta
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            meta_results = pool.map(_write_single_yolo_doc, export_tasks)
+
+        for m_key, m_val in meta_results:
+            metadata[m_key] = m_val
+
         (destination / "annotation_metadata.json").write_text(
             json.dumps(metadata, indent=2), encoding="utf-8"
         )
         yaml_path = destination / "dataset.yaml"
+        data_yaml_path = destination / "data.yaml"
         if self.splits:
             split_paths = "\n".join(
                 f"{name}: images/{name}" for name in SPLIT_NAMES
             )
         else:
             split_paths = "train: images\nval: images"
-        yaml_path.write_text(
+        yaml_content = (
             f"path: {destination.resolve()}\n"
             f"{split_paths}\n"
-            f"names: {list(CLASS_ORDER)}\n",
-            encoding="utf-8",
+            f"names: {list(CLASS_ORDER)}\n"
         )
+        yaml_path.write_text(yaml_content, encoding="utf-8")
+        # Also write data.yaml with relative path for seamless Google Colab/Roboflow portability
+        colab_yaml_content = (
+            "path: .\n"
+            f"{split_paths}\n"
+            f"names: {list(CLASS_ORDER)}\n"
+        )
+        data_yaml_path.write_text(colab_yaml_content, encoding="utf-8")
         LOGGER.info(
             "exported %d documents to %s at %s",
             len(documents),
@@ -173,8 +202,20 @@ class CocoExporter(DatasetExporter):
                 annotation_id += 1
         image_destination = destination / "images"
         image_destination.mkdir(exist_ok=True)
-        for document in documents:
-            shutil.copyfile(document.image_path, image_destination / document.image_path.name)
+
+        import concurrent.futures
+        import os
+
+        max_workers = min(32, max(4, (os.cpu_count() or 4) * 2))
+
+        def _copy_coco_img(doc: AnnotationDocument) -> None:
+            target = image_destination / doc.image_path.name
+            if doc.image_path.resolve() != target.resolve():
+                shutil.copyfile(doc.image_path, target)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            list(pool.map(_copy_coco_img, documents))
+
         result = destination / "annotations.json"
         result.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         LOGGER.info("exported %d documents to COCO at %s", len(documents), result)
@@ -268,6 +309,7 @@ class RoboflowExporter(YoloExporter):
             for path in staging.rglob("*"):
                 if path.is_file():
                     output.write(path, path.relative_to(staging))
+        shutil.rmtree(staging, ignore_errors=True)
         return archive
 
 

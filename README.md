@@ -84,22 +84,33 @@ Results are cached in SQLite and automatically invalidated when detections, fusi
 active-learning configuration change. The desktop UI scores the active image in a background
 worker after Label Fusion and displays its review priority and recommendation.
 
-## COCO Cleaning
+## Dataset Import (YOLO data.yaml, Roboflow & COCO)
+
+Use `File > Import YOLO Dataset (data.yaml)` to import any Ultralytics or Roboflow YOLO dataset.
+Select the `data.yaml` or `dataset.yaml` file and choose a new project destination. Supported
+classes (`motorcycle`, `car`, `bus`, `truck`) and common aliases are automatically recognized,
+overlapping duplicates are cleaned, and images/labels across splits are imported into the workspace.
+
+Use `File > Import from Roboflow...` to download and import a dataset version directly from
+Roboflow Universe or your private workspace using your Roboflow API key. You can paste full URLs
+such as `https://universe.roboflow.com/workspace/project/dataset/1` or enter `workspace/project`.
+
+Use `File > Upload to Roboflow...` to push images and bounding box annotations directly to a
+target Roboflow project.
 
 Use `File > Import COCO Dataset` to choose an annotations JSON, the source image directory, and a
 new project destination. Supported categories are imported as bounding boxes; unsupported
 categories and invalid records are reported and skipped. Images are copied into the project, so
-the source dataset is never modified. Import automatically removes overlapping boxes, including
-same-class overlaps, using the configured IoU and containment thresholds. Motorcycle and rider
-boxes are intentionally preserved even when they overlap. Use
-`File > Export Cleaned COCO` to write a new COCO dataset with copied images and cleaned boxes.
+the source dataset is never modified.
 
-## Train/Validation/Test Export
+## Train/Validation/Test & Google Colab Export
 
-Use `File > Export Dataset`, select an export format, and choose `Train / validation / test split`.
-Enter ratios such as `0.8,0.1,0.1` and a seed to create a reproducible split. YOLO exports use
-`images/{train,val,test}` and `labels/{train,val,test}` with matching paths in `dataset.yaml`.
-COCO exports create one self-contained directory and `annotations.json` per split.
+Use `File > Export Dataset` and select from:
+- `YOLO (Google Colab .zip)`: Creates a standalone ZIP archive containing `data.yaml`, `images/`, and `labels/` ready for 1-click Google Colab training (`model.train(data=".../data.yaml")`).
+- `YOLOv11 Detection`, `YOLOv8 Detection`, `YOLOv26 Detection`: Direct directory export with both `dataset.yaml` and `data.yaml`.
+- `COCO Detection`: Self-contained directory with `annotations.json`.
+
+Choose `Train / validation / test split` with custom ratios (e.g. `0.8,0.1,0.1`) and random seed for reproducible dataset splits.
 
 ## Motorcycle and Rider Annotation
 
