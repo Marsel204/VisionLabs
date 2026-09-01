@@ -220,15 +220,7 @@ class _DatasetAnnotationTask(QRunnable):
                 if self._cancel_requested.is_set():
                     self.signals.cancelled.emit()
                     return
-                preserved = tuple(
-                    item
-                    for item in document.annotations
-                    if item.source
-                    not in {AnnotationSource.GROUNDING_DINO, AnnotationSource.FUSED}
-                    and not (
-                        self._use_yolo and item.source is AnnotationSource.YOLO
-                    )
-                )
+                preserved = document.annotations
                 inference_document = AnnotationDocument(
                     document.image_path,
                     document.image_width,
@@ -1401,17 +1393,28 @@ class MainWindow(QMainWindow):
         if not folder:
             return
         paths = sorted(
-            path for path in Path(folder).iterdir()
+            path for path in Path(folder).rglob("*")
             if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
         )
-        self._project_documents = {
-            path: AnnotationDocument(path, 1920, 1080) for path in paths
-        }
-        self._project_root = None
-        self._refresh_image_browser_order(preserve_current=False)
-        if paths:
+        if not paths:
+            self.statusBar().showMessage("No supported images found in selected folder")
+            return
+
+        is_initial = not self._project_documents
+        added_count = 0
+        for path in paths:
+            if path not in self._project_documents:
+                self._project_documents[path] = AnnotationDocument(path, 1920, 1080)
+                added_count += 1
+
+        self._refresh_image_browser_order(preserve_current=True)
+        if is_initial and paths:
             self._load_image(paths[0])
-        self.statusBar().showMessage(f"Imported {len(paths)} images")
+
+        total_count = len(self._project_documents)
+        self.statusBar().showMessage(
+            f"Added {added_count} new images ({total_count} total in dataset)"
+        )
 
     def _import_coco_dataset(self) -> None:
         """Import a COCO detection dataset into a copied cleaning project."""
@@ -1607,14 +1610,29 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Exported {selected}: {result}")
 
     def _set_imported_project(self, result: CocoImportResult | YoloImportResult) -> None:
-        self._project_root = result.project_root
-        self._project_documents = {
-            document.image_path: document for document in result.documents
-        }
-        self._refresh_image_browser_order(preserve_current=False)
-        if self._project_documents:
+        if self._project_root is None:
+            self._project_root = result.project_root
+
+        is_initial = not self._project_documents
+        added_count = 0
+        for document in result.documents:
+            if document.image_path not in self._project_documents:
+                self._project_documents[document.image_path] = document
+                added_count += 1
+            else:
+                existing = self._project_documents[document.image_path]
+                if not existing.annotations and document.annotations:
+                    self._project_documents[document.image_path] = document
+
+        self._refresh_image_browser_order(preserve_current=True)
+        if is_initial and self._project_documents:
             first_path = next(iter(self._project_documents.keys()))
             self._load_image(first_path)
+
+        total_count = len(self._project_documents)
+        self.statusBar().showMessage(
+            f"Added {added_count} dataset images ({total_count} total in dataset)"
+        )
 
     @staticmethod
     def _new_project_path(parent: Path, stem: str) -> Path:
@@ -2832,28 +2850,35 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Run Grounding DINO and YOLO before Label Fusion")
             return
         result = FusionEngine(self._fusion_config).fuse(detections)
-        annotations = tuple(
-            Annotation(
-                class_name=item.class_name,
-                box=item.bbox,
-                confidence=item.confidence,
-                source=AnnotationSource.FUSED,
-            )
-            for item in result.detections
-        )
+        existing_annotations = list(self._document.annotations)
+        fused_annotations = []
+        for item in result.detections:
+            if not any(
+                existing.class_name == item.class_name
+                and self._box_iou(existing.box, item.bbox) >= 0.5
+                for existing in existing_annotations
+            ):
+                fused_ann = Annotation(
+                    class_name=item.class_name,
+                    box=item.bbox,
+                    confidence=item.confidence,
+                    source=AnnotationSource.FUSED,
+                )
+                existing_annotations.append(fused_ann)
+                fused_annotations.append((fused_ann, item.status))
+
         self._document = AnnotationDocument(
             self._document.image_path,
             self._document.image_width,
             self._document.image_height,
-            annotations,
+            tuple(existing_annotations),
         )
         self._history = AnnotationHistory(self._document)
         self._fusion_result = result
         self._remember_current_document()
         self.canvas.set_document(self._document)
         self.canvas.set_fusion_statuses({
-            annotation.annotation_id: detection.status
-            for annotation, detection in zip(annotations, result.detections, strict=True)
+            ann.annotation_id: status for ann, status in fused_annotations
         })
         stats = result.statistics
         self.statusBar().showMessage(

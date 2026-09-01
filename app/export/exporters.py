@@ -88,8 +88,14 @@ class YoloExporter(DatasetExporter):
             split, document, images, labels = task
             image_target = images / document.image_path.name
             label_target = labels / f"{document.image_path.stem}.txt"
-            if document.image_path.resolve() != image_target.resolve():
-                shutil.copyfile(document.image_path, image_target)
+            if document.image_path.is_file():
+                if document.image_path.resolve() != image_target.resolve():
+                    try:
+                        shutil.copyfile(document.image_path, image_target)
+                    except OSError as err:
+                        LOGGER.warning("Could not copy image %s: %s", document.image_path, err)
+            else:
+                LOGGER.warning("Source image not found during YOLO export: %s", document.image_path)
             lines = []
             for annotation in document.annotations:
                 center_x, center_y, width, height = annotation.box.to_yolo()
@@ -210,8 +216,14 @@ class CocoExporter(DatasetExporter):
 
         def _copy_coco_img(doc: AnnotationDocument) -> None:
             target = image_destination / doc.image_path.name
-            if doc.image_path.resolve() != target.resolve():
-                shutil.copyfile(doc.image_path, target)
+            if doc.image_path.is_file():
+                if doc.image_path.resolve() != target.resolve():
+                    try:
+                        shutil.copyfile(doc.image_path, target)
+                    except OSError as err:
+                        LOGGER.warning("Could not copy image %s: %s", doc.image_path, err)
+            else:
+                LOGGER.warning("Source image not found during COCO export: %s", doc.image_path)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
             list(pool.map(_copy_coco_img, documents))

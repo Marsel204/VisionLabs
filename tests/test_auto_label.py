@@ -499,3 +499,40 @@ def test_auto_label_engine_multi_yolo_simultaneous_inference(sample_image: Path)
     car_det = next(d for d in result.detections if d.class_name == "car")
     assert car_det.confidence == pytest.approx(0.94)
 
+
+
+def test_auto_label_run_batch_preserves_existing_annotations(sample_image: Path) -> None:
+    """Verify that run_batch keeps existing annotations (human or AI) and adds new class detections."""
+    from app.services.annotation.domain import Annotation
+
+    # Pre-existing annotations: human 'car' and AI 'bus'
+    existing_ann1 = Annotation("car", BoundingBox(0.1, 0.1, 0.4, 0.4), source=AnnotationSource.HUMAN)
+    existing_ann2 = Annotation("bus", BoundingBox(0.6, 0.6, 0.9, 0.9), source=AnnotationSource.GROUNDING_DINO)
+    doc = AnnotationDocument(sample_image, 640, 480, (existing_ann1, existing_ann2))
+
+    engine = AutoLabelEngine()
+    # Mock run_preview to return a new 'motorcycle' detection
+    new_det = AutoLabelDetection(
+        class_name="motorcycle",
+        box=BoundingBox(0.0, 0.5, 0.3, 0.8),
+        confidence=0.92,
+    )
+    engine.run_preview = MagicMock(return_value=AutoLabelResult(
+        image_path=sample_image,
+        image_width=640,
+        image_height=480,
+        detections=[new_det],
+    ))
+
+    config = AutoLabelConfig(
+        mode=AutoLabelPipelineMode.DINO_BOXES,
+        classes=[AutoLabelClass(name="motorcycle", prompt="motorcycle")],
+    )
+
+    updated = engine.run_batch([doc], config)
+
+    assert sample_image in updated
+    updated_doc = updated[sample_image]
+    assert len(updated_doc.annotations) == 3
+    classes = {ann.class_name for ann in updated_doc.annotations}
+    assert classes == {"car", "bus", "motorcycle"}

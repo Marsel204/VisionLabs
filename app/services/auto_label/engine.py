@@ -637,19 +637,8 @@ class AutoLabelEngine:
             ann_source = AnnotationSource.YOLO
         elif config.mode in (AutoLabelPipelineMode.VLM_BOXES,):
             ann_source = AnnotationSource.FLORENCE2
-        elif config.mode in (AutoLabelPipelineMode.LOCATE_ANYTHING_BOXES,):
-            ann_source = AnnotationSource.LOCATE_ANYTHING
         else:
             ann_source = AnnotationSource.GROUNDING_DINO
-
-        ai_sources = (
-            AnnotationSource.GROUNDING_DINO,
-            AnnotationSource.SAM2,
-            AnnotationSource.YOLO,
-            AnnotationSource.FLORENCE2,
-            AnnotationSource.LOCATE_ANYTHING,
-            AnnotationSource.FUSED,
-        )
 
         for index, doc in enumerate(documents, start=1):
             if is_cancelled is not None and is_cancelled():
@@ -659,12 +648,8 @@ class AutoLabelEngine:
 
             new_annotations = self.convert_to_annotations(result, source=ann_source)
 
-            # Preserve non-AI annotations or previous manual annotations
-            preserved = [
-                ann
-                for ann in doc.annotations
-                if ann.source not in ai_sources
-            ]
+            # Preserve all existing annotations (human, imported dataset, and previous AI passes)
+            preserved = list(doc.annotations)
 
             # Merge new annotations avoiding duplication
             for new_ann in new_annotations:
