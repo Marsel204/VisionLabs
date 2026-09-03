@@ -422,6 +422,7 @@ class CherryPickDialog(QDialog):
 
     def _populate_list(self, filter_text: str = "") -> None:
         self.list_widget.blockSignals(True)
+        self.list_widget.setUpdatesEnabled(False)
         self.list_widget.clear()
         filter_lower = filter_text.lower()
         for p in self.all_images:
@@ -435,6 +436,7 @@ class CherryPickDialog(QDialog):
             else:
                 item.setCheckState(Qt.CheckState.Unchecked)
             self.list_widget.addItem(item)
+        self.list_widget.setUpdatesEnabled(True)
         self.list_widget.blockSignals(False)
 
     def _filter_list(self, text: str) -> None:

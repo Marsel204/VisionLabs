@@ -1400,11 +1400,19 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("No supported images found in selected folder")
             return
 
+        from PIL import Image
+
         is_initial = not self._project_documents
         added_count = 0
         for path in paths:
             if path not in self._project_documents:
-                self._project_documents[path] = AnnotationDocument(path, 1920, 1080)
+                w, h = 1920, 1080
+                try:
+                    with Image.open(path) as im:
+                        w, h = im.size
+                except Exception:
+                    pass
+                self._project_documents[path] = AnnotationDocument(path, w, h)
                 added_count += 1
 
         self._refresh_image_browser_order(preserve_current=True)

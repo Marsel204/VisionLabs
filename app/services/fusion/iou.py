@@ -20,21 +20,62 @@ def intersection_over_union(first: BoundingBox, second: BoundingBox) -> float:
     return intersection / union if union else 0.0
 
 
+def _extract_box_arrays(
+    boxes: Sequence[BoundingBox],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Extract (left, top, right, bottom, area) 1D numpy arrays efficiently."""
+    n = len(boxes)
+    left = np.empty(n, dtype=np.float64)
+    top = np.empty(n, dtype=np.float64)
+    right = np.empty(n, dtype=np.float64)
+    bottom = np.empty(n, dtype=np.float64)
+    for i, b in enumerate(boxes):
+        left[i] = b.left
+        top[i] = b.top
+        right[i] = b.right
+        bottom[i] = b.bottom
+    areas = np.maximum(0.0, right - left) * np.maximum(0.0, bottom - top)
+    return left, top, right, bottom, areas
+
+
+def pairwise_iou_and_containment(
+    first: Sequence[BoundingBox], second: Sequence[BoundingBox]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return both ``(IoU, containment)`` matrices in a single vectorized pass."""
+    if not first or not second:
+        zeros = np.zeros((len(first), len(second)), dtype=float)
+        return zeros, zeros
+
+    left_a, top_a, right_a, bottom_a, areas_a = _extract_box_arrays(first)
+    if first is second:
+        left_b, top_b, right_b, bottom_b, areas_b = left_a, top_a, right_a, bottom_a, areas_a
+    else:
+        left_b, top_b, right_b, bottom_b, areas_b = _extract_box_arrays(second)
+
+    inter_w = np.maximum(
+        0.0,
+        np.minimum(right_a[:, None], right_b[None, :])
+        - np.maximum(left_a[:, None], left_b[None, :]),
+    )
+    inter_h = np.maximum(
+        0.0,
+        np.minimum(bottom_a[:, None], bottom_b[None, :])
+        - np.maximum(top_a[:, None], top_b[None, :]),
+    )
+    intersection = inter_w * inter_h
+
+    union = areas_a[:, None] + areas_b[None, :] - intersection
+    iou = np.divide(intersection, union, out=np.zeros_like(intersection), where=union > 0)
+
+    min_areas = np.minimum(areas_a[:, None], areas_b[None, :])
+    containment = np.divide(
+        intersection, min_areas, out=np.zeros_like(intersection), where=min_areas > 0
+    )
+
+    return iou, containment
+
+
 def pairwise_iou(first: Sequence[BoundingBox], second: Sequence[BoundingBox]) -> np.ndarray:
     """Return an ``(len(first), len(second))`` IoU matrix using NumPy."""
-    if not first or not second:
-        return np.zeros((len(first), len(second)), dtype=float)
-    left_a = np.asarray([box.left for box in first])[:, None]
-    top_a = np.asarray([box.top for box in first])[:, None]
-    right_a = np.asarray([box.right for box in first])[:, None]
-    bottom_a = np.asarray([box.bottom for box in first])[:, None]
-    left_b = np.asarray([box.left for box in second])[None, :]
-    top_b = np.asarray([box.top for box in second])[None, :]
-    right_b = np.asarray([box.right for box in second])[None, :]
-    bottom_b = np.asarray([box.bottom for box in second])[None, :]
-    intersection = np.maximum(0.0, np.minimum(right_a, right_b) - np.maximum(left_a, left_b))
-    intersection *= np.maximum(0.0, np.minimum(bottom_a, bottom_b) - np.maximum(top_a, top_b))
-    areas_a = np.asarray([box.area for box in first])[:, None]
-    areas_b = np.asarray([box.area for box in second])[None, :]
-    union = areas_a + areas_b - intersection
-    return np.divide(intersection, union, out=np.zeros_like(intersection), where=union > 0)
+    iou, _ = pairwise_iou_and_containment(first, second)
+    return iou

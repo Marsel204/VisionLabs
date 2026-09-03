@@ -9,7 +9,7 @@ from pathlib import Path
 
 from app.services.ai_tuner.evaluator import GroundTruthEvaluator
 from app.services.ai_tuner.llm_client import OpenRouterVisionClient
-from app.services.ai_tuner.models import TunerConfig, TunerIteration, TunerResult
+from app.services.ai_tuner.models import EvaluationReport, TunerConfig, TunerIteration, TunerResult
 from app.services.ai_tuner.parametric_solver import FastParametricSolver
 from app.services.annotation.domain import AnnotationDocument
 from app.services.auto_label.engine import AutoLabelEngine
@@ -130,49 +130,58 @@ class AITunerEngine:
                     )
                     report = opt_report
 
-            # Phase 2: Multimodal LLM Prompt Refinement
+            # Phase 2: Multimodal LLM or Heuristic Prompt Refinement
             if (
                 tuner_config.optimize_prompts
                 and report.overall_macro_f1 < tuner_config.target_f1_score
-                and llm_client.is_configured
             ):
-                try:
-                    prompt_diffs, reasoning_summary = llm_client.refine_prompts_with_vision(
+                prompt_diffs = {}
+                if llm_client.is_configured:
+                    try:
+                        prompt_diffs, reasoning_summary = llm_client.refine_prompts_with_vision(
+                            active_classes, report
+                        )
+                    except Exception as err:
+                        LOGGER.warning(
+                            "LLM prompt optimization step failed on iteration %d: %s; "
+                            "falling back to domain heuristics",
+                            iter_idx,
+                            err,
+                        )
+                        prompt_diffs, reasoning_summary = self._heuristic_prompt_refinement(
+                            active_classes, report
+                        )
+                else:
+                    prompt_diffs, reasoning_summary = self._heuristic_prompt_refinement(
                         active_classes, report
                     )
-                    if prompt_diffs:
-                        # Apply new prompts
-                        for cls_item in active_classes:
-                            if cls_item.name in prompt_diffs:
-                                cls_item.prompt = prompt_diffs[cls_item.name]
 
-                        current_config = self._update_config_classes(current_config, active_classes)
+                if prompt_diffs:
+                    # Apply new prompts
+                    for cls_item in active_classes:
+                        if cls_item.name in prompt_diffs:
+                            cls_item.prompt = prompt_diffs[cls_item.name]
 
-                        # Re-run inference with improved prompts
-                        predictions = self._infer_samples(sample_images, current_config)
-                        report = self.evaluator.evaluate(predictions, valid_gt, extract_crops=True)
+                    current_config = self._update_config_classes(current_config, active_classes)
 
-                        # Re-tune thresholds with the new prompt predictions
-                        if tuner_config.optimize_thresholds:
-                            opt_conf, opt_iou, opt_report = (
-                                self.parametric_solver.optimize_thresholds(
-                                    predictions,
-                                    valid_gt,
-                                    initial_conf=current_config.confidence_threshold,
-                                    initial_iou=current_config.box_iou_threshold,
-                                )
+                    # Re-run inference with improved prompts
+                    predictions = self._infer_samples(sample_images, current_config)
+                    report = self.evaluator.evaluate(predictions, valid_gt, extract_crops=True)
+
+                    # Re-tune thresholds with the new prompt predictions
+                    if tuner_config.optimize_thresholds:
+                        opt_conf, opt_iou, opt_report = (
+                            self.parametric_solver.optimize_thresholds(
+                                predictions,
+                                valid_gt,
+                                initial_conf=current_config.confidence_threshold,
+                                initial_iou=current_config.box_iou_threshold,
                             )
-                            current_config = self._update_config_thresholds(
-                                current_config, opt_conf, opt_iou
-                            )
-                            report = opt_report
-                except Exception as err:
-                    LOGGER.warning(
-                        "LLM prompt optimization step failed on iteration %d: %s",
-                        iter_idx,
-                        err,
-                    )
-                    reasoning_summary = f"LLM prompt refinement skipped: {err}"
+                        )
+                        current_config = self._update_config_thresholds(
+                            current_config, opt_conf, opt_iou
+                        )
+                        report = opt_report
 
             # Track best configuration
             if report.overall_macro_f1 > best_f1:
@@ -276,3 +285,63 @@ class AITunerEngine:
             enable_florence2=config.enable_florence2,
             enable_sam2_masks=config.enable_sam2_masks,
         )
+
+    DOMAIN_SYNONYMS: dict[str, list[str]] = {
+        "motorcycle": ["motorbike", "scooter", "moped", "two-wheeler"],
+        "car": ["automobile", "sedan", "suv", "passenger car", "taxi"],
+        "truck": ["pickup truck", "semi-truck", "cargo truck", "lorry"],
+        "bus": ["transit bus", "school bus", "shuttle", "coach"],
+        "bicycle": ["bike", "cyclist", "road bike"],
+        "person": ["pedestrian", "walking person"],
+    }
+
+    def _heuristic_prompt_refinement(
+        self,
+        classes: list[AutoLabelClass],
+        report: EvaluationReport,
+    ) -> tuple[dict[str, str], str]:
+        """Synthesize improved prompt phrases without requiring an external LLM API key.
+
+        Uses diagnostic metrics (false negatives, false positives) combined with domain
+        synonym expansion to adjust prompts towards higher F1.
+        """
+        prompt_diffs: dict[str, str] = {}
+        reasoning_parts: list[str] = []
+
+        for cls_item in classes:
+            metric = report.class_metrics.get(cls_item.name)
+            current_prompt = (cls_item.prompt or cls_item.name).strip()
+            current_tokens = {
+                t.strip().lower() for t in current_prompt.replace(".", ",").split(",")
+            }
+
+            # If class has false negatives / low recall, expand with domain synonyms
+            if metric and (metric.recall < 0.80 or metric.false_negatives > 0):
+                synonyms = self.DOMAIN_SYNONYMS.get(cls_item.name.lower(), [])
+                added_synonyms = [s for s in synonyms if s.lower() not in current_tokens]
+                if added_synonyms:
+                    new_token = added_synonyms[0]
+                    new_prompt = f"{current_prompt}, {new_token}" if current_prompt else new_token
+                    prompt_diffs[cls_item.name] = new_prompt
+                    recall_pct = int(round(metric.recall * 100))
+                    reasoning_parts.append(
+                        f"Added synonym '{new_token}' to '{cls_item.name}' to address "
+                        f"{metric.false_negatives} missed detections (recall: {recall_pct}%)"
+                    )
+            elif metric and metric.precision < 0.60 and metric.false_positives > 0:
+                if "," in current_prompt:
+                    first_term = current_prompt.split(",")[0].strip()
+                    if first_term and first_term != current_prompt:
+                        prompt_diffs[cls_item.name] = first_term
+                        prec_pct = int(round(metric.precision * 100))
+                        reasoning_parts.append(
+                            f"Narrowed '{cls_item.name}' prompt to '{first_term}' to reduce "
+                            f"{metric.false_positives} false positives (precision: {prec_pct}%)"
+                        )
+
+        summary = (
+            "; ".join(reasoning_parts)
+            if reasoning_parts
+            else "Domain prompt and threshold calibration completed"
+        )
+        return prompt_diffs, summary
