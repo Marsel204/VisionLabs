@@ -116,24 +116,34 @@ class CocoImporter:
             "annotations_imported": 0,
             "overlapping_removed": 0,
         }
-        for image_record in images:
+        def _process_coco_record(
+            image_record: dict[str, Any],
+        ) -> tuple[AnnotationDocument | None, dict[str, int], list[str]]:
+            sub_counts = {
+                "unsupported_categories": 0,
+                "missing_images": 0,
+                "invalid_annotations": 0,
+                "annotations_imported": 0,
+                "overlapping_removed": 0,
+            }
+            sub_warnings: list[str] = []
             try:
                 image_id = int(image_record["id"])
                 relative_name = Path(str(image_record["file_name"]))
                 source_path = self._safe_source_path(image_root, relative_name)
                 if not source_path.is_file():
-                    counts["missing_images"] += 1
-                    warnings.append(f"missing image: {relative_name}")
-                    continue
+                    sub_counts["missing_images"] += 1
+                    sub_warnings.append(f"missing image: {relative_name}")
+                    return None, sub_counts, sub_warnings
                 target_path = project_images / relative_name.name
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     if source_path.resolve() != target_path.resolve():
                         shutil.copy2(source_path, target_path)
                 except OSError as err:
-                    counts["missing_images"] += 1
-                    warnings.append(f"could not copy {source_path.name}: {err}")
-                    continue
+                    sub_counts["missing_images"] += 1
+                    sub_warnings.append(f"could not copy {source_path.name}: {err}")
+                    return None, sub_counts, sub_warnings
 
                 try:
                     image_width = int(float(image_record.get("width", 0) or 0))
@@ -144,7 +154,7 @@ class CocoImporter:
                 if image_width <= 0 or image_height <= 0:
                     try:
                         with Image.open(source_path) as im:
-                            image_width, image_height = im.width, im.height
+                            image_width, image_height = im.size
                     except Exception:
                         image_width, image_height = 640, 480
 
@@ -152,7 +162,7 @@ class CocoImporter:
                 for record in by_image.get(image_id, []):
                     category_id = int(record.get("category_id", -1))
                     if category_id not in supported:
-                        counts["unsupported_categories"] += 1
+                        sub_counts["unsupported_categories"] += 1
                         continue
                     try:
                         box = self._box(record.get("bbox"), image_width, image_height)
@@ -169,9 +179,9 @@ class CocoImporter:
                             )
                         )
                     except (KeyError, TypeError, ValueError) as error:
-                        counts["invalid_annotations"] += 1
-                        warnings.append(f"invalid annotation {record.get('id', '?')}: {error}")
-                counts["annotations_imported"] += len(imported)
+                        sub_counts["invalid_annotations"] += 1
+                        sub_warnings.append(f"invalid annotation {record.get('id', '?')}: {error}")
+                sub_counts["annotations_imported"] += len(imported)
                 if remove_overlaps:
                     kept, removed = remove_overlapping_annotations(
                         imported,
@@ -179,21 +189,35 @@ class CocoImporter:
                         containment_threshold,
                         same_class_only=True,
                     )
-                    counts["overlapping_removed"] += removed
+                    sub_counts["overlapping_removed"] += removed
                     imported = list(kept)
-                documents.append(
-                    AnnotationDocument(
-                        target_path,
-                        image_width,
-                        image_height,
-                        tuple(imported),
-                    )
+                doc = AnnotationDocument(
+                    target_path,
+                    image_width,
+                    image_height,
+                    tuple(imported),
                 )
+                return doc, sub_counts, sub_warnings
             except (KeyError, TypeError, ValueError) as error:
                 image_id = image_record.get("id", -1)
                 related = by_image.get(int(image_id), []) if isinstance(image_id, int) else []
-                counts["invalid_annotations"] += len(related)
-                warnings.append(f"invalid image record {image_record.get('id', '?')}: {error}")
+                sub_counts["invalid_annotations"] += len(related)
+                sub_warnings.append(f"invalid image record {image_record.get('id', '?')}: {error}")
+                return None, sub_counts, sub_warnings
+
+        import concurrent.futures
+        import os
+
+        max_workers = min(32, max(4, (os.cpu_count() or 4) * 2))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            results = pool.map(_process_coco_record, images)
+
+        for doc, sub_counts, sub_warnings in results:
+            if doc is not None:
+                documents.append(doc)
+            for k, v in sub_counts.items():
+                counts[k] += v
+            warnings.extend(sub_warnings)
 
         report = CocoImportReport(
             images_found=len(images),

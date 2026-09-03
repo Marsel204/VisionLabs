@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.runtime import detect_gpu
-from app.export.exporters import CocoExporter, YoloExporter, split_documents
+from app.export.exporters import CocoExporter, RoboflowExporter, YoloExporter, split_documents
 from app.models.contracts import Detection as ModelDetection
 from app.services.active_learning import ActiveLearningConfig, ActiveLearningEngine, ImageAnalysis
 from app.services.active_learning.active_learning_models import DifficultyResult
@@ -70,6 +70,7 @@ from app.services.annotation.history import (
 )
 from app.services.crop_assisted import CropGenerator, CropMerger, CropSession
 from app.services.dataset.coco_importer import CocoImporter, CocoImportResult
+from app.services.dataset.yolo_importer import YoloImporter, YoloImportResult
 from app.services.dataset.index import IMAGE_SUFFIXES
 from app.services.fusion import (
     FusionConfig,
@@ -81,6 +82,7 @@ from app.services.fusion import (
 from app.services.inference.dense_motorcycle import DenseInferenceConfig, DenseMotorcycleInference
 from app.services.inference.grounding import grounding_class, prompt_variants, tile_positions
 from app.ui.canvas.annotation_canvas import AnnotationCanvas, CanvasMode
+from app.ui.dialogs.roboflow_dialog import RoboflowImportDialog, RoboflowUploadDialog
 from app.ui.views.image_browser import ImageBrowser
 
 LOGGER = logging.getLogger(__name__)
@@ -218,15 +220,7 @@ class _DatasetAnnotationTask(QRunnable):
                 if self._cancel_requested.is_set():
                     self.signals.cancelled.emit()
                     return
-                preserved = tuple(
-                    item
-                    for item in document.annotations
-                    if item.source
-                    not in {AnnotationSource.GROUNDING_DINO, AnnotationSource.FUSED}
-                    and not (
-                        self._use_yolo and item.source is AnnotationSource.YOLO
-                    )
-                )
+                preserved = document.annotations
                 inference_document = AnnotationDocument(
                     document.image_path,
                     document.image_width,
@@ -819,8 +813,14 @@ class MainWindow(QMainWindow):
     def _build_file_actions(self) -> None:
         import_folder = QAction("Import Folder", self)
         import_folder.triggered.connect(self._import_folder)
+        import_yolo = QAction("Import YOLO Dataset (data.yaml)", self)
+        import_yolo.triggered.connect(self._import_yolo_dataset)
         import_coco = QAction("Import COCO Dataset", self)
         import_coco.triggered.connect(self._import_coco_dataset)
+        import_roboflow = QAction("Import from Roboflow...", self)
+        import_roboflow.triggered.connect(self._import_from_roboflow)
+        upload_roboflow = QAction("Upload to Roboflow...", self)
+        upload_roboflow.triggered.connect(self._upload_to_roboflow)
         export_dataset = QAction("Export Dataset", self)
         export_dataset.triggered.connect(self._export_dataset)
         crop_start = QAction("Start Crop Assist", self)
@@ -975,8 +975,12 @@ class MainWindow(QMainWindow):
 
         file_menu = self.menuBar().addMenu("File")
         file_menu.addAction(import_folder)
+        file_menu.addAction(import_yolo)
         file_menu.addAction(import_coco)
+        file_menu.addAction(import_roboflow)
+        file_menu.addSeparator()
         file_menu.addAction(export_dataset)
+        file_menu.addAction(upload_roboflow)
         file_menu.addAction(save)
         file_menu.addSeparator()
         file_menu.addAction(delete_picture)
@@ -1389,17 +1393,36 @@ class MainWindow(QMainWindow):
         if not folder:
             return
         paths = sorted(
-            path for path in Path(folder).iterdir()
+            path for path in Path(folder).rglob("*")
             if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
         )
-        self._project_documents = {
-            path: AnnotationDocument(path, 1920, 1080) for path in paths
-        }
-        self._project_root = None
-        self._refresh_image_browser_order(preserve_current=False)
-        if paths:
+        if not paths:
+            self.statusBar().showMessage("No supported images found in selected folder")
+            return
+
+        from PIL import Image
+
+        is_initial = not self._project_documents
+        added_count = 0
+        for path in paths:
+            if path not in self._project_documents:
+                w, h = 1920, 1080
+                try:
+                    with Image.open(path) as im:
+                        w, h = im.size
+                except Exception:
+                    pass
+                self._project_documents[path] = AnnotationDocument(path, w, h)
+                added_count += 1
+
+        self._refresh_image_browser_order(preserve_current=True)
+        if is_initial and paths:
             self._load_image(paths[0])
-        self.statusBar().showMessage(f"Imported {len(paths)} images")
+
+        total_count = len(self._project_documents)
+        self.statusBar().showMessage(
+            f"Added {added_count} new images ({total_count} total in dataset)"
+        )
 
     def _import_coco_dataset(self) -> None:
         """Import a COCO detection dataset into a copied cleaning project."""
@@ -1444,6 +1467,57 @@ class MainWindow(QMainWindow):
             f"Invalid records: {report.invalid_annotations}",
         )
 
+    def _import_yolo_dataset(self) -> None:
+        """Import a YOLO detection dataset (data.yaml/dataset.yaml) into a copied cleaning project."""
+        yaml_name, _ = QFileDialog.getOpenFileName(
+            self, "Choose YOLO dataset YAML", "", "YAML files (*.yaml *.yml)"
+        )
+        if not yaml_name:
+            return
+        yaml_path = Path(yaml_name)
+        parent_name = QFileDialog.getExistingDirectory(self, "Choose new project destination")
+        if not parent_name:
+            return
+        destination = self._new_project_path(Path(parent_name), yaml_path.stem)
+        try:
+            result = YoloImporter().import_dataset(
+                yaml_path,
+                destination,
+                remove_overlaps=True,
+                overlap_iou_threshold=self._fusion_config.overlap_removal_iou_threshold,
+                containment_threshold=self._fusion_config.overlap_removal_containment_threshold,
+            )
+        except Exception as error:
+            LOGGER.exception("YOLO import failed")
+            QMessageBox.critical(self, "YOLO import failed", str(error))
+            return
+        self._set_imported_project(result)
+        report = result.report
+        QMessageBox.information(
+            self,
+            "YOLO import completed",
+            f"Images copied: {report.images_imported}/{report.images_found}\n"
+            f"Annotations imported: {report.annotations_imported}\n"
+            f"Overlaps removed: {report.overlapping_removed}\n"
+            f"Unsupported categories skipped: {report.unsupported_categories}\n"
+            f"Missing images: {report.missing_images}\n"
+            f"Invalid records: {report.invalid_annotations}",
+        )
+
+    def _import_from_roboflow(self) -> None:
+        """Open dialog to download and import a dataset directly from Roboflow."""
+        dialog = RoboflowImportDialog(self)
+        dialog.dataset_imported.connect(self._set_imported_project)
+        dialog.exec()
+
+    def _upload_to_roboflow(self) -> None:
+        """Open dialog to upload current project images and annotations to Roboflow."""
+        if not self._project_documents:
+            self.statusBar().showMessage("Import a folder or dataset before uploading")
+            return
+        dialog = RoboflowUploadDialog(list(self._project_documents.values()), self)
+        dialog.exec()
+
     def _export_dataset(self) -> None:
         """Export the current project in a user-selected dataset format."""
         if self._crop_session is not None:
@@ -1452,7 +1526,13 @@ class MainWindow(QMainWindow):
         if not self._project_documents:
             self.statusBar().showMessage("Import a folder or dataset before exporting")
             return
-        formats = ["COCO Detection", "YOLOv8 Detection", "YOLOv11 Detection", "YOLOv26 Detection"]
+        formats = [
+            "YOLO (Google Colab .zip)",
+            "YOLOv11 Detection",
+            "YOLOv8 Detection",
+            "YOLOv26 Detection",
+            "COCO Detection",
+        ]
         selected, accepted = QInputDialog.getItem(
             self,
             "Export Dataset",
@@ -1474,6 +1554,7 @@ class MainWindow(QMainWindow):
         if not accepted:
             return
         slug = {
+            "YOLO (Google Colab .zip)": "colab-zip",
             "COCO Detection": "coco",
             "YOLOv8 Detection": "yolov8",
             "YOLOv11 Detection": "yolov11",
@@ -1522,11 +1603,12 @@ class MainWindow(QMainWindow):
                 return
             suffix = "-split"
         destination = self._new_project_path(Path(parent_name), f"exported-{slug}{suffix}")
-        exporter = (
-            CocoExporter(splits=splits)
-            if slug == "coco"
-            else YoloExporter(variant=slug, splits=splits)
-        )
+        if slug == "coco":
+            exporter = CocoExporter(splits=splits)
+        elif slug == "colab-zip":
+            exporter = RoboflowExporter(splits=splits)
+        else:
+            exporter = YoloExporter(variant=slug, splits=splits)
         try:
             result = exporter.export(documents, destination)
         except Exception as error:
@@ -1535,15 +1617,30 @@ class MainWindow(QMainWindow):
             return
         self.statusBar().showMessage(f"Exported {selected}: {result}")
 
-    def _set_imported_project(self, result: CocoImportResult) -> None:
-        self._project_root = result.project_root
-        self._project_documents = {
-            document.image_path: document for document in result.documents
-        }
-        self._refresh_image_browser_order(preserve_current=False)
-        if self._project_documents:
+    def _set_imported_project(self, result: CocoImportResult | YoloImportResult) -> None:
+        if self._project_root is None:
+            self._project_root = result.project_root
+
+        is_initial = not self._project_documents
+        added_count = 0
+        for document in result.documents:
+            if document.image_path not in self._project_documents:
+                self._project_documents[document.image_path] = document
+                added_count += 1
+            else:
+                existing = self._project_documents[document.image_path]
+                if not existing.annotations and document.annotations:
+                    self._project_documents[document.image_path] = document
+
+        self._refresh_image_browser_order(preserve_current=True)
+        if is_initial and self._project_documents:
             first_path = next(iter(self._project_documents.keys()))
             self._load_image(first_path)
+
+        total_count = len(self._project_documents)
+        self.statusBar().showMessage(
+            f"Added {added_count} dataset images ({total_count} total in dataset)"
+        )
 
     @staticmethod
     def _new_project_path(parent: Path, stem: str) -> Path:
@@ -2761,28 +2858,35 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Run Grounding DINO and YOLO before Label Fusion")
             return
         result = FusionEngine(self._fusion_config).fuse(detections)
-        annotations = tuple(
-            Annotation(
-                class_name=item.class_name,
-                box=item.bbox,
-                confidence=item.confidence,
-                source=AnnotationSource.FUSED,
-            )
-            for item in result.detections
-        )
+        existing_annotations = list(self._document.annotations)
+        fused_annotations = []
+        for item in result.detections:
+            if not any(
+                existing.class_name == item.class_name
+                and self._box_iou(existing.box, item.bbox) >= 0.5
+                for existing in existing_annotations
+            ):
+                fused_ann = Annotation(
+                    class_name=item.class_name,
+                    box=item.bbox,
+                    confidence=item.confidence,
+                    source=AnnotationSource.FUSED,
+                )
+                existing_annotations.append(fused_ann)
+                fused_annotations.append((fused_ann, item.status))
+
         self._document = AnnotationDocument(
             self._document.image_path,
             self._document.image_width,
             self._document.image_height,
-            annotations,
+            tuple(existing_annotations),
         )
         self._history = AnnotationHistory(self._document)
         self._fusion_result = result
         self._remember_current_document()
         self.canvas.set_document(self._document)
         self.canvas.set_fusion_statuses({
-            annotation.annotation_id: detection.status
-            for annotation, detection in zip(annotations, result.detections, strict=True)
+            ann.annotation_id: status for ann, status in fused_annotations
         })
         stats = result.statistics
         self.statusBar().showMessage(

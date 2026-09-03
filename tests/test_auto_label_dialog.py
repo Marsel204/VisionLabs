@@ -468,3 +468,34 @@ def test_auto_label_dialog_multi_yolo_ui(sample_images: list[Path], qapp: QAppli
 
 
 
+
+
+def test_auto_label_dialog_batch_preserves_ground_truth(
+    sample_images: list[Path], qapp: QApplication
+) -> None:
+    from PySide6.QtWidgets import QMessageBox
+    from app.services.annotation.domain import Annotation
+
+    img = sample_images[0]
+    existing_ann = Annotation("car", BoundingBox(0.1, 0.1, 0.4, 0.4))
+    initial_doc = AnnotationDocument(img, 640, 480, (existing_ann,))
+    ground_truth = {img: initial_doc}
+
+    engine = AutoLabelEngine()
+    engine.run_preview = MagicMock(return_value=AutoLabelResult(
+        image_path=img,
+        image_width=640,
+        image_height=480,
+        detections=[AutoLabelDetection(class_name="truck", confidence=0.88, box=BoundingBox(0.5, 0.5, 0.8, 0.8))],
+    ))
+
+    dialog = AutoLabelDialog([img], ground_truth=ground_truth, engine=engine)
+    with patch("PySide6.QtWidgets.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes), \
+         patch("PySide6.QtWidgets.QMessageBox.information"):
+        dialog._run_batch_auto_label(wait=True)
+
+    assert img in dialog.ground_truth
+    result_doc = dialog.ground_truth[img]
+    assert len(result_doc.annotations) == 2
+    classes = {ann.class_name for ann in result_doc.annotations}
+    assert classes == {"car", "truck"}

@@ -6,5 +6,20 @@ from app.services.dataset.coco_importer import (
     CocoImportReport,
     CocoImportResult,
 )
+from app.services.dataset.yolo_importer import (
+    YoloImporter,
+    YoloImportError,
+    YoloImportReport,
+    YoloImportResult,
+)
 
-__all__ = ["CocoImportError", "CocoImporter", "CocoImportReport", "CocoImportResult"]
+__all__ = [
+    "CocoImportError",
+    "CocoImporter",
+    "CocoImportReport",
+    "CocoImportResult",
+    "YoloImportError",
+    "YoloImporter",
+    "YoloImportReport",
+    "YoloImportResult",
+]

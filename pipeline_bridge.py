@@ -141,8 +141,11 @@ class MaskToPolygonProcessor:
         if mask is None or mask.size == 0 or not np.any(mask):
             return [], []
 
-        # Convert mask to uint8 binary image (0 or 255)
-        mask_uint8 = (mask > 0).astype(np.uint8) * 255
+        # Ensure mask is uint8 binary image for cv2.findContours without redundant allocations
+        if mask.dtype == np.uint8:
+            mask_uint8 = mask if mask.flags.c_contiguous else np.ascontiguousarray(mask)
+        else:
+            mask_uint8 = (mask > 0).astype(np.uint8)
 
         # Find external contours
         contours, _ = cv2.findContours(
@@ -243,7 +246,7 @@ class GroundingDinoDetector:
         else:
             device = self._device_str
 
-        dtype = torch.float32
+        dtype = torch.float16 if device == "cuda" else torch.float32
         LOGGER.info("Loading Grounding DINO model '%s' on %s (dtype: %s)", self.model_id, device, dtype)
         self._processor = AutoProcessor.from_pretrained(self.model_id)
         self._model = GroundingDinoForObjectDetection.from_pretrained(

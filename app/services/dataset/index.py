@@ -20,6 +20,7 @@ class DatasetIndex:
         self._connection = sqlite3.connect(self._database_path)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA journal_mode=WAL")
+        self._connection.execute("PRAGMA synchronous=NORMAL")
         self._connection.execute(
             """CREATE TABLE IF NOT EXISTS images (
                 path TEXT PRIMARY KEY,
@@ -77,6 +78,16 @@ class DatasetIndex:
         """Persist dimensions discovered by an image loader."""
         self._connection.execute(
             "UPDATE images SET width=?, height=? WHERE path=?", (width, height, str(path))
+        )
+        self._connection.commit()
+
+    def set_metadata_batch(self, items: list[tuple[Path, int, int]]) -> None:
+        """Persist dimensions for multiple images in a single atomic transaction."""
+        if not items:
+            return
+        rows = [(w, h, str(p)) for p, w, h in items]
+        self._connection.executemany(
+            "UPDATE images SET width=?, height=? WHERE path=?", rows
         )
         self._connection.commit()
 

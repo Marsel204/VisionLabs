@@ -313,10 +313,13 @@ class AITunerDialog(QDialog):
             "QHeaderView::section { background-color: #1e293b; color: #94a3b8; "
             "font-weight: 700; border: none; padding: 4px 6px; }"
         )
+        self.diff_table.setSortingEnabled(False)
+        self.diff_table.setUpdatesEnabled(False)
         for row, cls_item in enumerate(self.current_config.classes):
             self.diff_table.setItem(row, 0, QTableWidgetItem(f"🏷️ {cls_item.name}"))
             self.diff_table.setItem(row, 1, QTableWidgetItem(cls_item.prompt or cls_item.name))
             self.diff_table.setItem(row, 2, QTableWidgetItem("—"))
+        self.diff_table.setUpdatesEnabled(True)
         layout.addWidget(self.diff_table, 1)
 
         # Bottom Action Buttons
@@ -558,6 +561,7 @@ class AITunerDialog(QDialog):
         self.thought_stream.append(log_msg)
 
         # Update diff table proposed column
+        self.diff_table.setUpdatesEnabled(False)
         for row in range(self.diff_table.rowCount()):
             cls_name_item = self.diff_table.item(row, 0)
             if cls_name_item:
@@ -567,6 +571,7 @@ class AITunerDialog(QDialog):
                     diff_item = QTableWidgetItem(new_val)
                     diff_item.setForeground(QColor("#34d399"))
                     self.diff_table.setItem(row, 2, diff_item)
+        self.diff_table.setUpdatesEnabled(True)
 
     def _on_tuning_completed(self, result: TunerResult) -> None:
         self._tuner_result = result

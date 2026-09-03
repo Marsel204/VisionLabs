@@ -462,7 +462,7 @@ class Florence2VLM:
                 pixel_values=device_inputs.get("pixel_values"),
                 max_new_tokens=max_new_tokens,
                 num_beams=num_beams,
-                use_cache=False,
+                use_cache=True,
                 do_sample=False,
                 early_stopping=True if num_beams > 1 else False,
             )
@@ -546,7 +546,7 @@ class Florence2VLM:
                 pixel_values=device_inputs.get("pixel_values"),
                 max_new_tokens=max_new_tokens,
                 num_beams=1,
-                use_cache=False,
+                use_cache=True,
                 do_sample=False,
             )
 

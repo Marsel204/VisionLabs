@@ -43,6 +43,8 @@ class _DifficultyCache:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(path, check_same_thread=False)
+        self._connection.execute("PRAGMA journal_mode=WAL")
+        self._connection.execute("PRAGMA synchronous=NORMAL")
         self._connection.execute(
             "CREATE TABLE IF NOT EXISTS difficulty_cache "
             "(image_path TEXT PRIMARY KEY, signature TEXT NOT NULL, payload TEXT NOT NULL)"
@@ -60,7 +62,7 @@ class _DifficultyCache:
             return None
         return _result_from_payload(json.loads(row[0]))
 
-    def put(self, result: DifficultyResult, signature: str) -> None:
+    def put(self, result: DifficultyResult, signature: str, commit: bool = True) -> None:
         payload = json.dumps(_result_payload(result), sort_keys=True, default=_json_default)
         with self._lock:
             self._connection.execute(
@@ -69,6 +71,12 @@ class _DifficultyCache:
                 "payload=excluded.payload",
                 (str(result.image_path), signature, payload),
             )
+            if commit:
+                self._connection.commit()
+
+    def commit(self) -> None:
+        """Commit all pending SQLite cache transactions."""
+        with self._lock:
             self._connection.commit()
 
     def remove(self, image_path: Path) -> None:
@@ -91,6 +99,9 @@ class ActiveLearningEngine:
     def __init__(self, config: ActiveLearningConfig | None = None) -> None:
         self.config = config or ActiveLearningConfig()
         self.config.validate()
+        self._config_dict: dict[str, str] = {
+            key: str(value) for key, value in asdict(self.config).items()
+        }
         self._cache = _DifficultyCache(self.config.cache_path)
 
     def close(self) -> None:
@@ -101,16 +112,22 @@ class ActiveLearningEngine:
         """Remove an image from the persistent difficulty cache."""
         self._cache.remove(image_path)
 
-    def score(self, analysis: ImageAnalysis) -> DifficultyResult:
+    def score(
+        self,
+        analysis: ImageAnalysis,
+        *,
+        commit: bool = True,
+        config_dict: dict[str, str] | None = None,
+    ) -> DifficultyResult:
         """Score one image, returning a cached result when inputs are unchanged."""
-        signature = _signature(analysis, self.config)
+        signature = _signature(analysis, self.config, config_dict=config_dict or self._config_dict)
         cached = self._cache.get(analysis.image_path, signature)
         if cached is not None:
             LOGGER.debug("Difficulty cache hit: %s", analysis.image_path)
             return replace(cached, cached=True)
         LOGGER.info("Difficulty calculation started: %s", analysis.image_path)
         result = self._calculate(analysis)
-        self._cache.put(result, signature)
+        self._cache.put(result, signature, commit=commit)
         LOGGER.info("Image scored: %s (%.1f)", analysis.image_path, result.difficulty_score)
         LOGGER.info("Cache updated: %s", analysis.image_path)
         return result
@@ -128,14 +145,20 @@ class ActiveLearningEngine:
         if not values:
             return []
         completed = 0
+        cfg_dict = self._config_dict
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(self.score, analysis) for analysis in values]
+            futures = [
+                executor.submit(self.score, analysis, commit=False, config_dict=cfg_dict)
+                for analysis in values
+            ]
             results: list[DifficultyResult] = []
             for future in futures:
                 results.append(future.result())
                 completed += 1
                 if progress:
                     progress(completed, len(values))
+        # Batch commit all newly computed cache entries
+        self._cache.commit()
         ranked = rank_results(results, ranking)
         LOGGER.info("Ranking complete: %d images", len(ranked))
         return ranked
@@ -207,9 +230,17 @@ def _collections(features: DifficultyFeatures, score: float) -> frozenset[str]:
     return frozenset(collections)
 
 
-def _signature(analysis: ImageAnalysis, config: ActiveLearningConfig) -> str:
+def _signature(
+    analysis: ImageAnalysis,
+    config: ActiveLearningConfig,
+    config_dict: dict[str, str] | None = None,
+) -> str:
+    if config_dict is not None:
+        cfg_map = config_dict
+    else:
+        cfg_map = {key: str(value) for key, value in asdict(config).items()}
     payload: dict[str, object] = {
-        "config": {key: str(value) for key, value in asdict(config).items()},
+        "config": cfg_map,
         "detections": [
             (
                 item.class_name,

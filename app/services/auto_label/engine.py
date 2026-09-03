@@ -143,59 +143,44 @@ class AutoLabelEngine:
         Handles both same-class duplicates and cross-class containment/overlap conflicts
         by prioritizing higher-confidence detections without relying on complex VLM crop checks.
         """
-        if not boxes_px:
-            return [], [], []
+        n = len(boxes_px)
+        if n <= 1:
+            return boxes_px, classes, scores
 
-        indices = sorted(range(len(boxes_px)), key=lambda i: scores[i], reverse=True)
+        indices = sorted(range(n), key=lambda i: scores[i], reverse=True)
+        boxes_arr = np.asarray(boxes_px, dtype=np.float64)
+        x1 = boxes_arr[:, 0]
+        y1 = boxes_arr[:, 1]
+        x2 = boxes_arr[:, 2]
+        y2 = boxes_arr[:, 3]
+        areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+
         kept_indices: list[int] = []
-
         for i in indices:
-            box_a = boxes_px[i]
-            cls_a = classes[i]
-
-            area_a = max(0.0, box_a[2] - box_a[0]) * max(0.0, box_a[3] - box_a[1])
+            area_a = areas[i]
             if area_a <= 0.0:
                 continue
-
+            cls_a_name = classes[i].name
             duplicate = False
             for k in kept_indices:
-                box_b = boxes_px[k]
-                cls_b = classes[k]
-
-                area_b = max(0.0, box_b[2] - box_b[0]) * max(0.0, box_b[3] - box_b[1])
+                cls_b_name = classes[k].name
+                if same_class_only and cls_a_name != cls_b_name:
+                    continue
+                area_b = areas[k]
                 if area_b <= 0.0:
                     continue
-
-                xA = max(box_a[0], box_b[0])
-                yA = max(box_a[1], box_b[1])
-                xB = min(box_a[2], box_b[2])
-                yB = min(box_a[3], box_b[3])
-                inter = max(0.0, xB - xA) * max(0.0, yB - yA)
-
+                inter_w = max(0.0, min(x2[i], x2[k]) - max(x1[i], x1[k]))
+                inter_h = max(0.0, min(y2[i], y2[k]) - max(y1[i], y1[k]))
+                inter = inter_w * inter_h
                 if inter <= 0.0:
                     continue
-
                 union = area_a + area_b - inter
                 iou = inter / union if union > 0 else 0.0
                 min_area = min(area_a, area_b)
                 containment = inter / min_area if min_area > 0 else 0.0
-
-                if same_class_only:
-                    if cls_a.name == cls_b.name and (
-                        iou >= iou_threshold or containment >= containment_threshold
-                    ):
-                        duplicate = True
-                        break
-                else:
-                    if cls_a.name == cls_b.name:
-                        if iou >= iou_threshold or containment >= containment_threshold:
-                            duplicate = True
-                            break
-                    else:
-                        if iou >= iou_threshold or containment >= containment_threshold:
-                            duplicate = True
-                            break
-
+                if iou >= iou_threshold or containment >= containment_threshold:
+                    duplicate = True
+                    break
             if not duplicate:
                 kept_indices.append(i)
 
@@ -637,19 +622,8 @@ class AutoLabelEngine:
             ann_source = AnnotationSource.YOLO
         elif config.mode in (AutoLabelPipelineMode.VLM_BOXES,):
             ann_source = AnnotationSource.FLORENCE2
-        elif config.mode in (AutoLabelPipelineMode.LOCATE_ANYTHING_BOXES,):
-            ann_source = AnnotationSource.LOCATE_ANYTHING
         else:
             ann_source = AnnotationSource.GROUNDING_DINO
-
-        ai_sources = (
-            AnnotationSource.GROUNDING_DINO,
-            AnnotationSource.SAM2,
-            AnnotationSource.YOLO,
-            AnnotationSource.FLORENCE2,
-            AnnotationSource.LOCATE_ANYTHING,
-            AnnotationSource.FUSED,
-        )
 
         for index, doc in enumerate(documents, start=1):
             if is_cancelled is not None and is_cancelled():
@@ -659,12 +633,8 @@ class AutoLabelEngine:
 
             new_annotations = self.convert_to_annotations(result, source=ann_source)
 
-            # Preserve non-AI annotations or previous manual annotations
-            preserved = [
-                ann
-                for ann in doc.annotations
-                if ann.source not in ai_sources
-            ]
+            # Preserve all existing annotations (human, imported dataset, and previous AI passes)
+            preserved = list(doc.annotations)
 
             # Merge new annotations avoiding duplication
             for new_ann in new_annotations:

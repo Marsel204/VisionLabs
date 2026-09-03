@@ -422,6 +422,7 @@ class CherryPickDialog(QDialog):
 
     def _populate_list(self, filter_text: str = "") -> None:
         self.list_widget.blockSignals(True)
+        self.list_widget.setUpdatesEnabled(False)
         self.list_widget.clear()
         filter_lower = filter_text.lower()
         for p in self.all_images:
@@ -435,6 +436,7 @@ class CherryPickDialog(QDialog):
             else:
                 item.setCheckState(Qt.CheckState.Unchecked)
             self.list_widget.addItem(item)
+        self.list_widget.setUpdatesEnabled(True)
         self.list_widget.blockSignals(False)
 
     def _filter_list(self, text: str) -> None:
@@ -2639,12 +2641,16 @@ class AutoLabelDialog(QDialog):
 
         docs: list[AnnotationDocument] = []
         for p in self.image_paths:
-            try:
-                with Image.open(p) as img:
-                    w, h = img.width, img.height
-                docs.append(AnnotationDocument(image_path=p, image_width=w, image_height=h))
-            except Exception:
-                docs.append(AnnotationDocument(image_path=p, image_width=640, image_height=640))
+            existing_doc = self.ground_truth.get(p)
+            if existing_doc is not None:
+                docs.append(existing_doc)
+            else:
+                try:
+                    with Image.open(p) as img:
+                        w, h = img.width, img.height
+                    docs.append(AnnotationDocument(image_path=p, image_width=w, image_height=h))
+                except Exception:
+                    docs.append(AnnotationDocument(image_path=p, image_width=640, image_height=640))
 
         self._batch_thread = AutoLabelBatchThread(
             engine=self.engine,
@@ -2669,6 +2675,7 @@ class AutoLabelDialog(QDialog):
 
     def _on_batch_finished(self, updated_docs: dict[Path, AnnotationDocument]) -> None:
         self.inline_progress.setVisible(False)
+        self.ground_truth.update(updated_docs)
         self.batch_completed.emit(updated_docs)
         QMessageBox.information(
             self,
