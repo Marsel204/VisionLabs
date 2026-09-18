@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -17,8 +18,12 @@ def load_env_vars() -> dict[str, str]:
     candidates = [
         Path.cwd() / ".env",
         Path(__file__).resolve().parents[3] / ".env",
+        Path(sys.executable).resolve().parent / ".env",
         Path.home() / ".env",
     ]
+    if sys.platform == "win32" and os.environ.get("LOCALAPPDATA"):
+        candidates.append(Path(os.environ["LOCALAPPDATA"]) / "TrafficAnnotator" / ".env")
+
     for env_path in candidates:
         if env_path.is_file():
             try:

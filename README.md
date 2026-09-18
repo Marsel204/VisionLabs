@@ -40,7 +40,66 @@ with:
 
 The installer does not remove datasets, cache, or logs.
 
+## Install on Windows
+
+### Quick Install (Automated)
+
+Run the PowerShell installer or double-click `install.bat`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+Or for CPU-only systems:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -CpuOnly
+```
+
+The installer:
+1. Verifies or installs `uv` and Python 3.12+.
+2. Copies files into `%LOCALAPPDATA%\TrafficAnnotator\app`.
+3. Synchronizes locked dependencies.
+4. Creates Desktop and Start Menu shortcuts (**Traffic Annotator**).
+5. Adds a `traffic-annotator` CLI launcher to `%USERPROFILE%\.local\bin`.
+
+To uninstall on Windows:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
+```
+Or double-click `uninstall.bat`.
+
+### One-Click Run from Source
+
+Double-click `run.bat` or run:
+
+```cmd
+run.bat
+```
+
+### Standalone Executable (.exe) & Packaging
+
+To compile a standalone, self-contained Windows executable distribution (no Python installation required on the target machine):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1
+```
+
+Or double-click `scripts\build_windows_exe.bat`.
+
+This produces:
+- `dist\TrafficAnnotator\TrafficAnnotator.exe`: Standalone portable folder.
+- `dist\TrafficAnnotator-windows-x64.zip`: Ready-to-distribute ZIP archive.
+
+#### Creating a Windows Setup Wizard (.exe)
+If you have [Inno Setup](https://jrsoftware.org/isinfo.php) installed, compile `installer.iss`:
+```cmd
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+```
+This generates `dist\TrafficAnnotator-Setup.exe` with a complete installation wizard.
+
 The model adapters are intentionally isolated from the UI and will be implemented as separate features.
+
 
 ## Label Fusion
 

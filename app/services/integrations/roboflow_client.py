@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
+
+import os
 import re
+import sys
 import tempfile
 import urllib.error
 import urllib.parse
@@ -22,7 +24,21 @@ from app.services.dataset.yolo_importer import YoloImporter, YoloImportResult
 
 LOGGER = logging.getLogger(__name__)
 ROBOFLOW_API_ROOT = "https://api.roboflow.com"
-CREDENTIALS_FILE = Path.home() / ".cache" / "traffic-annotator" / "roboflow_credentials.json"
+
+
+def _default_credentials_file() -> Path:
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        base = (
+            Path(local_app_data) / "TrafficAnnotator" / "cache"
+            if local_app_data
+            else Path.home() / "AppData" / "Local" / "TrafficAnnotator" / "cache"
+        )
+        return base / "roboflow_credentials.json"
+    return Path.home() / ".cache" / "traffic-annotator" / "roboflow_credentials.json"
+
+
+CREDENTIALS_FILE = _default_credentials_file()
 
 
 class RoboflowError(RuntimeError):
