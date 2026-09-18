@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import io
 import logging
+import multiprocessing
 import os
 import sys
 from pathlib import Path
@@ -11,12 +13,28 @@ from pathlib import Path
 # Enable expandable segments to avoid CUDA memory fragmentation
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+def get_base_dir() -> Path:
+    """Return the application base directory, handling PyInstaller frozen binaries."""
+    if getattr(sys, "frozen", False):
+        if hasattr(sys, "_MEIPASS"):
+            return Path(sys._MEIPASS)
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[1]
+
+
+_PROJECT_ROOT = get_base_dir()
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from app.configs.settings import AppSettings, load_settings
-from app.core.logging import configure_logging
+# Ensure stdout and stderr exist when running as a windowed application on Windows
+if sys.stdout is None:
+    sys.stdout = io.StringIO()
+if sys.stderr is None:
+    sys.stderr = io.StringIO()
+
+from app.configs.settings import AppSettings, load_settings  # noqa: E402
+from app.core.logging import configure_logging  # noqa: E402
 
 LOGGER = logging.getLogger(__name__)
 
@@ -30,13 +48,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """Start the desktop application and return a process exit code."""
+    multiprocessing.freeze_support()
     try:
         args = build_parser().parse_args(argv)
         settings = load_settings(args.config)
         if args.config is None:
-            active_learning_path = (
-                Path(__file__).resolve().parents[1] / "configs" / "active_learning.yaml"
-            )
+            active_learning_path = get_base_dir() / "configs" / "active_learning.yaml"
             if active_learning_path.is_file():
                 settings = AppSettings.from_active_learning_yaml(active_learning_path, settings)
         settings.ensure_directories()
@@ -62,6 +79,7 @@ def _dark_stylesheet() -> str:
     return get_dark_stylesheet()
 
 
-
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     raise SystemExit(main())
+

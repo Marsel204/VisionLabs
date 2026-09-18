@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, QUrl, Signal
@@ -35,6 +36,29 @@ from app.services.auto_label.engine import AutoLabelEngine
 from app.services.auto_label.models import AutoLabelConfig
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _get_writable_env_file() -> Path:
+    """Return a writable .env file path, falling back to user data directory if read-only."""
+    candidates = [
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parents[3] / ".env",
+        Path(sys.executable).resolve().parent / ".env",
+    ]
+    for candidate in candidates:
+        try:
+            if candidate.is_file() and os.access(candidate, os.W_OK):
+                return candidate
+            if not candidate.exists() and os.access(candidate.parent, os.W_OK):
+                return candidate
+        except OSError:
+            continue
+    if sys.platform == "win32" and os.environ.get("LOCALAPPDATA"):
+        app_dir = Path(os.environ["LOCALAPPDATA"]) / "TrafficAnnotator"
+        app_dir.mkdir(parents=True, exist_ok=True)
+        return app_dir / ".env"
+    return Path.home() / ".env"
+
 
 
 class TuningWorkerThread(QThread):
@@ -407,7 +431,7 @@ class AITunerDialog(QDialog):
             QMessageBox.warning(self, "Empty API Key", "Please paste or enter a valid OpenRouter API key.")
             return
 
-        env_file = Path(__file__).resolve().parents[3] / ".env"
+        env_file = _get_writable_env_file()
         try:
             lines = []
             found = False
@@ -492,7 +516,7 @@ class AITunerDialog(QDialog):
         if user_key and not os.getenv("OPENROUTER_API_KEY"):
             # Auto-save key if user entered it
             try:
-                env_file = Path(__file__).resolve().parents[3] / ".env"
+                env_file = _get_writable_env_file()
                 lines = []
                 found = False
                 if env_file.is_file():

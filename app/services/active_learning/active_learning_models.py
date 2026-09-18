@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -9,6 +11,19 @@ from typing import Any
 
 from app.models.contracts import Detection as ModelDetection
 from app.services.fusion.fusion_models import FusionResult
+
+
+def _default_active_learning_cache_path() -> Path:
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        base = (
+            Path(local_app_data) / "TrafficAnnotator" / "cache"
+            if local_app_data
+            else Path.home() / "AppData" / "Local" / "TrafficAnnotator" / "cache"
+        )
+        return base / "active-learning.sqlite"
+    return Path.home() / ".cache" / "traffic-annotator" / "active-learning.sqlite"
+
 
 
 class DifficultyLevel(StrEnum):
@@ -61,7 +76,7 @@ class ActiveLearningConfig:
     motorcycle_small_ratio: float = 0.30
     hard_threshold: float = 60.0
     extreme_threshold: float = 81.0
-    cache_path: Path = Path.home() / ".cache" / "traffic-annotator" / "active-learning.sqlite"
+    cache_path: Path = field(default_factory=_default_active_learning_cache_path)
 
     def validate(self) -> None:
         """Raise ``ValueError`` for invalid weights or thresholds."""

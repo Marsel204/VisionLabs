@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,13 +19,35 @@ class ConfigurationError(ValueError):
     """Raised when application configuration is invalid."""
 
 
+def _default_dataset_root() -> Path:
+    return Path.home() / "TrafficAnnotator" / "datasets"
+
+
+def _default_cache_root() -> Path:
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            return Path(local_app_data) / "TrafficAnnotator" / "cache"
+        return Path.home() / "AppData" / "Local" / "TrafficAnnotator" / "cache"
+    return Path.home() / ".cache" / "traffic-annotator"
+
+
+def _default_log_root() -> Path:
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            return Path(local_app_data) / "TrafficAnnotator" / "logs"
+        return Path.home() / "AppData" / "Local" / "TrafficAnnotator" / "logs"
+    return Path.home() / ".local" / "state" / "traffic-annotator" / "logs"
+
+
 @dataclass(frozen=True, slots=True)
 class PathSettings:
     """Filesystem locations used by the application."""
 
-    dataset_root: Path = Path.home() / "TrafficAnnotator" / "datasets"
-    cache_root: Path = Path.home() / ".cache" / "traffic-annotator"
-    log_root: Path = Path.home() / ".local" / "state" / "traffic-annotator" / "logs"
+    dataset_root: Path = field(default_factory=_default_dataset_root)
+    cache_root: Path = field(default_factory=_default_cache_root)
+    log_root: Path = field(default_factory=_default_log_root)
 
 
 @dataclass(frozen=True, slots=True)
