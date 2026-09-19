@@ -5,21 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 from app.services.annotation.domain import Annotation, AnnotationDocument, BoundingBox
 from app.ui.canvas.annotation_canvas import AnnotationCanvas, CanvasMode
-
-
-@pytest.fixture(scope="session")
-def qapp() -> QApplication:
-    """Ensure a single QApplication instance exists for GUI tests."""
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication([])
-    return app
 
 
 @pytest.fixture

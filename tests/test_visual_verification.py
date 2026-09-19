@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from scripts.visual_verification import generate_visual_verification_screenshots

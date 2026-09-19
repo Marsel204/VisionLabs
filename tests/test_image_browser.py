@@ -7,7 +7,7 @@ from PIL import Image
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from app.ui.views.image_browser import ImageBrowser, _get_default_icon, _BASE_IMAGE_CACHE, _ICON_CACHE
+from app.ui.views.image_browser import ImageBrowser
 
 
 @pytest.fixture

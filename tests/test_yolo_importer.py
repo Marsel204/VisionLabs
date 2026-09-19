@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import yaml
 
-from app.export.exporters import RoboflowExporter, YoloExporter
+from app.export.exporters import RoboflowExporter
 from app.services.dataset.yolo_importer import (
     YoloImportError,
     YoloImporter,

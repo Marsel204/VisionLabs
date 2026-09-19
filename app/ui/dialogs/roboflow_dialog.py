@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal
+from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -29,7 +29,6 @@ from app.services.dataset.yolo_importer import YoloImportResult
 from app.services.integrations.roboflow_client import (
     RoboflowClient,
     RoboflowError,
-    RoboflowProjectRef,
 )
 
 LOGGER = logging.getLogger(__name__)

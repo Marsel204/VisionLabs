@@ -226,14 +226,6 @@ class DenseMotorcycleInference:
                 **kwargs,
             )[0]
 
-    @staticmethod
-    def _label_class(label: str, expected_class: str) -> str | None:
-        normalized = label.lower().strip(" .")
-        detected = grounding_class(normalized)
-        if detected == expected_class:
-            return detected
-        return None
-
     def _crops(self, image):  # type: ignore[no-untyped-def]
         crops = [(image, 0, 0, False)]
         for tile_size in self.config.tile_sizes:

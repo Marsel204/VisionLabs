@@ -85,19 +85,3 @@ def _occlusion_from_matrix(full_matrix: np.ndarray, n: int) -> float:
         return 0.0
     triu_vals = full_matrix[np.triu_indices(n, k=1)]
     return float(triu_vals.max()) if triu_vals.size > 0 else 0.0
-
-
-def _duplicate_count(detections: Sequence[Detection], threshold: float) -> int:
-    if len(detections) < 2:
-        return 0
-    boxes = [item.box for item in detections]
-    matrix = pairwise_iou(boxes, boxes)
-    return _duplicate_count_from_matrix(detections, matrix, threshold)
-
-
-def _occlusion(detections: Sequence[Detection]) -> float:
-    if len(detections) < 2:
-        return 0.0
-    boxes = [item.box for item in detections]
-    matrix = pairwise_iou(boxes, boxes)
-    return _occlusion_from_matrix(matrix, len(detections))

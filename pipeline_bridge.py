@@ -217,6 +217,35 @@ def build_grounding_prompt(classes: list[str]) -> str:
     return ". ".join(cls.rstrip(".") for cls in classes) + "."
 
 
+def _apply_torch_grid_sample_patch() -> None:
+    """Ensure torch.nn.functional.grid_sample aligns grid dtype to input dtype.
+
+    Avoids 'expected scalar type Half but found Float' crash in Transformers
+    Grounding DINO and Deformable DETR multi-scale deformable attention when running
+    in mixed precision or fp16 on CUDA.
+    """
+    try:
+        import torch.nn.functional as F
+
+        if getattr(F.grid_sample, "_is_dtype_safe", False):
+            return
+
+        orig_grid_sample = F.grid_sample
+
+        def _safe_grid_sample(input: Any, grid: Any, *args: Any, **kwargs: Any) -> Any:
+            if hasattr(input, "dtype") and hasattr(grid, "dtype") and input.dtype != grid.dtype:
+                grid = grid.to(input.dtype)
+            return orig_grid_sample(input, grid, *args, **kwargs)
+
+        _safe_grid_sample._is_dtype_safe = True  # type: ignore[attr-defined]
+        F.grid_sample = _safe_grid_sample
+    except Exception:
+        pass
+
+
+_apply_torch_grid_sample_patch()
+
+
 class GroundingDinoDetector:
     """Layer 1: Grounding DINO text-to-bounding-box detector."""
 
@@ -236,6 +265,8 @@ class GroundingDinoDetector:
         if self._processor is not None and self._model is not None:
             return
 
+        _apply_torch_grid_sample_patch()
+
         import torch
         from transformers import AutoProcessor, GroundingDinoForObjectDetection
 
@@ -246,7 +277,7 @@ class GroundingDinoDetector:
         else:
             device = self._device_str
 
-        dtype = torch.float16 if device == "cuda" else torch.float32
+        dtype = torch.float32
         LOGGER.info("Loading Grounding DINO model '%s' on %s (dtype: %s)", self.model_id, device, dtype)
         self._processor = AutoProcessor.from_pretrained(self.model_id)
         self._model = GroundingDinoForObjectDetection.from_pretrained(
@@ -405,7 +436,7 @@ class SamSegmenter:
         else:
             device = self._device_str
 
-        dtype = torch.float16 if device == "cuda" else torch.float32
+        dtype = torch.float32
         LOGGER.info("Loading SAM model '%s' on %s (dtype: %s)", self.model_id, device, dtype)
 
         if "sam2" in self.model_id.lower():

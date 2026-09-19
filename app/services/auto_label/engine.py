@@ -300,7 +300,7 @@ class AutoLabelEngine:
         ):
             run_florence2 = True
 
-        prompt_str, token_map = self.build_prompt_mapping(active_classes)
+        _, token_map = self.build_prompt_mapping(active_classes)
 
         # 1. Grounding DINO
         if run_dino:

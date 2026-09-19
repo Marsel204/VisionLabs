@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Automated offscreen visual verification and high-resolution screenshot generator."""
+# ruff: noqa: E402
 
 from __future__ import annotations
 
@@ -15,13 +16,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from app.main import _dark_stylesheet
 from app.services.annotation.domain import Annotation, AnnotationDocument, BoundingBox
 from app.services.auto_label.models import AutoLabelConfig
-from app.ui.canvas.annotation_canvas import CanvasMode
 from app.ui.dialogs.ai_tuner_dialog import AITunerDialog
 from app.ui.dialogs.auto_label_dialog import AutoLabelDialog
 from app.ui.main_window import MainWindow

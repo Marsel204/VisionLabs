@@ -16,7 +16,6 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DIST_DIR = ROOT_DIR / "dist"
-BUILD_DIR = ROOT_DIR / "build"
 SPEC_FILE = ROOT_DIR / "traffic_annotator.spec"
 
 
