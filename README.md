@@ -8,15 +8,14 @@ VisionLab is a general-purpose, high-performance visual annotation platform desi
 
 ## Quick Start (One-Click Launch)
 
-Run the unified cross-platform launcher (automatically bootstraps `uv`, `.venv`, and dependencies on first run):
-- **Windows**: Double-click `run.bat` (or run `run.bat` in CMD)
-- **Linux**: Double-click `run.bat` / `run.sh` (or run `./run.sh` / `./run.bat` in terminal)
+VisionLab features a **zero-configuration, self-bootstrapping single launcher** that works out-of-the-box on both Windows and Linux without manual environment setup:
 
-To force the standalone PySide6 Qt GUI instead of the modern Desktop Studio, pass `--qt`:
-```bash
-./run.sh --qt     # Linux
-run.bat --qt      # Windows
-```
+| Platform | One-Click Launch | Run from Terminal | Force Standalone Qt GUI |
+| :--- | :--- | :--- | :--- |
+| **Windows** | Double-click `run.bat` | `run.bat` | `run.bat --qt` |
+| **Linux** | Double-click `run.bat` / `run.sh` | `./run.sh` or `./run.bat` | `./run.sh --qt` |
+
+> **First-time users**: The launcher automatically checks for `uv` and Python dependencies, sets up the `.venv` virtual environment, starts the background AI engine, and boots the studio window automatically. If any error occurs, the terminal stays open with helpful diagnostics instead of closing abruptly.
 
 ---
 
@@ -172,19 +171,28 @@ VisionLab is built for maximum annotation speed with extensive hotkeys (`?` or `
 
 ## Getting Started
 
-### One-Click Launch
+### One-Click Launch (Unified Launcher)
 
-#### Linux
-```bash
-./run_desktop.sh
-```
-This automatically starts the Python AI backend engine on `127.0.0.1:8765` and launches the desktop studio window.
+VisionLab provides a single polyglot launcher ([`run.bat`](file:///home/marsel/Work/ImageAnnotator/run.bat) / [`run.sh`](file:///home/marsel/Work/ImageAnnotator/run.sh)) that runs natively on both Windows and Linux.
 
-#### Windows
-Double-click `run.bat` or run:
-```cmd
-run.bat
-```
+#### On Windows
+- **One-Click**: Simply double-click `run.bat` in Windows File Explorer.
+- **Terminal**: Run `run.bat` (or `run.bat --qt` for the standalone PySide6 Qt GUI) from CMD or PowerShell.
+
+#### On Linux
+- **One-Click**: Double-click `run.bat` or `run.sh` in your desktop file manager (or right-click → *Run as a Program*).
+- **Terminal**:
+  ```bash
+  ./run.sh          # Launches Tauri Desktop Studio + AI Engine
+  ./run.sh --qt     # Launches standalone PySide6 Qt GUI
+  ```
+
+#### How the Launcher Works (Zero-Friction Setup)
+1. **Self-Bootstrapping**: If `uv` is not installed, it automatically installs `uv`. If `.venv` does not exist, it runs `uv sync` to install all locked dependencies automatically on first run.
+2. **GPU & Display Telemetry**: On Linux, it automatically configures NVIDIA WebKitGTK and X11 display parameters.
+3. **Background AI Engine**: Starts the local FastAPI engine (`app.api.server`) on `http://127.0.0.1:8765`, polls its `/api/health` endpoint until online, and cleans up the background server upon exit.
+4. **Desktop Studio Interface**: Installs npm dependencies in `desktop/` if missing and opens the high-performance Tauri v2 + React 19 studio window.
+5. **Persistent Error Reporting**: If a dependency or hardware issue occurs, the command prompt window stays open (`pause` on Windows / `read -p` on Linux) with error diagnostics instead of closing abruptly.
 
 ---
 
