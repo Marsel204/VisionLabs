@@ -10,6 +10,7 @@ interface Props {
   activeTool: ToolType;
   imageIndex: number;
   totalImages: number;
+  activeClassName?: string;
   onSelectBox: (id: string | null) => void;
   onAddBox: (box: BoundingBox) => void;
   onUpdateBox?: (box: BoundingBox) => void;
@@ -26,6 +27,7 @@ export const AnnotationCanvas: React.FC<Props> = ({
   activeTool,
   imageIndex,
   totalImages,
+  activeClassName = 'car',
   onSelectBox,
   onAddBox,
   onPrevImage,
@@ -117,10 +119,19 @@ export const AnnotationCanvas: React.FC<Props> = ({
 
       // Minimum size check
       if (w > 10 && h > 10) {
+        const cls = (activeClassName || 'car').toLowerCase();
+        const classIds: Record<string, number> = {
+          motorcycle: 0,
+          car: 1,
+          bus: 2,
+          truck: 3,
+          minivan: 4,
+          person: 5,
+        };
         const newBox: BoundingBox = {
           id: `box-${Date.now().toString().slice(-4)}`,
-          class_name: 'car',
-          class_id: 1,
+          class_name: cls,
+          class_id: classIds[cls] ?? 1,
           confidence: 0.95,
           x: Math.round(x1),
           y: Math.round(y1),

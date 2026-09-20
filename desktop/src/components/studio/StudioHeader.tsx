@@ -7,6 +7,7 @@ interface Props {
   onOpenAutoLabel: () => void;
   onOpenExport: () => void;
   onOpenImport: () => void;
+  onOpenShortcuts?: () => void;
 }
 
 export const StudioHeader: React.FC<Props> = ({
@@ -15,6 +16,7 @@ export const StudioHeader: React.FC<Props> = ({
   onOpenAutoLabel,
   onOpenExport,
   onOpenImport,
+  onOpenShortcuts,
 }) => {
   return (
     <header className="h-12 bg-[#0f1524]/90 backdrop-blur-xl border-b border-[#2a3a48]/40 flex items-center justify-between px-3.5 z-40 select-none shadow-sm">
@@ -78,10 +80,21 @@ export const StudioHeader: React.FC<Props> = ({
           onClick={onOpenExport}
           type="button"
           className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#141c2e] hover:bg-[#1a2438] text-xs font-medium text-[#e0e8f0] border border-[#2a3a48]/40 hover:border-[#06b6d4]/50 transition-colors cursor-pointer"
-          title="Export dataset to YOLO or COCO formats"
+          title="Export dataset to YOLO or COCO formats (E)"
         >
           <span className="material-symbols-outlined text-[15px] text-[#06b6d4]">file_download</span>
           <span>Export</span>
+        </button>
+
+        {/* Shortcuts Reference Trigger */}
+        <button
+          onClick={onOpenShortcuts}
+          type="button"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#141c2e] hover:bg-[#1a2438] text-xs font-medium text-[#a0b4c4] hover:text-[#7dd3fc] border border-[#2a3a48]/40 hover:border-[#7dd3fc]/50 transition-colors cursor-pointer"
+          title="Keyboard Shortcuts Reference (?)"
+        >
+          <span className="material-symbols-outlined text-[16px] text-[#7dd3fc]">keyboard</span>
+          <span className="hidden xl:inline text-[11px] font-mono">Shortcuts</span>
         </button>
 
         {/* User Icon */}
