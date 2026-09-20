@@ -47,14 +47,14 @@ export const ObjectInspector: React.FC<Props> = ({
   return (
     <aside className="w-[245px] flex-shrink-0 bg-[#0f1524]/85 backdrop-blur-2xl border-l border-[#2a3a48]/40 flex flex-col z-20 shadow-2xl overflow-y-auto select-none">
       {/* Header */}
-      <div className="p-2.5 bg-[#111828]/80 border-b border-[#2a3a48]/30 flex items-center justify-between">
+      <div className="p-2.5 bg-[#111828]/90 border-b border-[#2a3a48]/30 flex items-center justify-between">
         <div className="flex items-center gap-1.5">
-          <span className="material-symbols-outlined text-[#06b6d4] text-[17px]">fact_check</span>
-          <span className="font-semibold text-[11px] tracking-tight text-[#e0e8f0] uppercase">
+          <span className="material-symbols-outlined text-[#06b6d4] text-[18px]">fact_check</span>
+          <span className="font-bold text-xs tracking-tight text-[#e0e8f0] uppercase">
             Object Inspector
           </span>
         </div>
-        <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-[#10b981]/15 text-[#34d399] font-semibold">
+        <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-[#10b981]/20 text-[#34d399] font-bold">
           VALIDATED
         </span>
       </div>
@@ -67,20 +67,20 @@ export const ObjectInspector: React.FC<Props> = ({
               className="w-2.5 h-2.5 rounded-full shadow-sm"
               style={{ backgroundColor: colorConfig.stroke }}
             ></span>
-            <span className="font-mono font-bold text-[11px] text-[#e0e8f0]">
+            <span className="font-mono font-bold text-xs text-[#e0e8f0]">
               #{selectedBox.id.toUpperCase()}
             </span>
           </div>
-          <span className="text-[9px] font-mono text-[#a0b4c4] bg-[#141c2e] px-1.5 py-0.5 rounded border border-[#2a3a48]/30">
+          <span className="text-[10px] font-mono text-[#cbd5e1] bg-[#141c2e] px-2 py-0.5 rounded border border-[#2a3a48]/40">
             2D Box
           </span>
         </div>
 
         {/* Class Designation */}
         <div className="space-y-1.5">
-          <div className="flex items-center justify-between text-[9px] font-mono uppercase tracking-wider text-[#a0b4c4]">
+          <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">
             <span>Class Designation</span>
-            <span className="text-[#64748b]">Keys 1-6</span>
+            <span className="text-[#64748b] font-mono">Keys 1-6</span>
           </div>
 
           {/* Prominent High-Contrast Active Class Pill */}
@@ -93,7 +93,7 @@ export const ObjectInspector: React.FC<Props> = ({
           >
             <div className="flex items-center gap-2">
               <span
-                className="w-2.5 h-2.5 rounded-full shadow-sm shrink-0"
+                className="w-3 h-3 rounded-full shadow-sm shrink-0"
                 style={{ backgroundColor: colorConfig.stroke }}
               />
               <span
@@ -103,7 +103,7 @@ export const ObjectInspector: React.FC<Props> = ({
                 {selectedBox.class_name}
               </span>
             </div>
-            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#172136] text-[#cbd5e1] border border-[#334155]">
+            <span className="text-xs font-mono px-2 py-0.5 rounded bg-[#172136] text-[#e2e8f0] border border-[#334155]">
               ID: {selectedBox.class_id ?? 1}
             </span>
           </div>
@@ -135,7 +135,7 @@ export const ObjectInspector: React.FC<Props> = ({
                 MozAppearance: 'none',
                 appearance: 'none',
               }}
-              className="w-full text-white text-[11px] font-medium pl-2.5 pr-8 py-1.5 rounded-md border border-[#334155] focus:outline-none focus:border-[#06b6d4] focus:ring-1 focus:ring-[#06b6d4] cursor-pointer shadow-sm"
+              className="w-full text-white text-xs font-medium pl-3 pr-8 py-2 rounded-md border border-[#334155] focus:outline-none focus:border-[#06b6d4] focus:ring-1 focus:ring-[#06b6d4] cursor-pointer shadow-sm"
             >
               {AVAILABLE_CLASSES.map((c) => (
                 <option
@@ -147,7 +147,7 @@ export const ObjectInspector: React.FC<Props> = ({
                 </option>
               ))}
             </select>
-            <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-[16px] text-[#94a3b8] pointer-events-none">
+            <span className="material-symbols-outlined absolute right-2.5 top-1/2 -translate-y-1/2 text-[18px] text-[#94a3b8] pointer-events-none">
               expand_more
             </span>
           </div>
@@ -155,52 +155,52 @@ export const ObjectInspector: React.FC<Props> = ({
 
         {/* Bounding Geometry */}
         <div className="space-y-1">
-          <div className="flex items-center justify-between text-[9px] font-mono text-[#a0b4c4]">
+          <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">
             <span>BOUNDING GEOMETRY (PX)</span>
           </div>
-          <div className="grid grid-cols-4 gap-1 font-mono text-[10px]">
-            <div className="bg-[#0a0e1a] p-1 rounded border border-[#2a3a48]/30 flex flex-col">
-              <span className="text-[8px] text-[#a0b4c4]">X</span>
-              <span className="text-[#06b6d4] font-semibold">{Math.round(selectedBox.x)}</span>
+          <div className="grid grid-cols-4 gap-1 font-mono">
+            <div className="bg-[#0a0e1a] p-1.5 rounded border border-[#2a3a48]/40 flex flex-col">
+              <span className="text-[9.5px] font-bold text-[#94a3b8]">X</span>
+              <span className="text-xs text-[#06b6d4] font-semibold">{Math.round(selectedBox.x)}</span>
             </div>
-            <div className="bg-[#0a0e1a] p-1 rounded border border-[#2a3a48]/30 flex flex-col">
-              <span className="text-[8px] text-[#a0b4c4]">Y</span>
-              <span className="text-[#06b6d4] font-semibold">{Math.round(selectedBox.y)}</span>
+            <div className="bg-[#0a0e1a] p-1.5 rounded border border-[#2a3a48]/40 flex flex-col">
+              <span className="text-[9.5px] font-bold text-[#94a3b8]">Y</span>
+              <span className="text-xs text-[#06b6d4] font-semibold">{Math.round(selectedBox.y)}</span>
             </div>
-            <div className="bg-[#0a0e1a] p-1 rounded border border-[#2a3a48]/30 flex flex-col">
-              <span className="text-[8px] text-[#a0b4c4]">W</span>
-              <span className="text-[#e0e8f0] font-semibold">{Math.round(selectedBox.width)}</span>
+            <div className="bg-[#0a0e1a] p-1.5 rounded border border-[#2a3a48]/40 flex flex-col">
+              <span className="text-[9.5px] font-bold text-[#94a3b8]">W</span>
+              <span className="text-xs text-[#e0e8f0] font-semibold">{Math.round(selectedBox.width)}</span>
             </div>
-            <div className="bg-[#0a0e1a] p-1 rounded border border-[#2a3a48]/30 flex flex-col">
-              <span className="text-[8px] text-[#a0b4c4]">H</span>
-              <span className="text-[#e0e8f0] font-semibold">{Math.round(selectedBox.height)}</span>
+            <div className="bg-[#0a0e1a] p-1.5 rounded border border-[#2a3a48]/40 flex flex-col">
+              <span className="text-[9.5px] font-bold text-[#94a3b8]">H</span>
+              <span className="text-xs text-[#e0e8f0] font-semibold">{Math.round(selectedBox.height)}</span>
             </div>
           </div>
         </div>
 
         {/* Model Confidence */}
-        <div className="p-2 rounded-md bg-[#0a0e1a] border border-[#2a3a48]/30 flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
-            <div className="w-5 h-5 rounded bg-[#0e4d6e] flex items-center justify-center text-[#7dd3fc]">
-              <span className="material-symbols-outlined text-[13px]">psychology</span>
+        <div className="p-2 rounded-md bg-[#0a0e1a] border border-[#2a3a48]/40 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded bg-[#0e4d6e] flex items-center justify-center text-[#7dd3fc]">
+              <span className="material-symbols-outlined text-[15px]">psychology</span>
             </div>
             <div>
-              <div className="text-[10px] font-semibold text-[#e0e8f0]">
+              <div className="text-xs font-semibold text-[#e0e8f0]">
                 {Math.round(selectedBox.confidence * 100)}% Confidence
               </div>
-              <div className="text-[8px] font-mono text-[#a0b4c4]">YOLO11n-VisionForge</div>
+              <div className="text-[10px] font-mono text-[#94a3b8]">YOLO11n-VisionForge</div>
             </div>
           </div>
-          <span className="text-[9px] font-mono text-[#10b981] font-bold">+2.1%</span>
+          <span className="text-[10px] font-mono text-[#10b981] font-bold">+2.1%</span>
         </div>
       </div>
 
       {/* Attributes */}
       <div className="p-2.5 border-b border-[#2a3a48]/30 space-y-2">
-        <span className="font-semibold text-[10px] text-[#e0e8f0] uppercase tracking-wider">
+        <span className="font-semibold text-[10px] text-[#94a3b8] uppercase tracking-wider">
           Perception Attributes
         </span>
-        <div className="space-y-1.5 text-[10px]">
+        <div className="space-y-1.5 text-xs">
           {/* Occluded */}
           <div className="flex items-center justify-between p-1.5 rounded bg-[#0a0e1a] border border-[#2a3a48]/30">
             <span className="text-[#e0e8f0]">Occluded</span>
@@ -227,34 +227,34 @@ export const ObjectInspector: React.FC<Props> = ({
 
       {/* Quality Consensus Action Triage */}
       <div className="p-2.5 space-y-2 flex-1">
-        <span className="font-semibold text-[10px] text-[#e0e8f0] uppercase tracking-wider">
+        <span className="font-semibold text-[10px] text-[#94a3b8] uppercase tracking-wider">
           Consensus Triage
         </span>
-        <div className="grid grid-cols-3 gap-1">
+        <div className="grid grid-cols-3 gap-1.5">
           <button
             onClick={() => onAcceptBox(selectedBox.id)}
             type="button"
-            className="py-1.5 px-1 rounded-md bg-[#10b981]/20 hover:bg-[#10b981]/30 text-[#34d399] text-[9.5px] font-semibold flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer border border-[#10b981]/30"
+            className="py-2 px-1 rounded-md bg-[#10b981]/20 hover:bg-[#10b981]/30 text-[#34d399] text-[10.5px] font-semibold flex flex-col items-center justify-center gap-1 transition-all cursor-pointer border border-[#10b981]/30"
             title="Accept / Validate box (Enter / Space)"
           >
-            <span className="material-symbols-outlined text-[14px]">check_circle</span>
+            <span className="material-symbols-outlined text-[16px]">check_circle</span>
             <span>Accept [↵]</span>
           </button>
           <button
             type="button"
-            className="py-1.5 px-1 rounded-md bg-[#f59e0b]/20 hover:bg-[#f59e0b]/30 text-[#fbbf24] text-[9.5px] font-semibold flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer border border-[#f59e0b]/30"
+            className="py-2 px-1 rounded-md bg-[#f59e0b]/20 hover:bg-[#f59e0b]/30 text-[#fbbf24] text-[10.5px] font-semibold flex flex-col items-center justify-center gap-1 transition-all cursor-pointer border border-[#f59e0b]/30"
             title="Flag for second review"
           >
-            <span className="material-symbols-outlined text-[14px]">flag</span>
+            <span className="material-symbols-outlined text-[16px]">flag</span>
             <span>Flag</span>
           </button>
           <button
             onClick={() => onDeleteBox(selectedBox.id)}
             type="button"
-            className="py-1.5 px-1 rounded-md bg-[#ef4444]/20 hover:bg-[#ef4444]/30 text-[#f87171] text-[9.5px] font-semibold flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer border border-[#ef4444]/30"
+            className="py-2 px-1 rounded-md bg-[#ef4444]/20 hover:bg-[#ef4444]/30 text-[#f87171] text-[10.5px] font-semibold flex flex-col items-center justify-center gap-1 transition-all cursor-pointer border border-[#ef4444]/30"
             title="Delete box (Del / Backspace)"
           >
-            <span className="material-symbols-outlined text-[14px]">delete</span>
+            <span className="material-symbols-outlined text-[16px]">delete</span>
             <span>Delete [Del]</span>
           </button>
         </div>

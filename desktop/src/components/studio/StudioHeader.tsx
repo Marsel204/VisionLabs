@@ -27,16 +27,16 @@ export const StudioHeader: React.FC<Props> = ({
             <span className="material-symbols-outlined text-[17px]">view_in_ar</span>
           </div>
           <span className="font-semibold text-xs tracking-tight text-[#e0e8f0]">VisionStudio</span>
-          <span className="text-[9px] font-mono font-bold px-1 py-0.2 rounded bg-[#06b6d4]/20 text-[#06b6d4]">AI</span>
+          <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-[#06b6d4]/20 text-[#06b6d4]">AI</span>
         </div>
 
         {/* Dataset Badges */}
-        <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#111828] text-[10px] text-[#a0b4c4] font-mono border border-[#2a3a48]/20">
+        <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#111828] text-[11px] text-[#a0b4c4] font-mono border border-[#2a3a48]/20">
           <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]"></span>
           <span className="text-[#e0e8f0]">{imageCount} Images (JPG)</span>
         </div>
 
-        <div className="hidden xl:flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#111828] text-[10px] text-[#a0b4c4] font-mono border border-[#2a3a48]/20">
+        <div className="hidden xl:flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#111828] text-[11px] text-[#a0b4c4] font-mono border border-[#2a3a48]/20">
           <span className="w-1.5 h-1.5 rounded-full bg-[#06b6d4] animate-pulse"></span>
           <span>Model: YOLO11n-VisionForge</span>
         </div>
