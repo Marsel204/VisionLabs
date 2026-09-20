@@ -9,6 +9,15 @@ interface Props {
   onAcceptBox: (id: string) => void;
 }
 
+const AVAILABLE_CLASSES = [
+  { key: '1', value: 'motorcycle', label: 'Motorcycle', detail: 'Scooter / Bike' },
+  { key: '2', value: 'car', label: 'Car', detail: 'Sedan / SUV' },
+  { key: '3', value: 'bus', label: 'Bus', detail: 'City / Transit' },
+  { key: '4', value: 'truck', label: 'Truck', detail: 'Cargo / Lorry' },
+  { key: '5', value: 'minivan', label: 'Minivan', detail: 'Angkot / Van' },
+  { key: '6', value: 'person', label: 'Person', detail: 'Pedestrian' },
+];
+
 export const ObjectInspector: React.FC<Props> = ({
   selectedBox,
   onUpdateBox,
@@ -68,24 +77,80 @@ export const ObjectInspector: React.FC<Props> = ({
         </div>
 
         {/* Class Designation */}
-        <div className="space-y-1">
-          <label className="text-[9px] font-mono uppercase tracking-wider text-[#a0b4c4]">
-            Class Designation
-          </label>
-          <select
-            value={selectedBox.class_name.toLowerCase()}
-            onChange={(e) =>
-              onUpdateBox({ ...selectedBox, class_name: e.target.value })
-            }
-            className="w-full bg-[#0a0e1a] text-[#e0e8f0] text-[11px] px-2 py-1 rounded-md border border-[#2a3a48]/40 focus:outline-none focus:border-[#06b6d4]"
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-[9px] font-mono uppercase tracking-wider text-[#a0b4c4]">
+            <span>Class Designation</span>
+            <span className="text-[#64748b]">Keys 1-6</span>
+          </div>
+
+          {/* Prominent High-Contrast Active Class Pill */}
+          <div
+            className="flex items-center justify-between px-2.5 py-1.5 rounded-md border text-xs font-semibold shadow-inner"
+            style={{
+              backgroundColor: '#0a0f1d',
+              borderColor: `${colorConfig.stroke}99`,
+            }}
           >
-            <option value="car">Car (Sedan / SUV)</option>
-            <option value="motorcycle">Motorcycle (Scooter / Gojek)</option>
-            <option value="minivan">Minivan (Angkot / Carry)</option>
-            <option value="bus">Bus (Transit / City)</option>
-            <option value="truck">Truck (Cargo / Flatbed)</option>
-            <option value="person">Person (Pedestrian)</option>
-          </select>
+            <div className="flex items-center gap-2">
+              <span
+                className="w-2.5 h-2.5 rounded-full shadow-sm shrink-0"
+                style={{ backgroundColor: colorConfig.stroke }}
+              />
+              <span
+                className="font-bold uppercase tracking-wider text-sm"
+                style={{ color: colorConfig.stroke }}
+              >
+                {selectedBox.class_name}
+              </span>
+            </div>
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#172136] text-[#cbd5e1] border border-[#334155]">
+              ID: {selectedBox.class_id ?? 1}
+            </span>
+          </div>
+
+          {/* Styled Dark Select Dropdown with Zero GTK Interference */}
+          <div className="relative">
+            <select
+              value={selectedBox.class_name.toLowerCase()}
+              onChange={(e) => {
+                const targetCls = AVAILABLE_CLASSES.find((c) => c.value === e.target.value);
+                const classIds: Record<string, number> = {
+                  motorcycle: 0,
+                  car: 1,
+                  bus: 2,
+                  truck: 3,
+                  minivan: 4,
+                  person: 5,
+                };
+                onUpdateBox({
+                  ...selectedBox,
+                  class_name: e.target.value,
+                  class_id: classIds[e.target.value] ?? (targetCls ? parseInt(targetCls.key) - 1 : 1),
+                });
+              }}
+              style={{
+                backgroundColor: '#111827',
+                color: '#ffffff',
+                WebkitAppearance: 'none',
+                MozAppearance: 'none',
+                appearance: 'none',
+              }}
+              className="w-full text-white text-[11px] font-medium pl-2.5 pr-8 py-1.5 rounded-md border border-[#334155] focus:outline-none focus:border-[#06b6d4] focus:ring-1 focus:ring-[#06b6d4] cursor-pointer shadow-sm"
+            >
+              {AVAILABLE_CLASSES.map((c) => (
+                <option
+                  key={c.value}
+                  value={c.value}
+                  style={{ backgroundColor: '#111827', color: '#ffffff' }}
+                >
+                  [{c.key}] {c.label} ({c.detail})
+                </option>
+              ))}
+            </select>
+            <span className="material-symbols-outlined absolute right-2 top-1/2 -translate-y-1/2 text-[16px] text-[#94a3b8] pointer-events-none">
+              expand_more
+            </span>
+          </div>
         </div>
 
         {/* Bounding Geometry */}
@@ -170,24 +235,27 @@ export const ObjectInspector: React.FC<Props> = ({
             onClick={() => onAcceptBox(selectedBox.id)}
             type="button"
             className="py-1.5 px-1 rounded-md bg-[#10b981]/20 hover:bg-[#10b981]/30 text-[#34d399] text-[9.5px] font-semibold flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer border border-[#10b981]/30"
+            title="Accept / Validate box (Enter / Space)"
           >
             <span className="material-symbols-outlined text-[14px]">check_circle</span>
-            <span>Accept [A]</span>
+            <span>Accept [↵]</span>
           </button>
           <button
             type="button"
             className="py-1.5 px-1 rounded-md bg-[#f59e0b]/20 hover:bg-[#f59e0b]/30 text-[#fbbf24] text-[9.5px] font-semibold flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer border border-[#f59e0b]/30"
+            title="Flag for second review"
           >
             <span className="material-symbols-outlined text-[14px]">flag</span>
-            <span>Flag [R]</span>
+            <span>Flag</span>
           </button>
           <button
             onClick={() => onDeleteBox(selectedBox.id)}
             type="button"
             className="py-1.5 px-1 rounded-md bg-[#ef4444]/20 hover:bg-[#ef4444]/30 text-[#f87171] text-[9.5px] font-semibold flex flex-col items-center justify-center gap-0.5 transition-all cursor-pointer border border-[#ef4444]/30"
+            title="Delete box (Del / Backspace)"
           >
             <span className="material-symbols-outlined text-[14px]">delete</span>
-            <span>Reject [D]</span>
+            <span>Delete [Del]</span>
           </button>
         </div>
       </div>
