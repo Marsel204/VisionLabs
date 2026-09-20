@@ -1,196 +1,266 @@
 # VisionLab
 
-Universal AI-assisted visual annotation software and computer vision studio.
+> Universal AI-assisted visual annotation studio and computer vision dataset curation platform.
 
-## Development
+VisionLab is a general-purpose, high-performance visual annotation platform designed to annotate **anything**—from everyday objects, people, and retail products to specialized industrial, biomedical, robotic, and agricultural imagery. Built with a modern desktop interface (Tauri v2 + React 19) backed by a local GPU-accelerated Python AI engine (YOLO11, SAM 2, Grounding DINO, and Florence-2 VLM).
 
+---
+
+## Table of Contents
+
+- [Studio Tour & Visual Walkthrough](#studio-tour--visual-walkthrough)
+  - [1. Main Studio Workspace](#1-main-studio-workspace)
+  - [2. Auto-Label AI Configuration & Batch Pipeline](#2-auto-label-ai-configuration--batch-pipeline)
+  - [3. Dataset Management & Export Hub](#3-dataset-management--export-hub)
+  - [4. Dataset Import & Directory Management](#4-dataset-import--directory-management)
+  - [5. High-Velocity Keyboard Shortcuts](#5-high-velocity-keyboard-shortcuts)
+- [Key Features](#key-features)
+- [Getting Started](#getting-started)
+  - [One-Click Launch](#one-click-launch)
+  - [Development Setup](#development-setup)
+- [Standalone Distribution & Packaging](#standalone-distribution--packaging)
+- [Core AI Engines & Programmatic API](#core-ai-engines--programmatic-api)
+
+---
+
+## Studio Tour & Visual Walkthrough
+
+### 1. Main Studio Workspace
+
+![VisionLab Main Studio](docs/images/01_studio_overview.png)
+
+The **Main Studio Workspace** provides an ergonomic, dark-themed environment optimized for high-throughput visual annotation:
+
+- **Top Navigation & Telemetry Bar**:
+  - **Brand & Model Status**: Displays current active model (e.g., `YOLO11`) and dataset image counter.
+  - **GPU Hardware Telemetry**: Live telemetry of connected GPU device (e.g., `RTX 5060 Ti`), operational temperature, and free VRAM.
+  - **Quick Action Triggers**: Instant access to **Auto-Label AI**, **Import**, **Export**, and **Shortcuts** (`?`).
+- **Left Activity Rail**:
+  - Quick-switch tools: **Select/Transform** (`V`), **2D Bounding Box** (`B`), **Hand/Pan** (`H`), **Polygon Segmentation** (`P`), and settings.
+- **Image Queue Drawer**:
+  - Displays thumbnail previews, image filenames, resolutions, and current validation tags (`Reviewed`, `Unreviewed`, `AI Labeled`).
+  - Search and filter bar by status or keyword.
+  - **Active Learning Priority Queue**: When toggled, automatically prioritizes the most informative, uncertain, or crowded frames for human verification.
+- **Interactive Central Canvas**:
+  - High-precision SVG bounding box overlays with color-coded class palettes and confidence ratings.
+  - Smooth pan and zoom controls (10% to 500%), full-frame fit, and label opacity adjustment slider.
+  - Quick **Detect (R)** button for single-frame AI inference.
+- **Right Object Inspector**:
+  - **Active Class Pill**: High-contrast indicator displaying the selected box's class name and ID.
+  - **Dynamic Class Selector & Quick Custom Input**: Select from existing classes or type any custom class name and press `Enter` / `Set`.
+  - **Bounding Geometry (PX)**: Real-time readouts of `X`, `Y`, `Width`, and `Height`.
+  - **Model Confidence**: Displays detection probability and model origin.
+  - **Perception Attributes**: Toggle flags for `Occluded` or `Truncated (Edge)`.
+  - **Consensus Triage**: One-click actions to **Accept** (`Enter`/`Space`), **Flag**, or **Delete** (`Del`/`Backspace`).
+
+---
+
+### 2. Auto-Label AI Configuration & Batch Pipeline
+
+![Auto-Label AI Modal](docs/images/02_autolabel_ai_pipeline.png)
+
+The **Auto-Label AI Modal** (`L` or `M`) enables zero-shot and few-shot automated labeling across entire datasets using an ensemble of foundation models:
+
+- **AI Ensemble Pipeline Configuration**:
+  - **Object Detectors**:
+    - **Grounding DINO 1.5 Pro**: Open-vocabulary natural language prompt grounding for open-domain bounding box candidate generation.
+    - **YOLO & Custom Weights Ensemble**: High-speed edge detection with NMS fusion across standard YOLO models (`yolo11n.pt`, `yolov8x.pt`) or user-provided custom weights (`.pt`/`.onnx`).
+    - **Florence-2 VLM Detector**: Dense proposal generation via Florence-2 `<OD>` vision-language tasks.
+  - **Semantic Verification & Hallucination Filter**:
+    - **Florence-2 VLM Verification**: Crops proposed bounding boxes and verifies semantic content against prompts to eliminate false positives.
+  - **Sub-Pixel Mask Segmentation**:
+    - **SAM 2 (Segment Anything Model 2)**: Predicts fine boundary polygon contours from bounding box prompts for instant instance segmentation masks.
+- **Target Semantic Classes Editor**:
+  - Define any arbitrary class names and descriptive visual prompts (e.g. `object, visual entity`).
+  - **Auto-Refine**: Uses AI to automatically expand class names into rich visual descriptions.
+- **Batch Verification & Execution**:
+  - Preview detections live on sample frames before launching batch inference across the entire dataset.
+
+---
+
+### 3. Dataset Management & Export Hub
+
+![Dataset Export Hub](docs/images/03_dataset_hub_export.png)
+
+The **Export Hub** (`E`) allows exporting annotated datasets into standard computer vision training formats:
+
+- **SQLite Dataset Index Status**: Displays overall counts for total indexed frames, unreviewed, reviewed, AI-labeled, and per-class distribution histograms.
+- **Supported Export Formats**:
+  - **YOLO PyTorch (Recommended)**: Exports `data.yaml` manifest and normalized bounding box `.txt` coordinates formatted for Ultralytics YOLOv8 / YOLOv11 / YOLOv26 training.
+  - **COCO JSON**: Standard `annotations.json` with segmentation polygons and bounding boxes.
+  - **Pascal VOC**: Classic XML annotations for legacy pipelines.
+  - **Google Colab Package**: 1-click standalone `.zip` archive containing `data.yaml`, `images/`, and `labels/` ready for immediate Colab GPU training.
+- **Interactive Dataset Split Stratification**:
+  - Interactive dual-handled slider for configuring reproducible **Train / Validation / Test** percentage splits (e.g. 70% / 20% / 10%).
+- **Roboflow Cloud Sync & Deduplication**:
+  - Direct synchronization with Roboflow workspaces.
+  - Automated NMS and IoU-based deduplication to prune redundant duplicate photos and overlapping boxes.
+
+---
+
+### 4. Dataset Import & Directory Management
+
+![Dataset Import Hub](docs/images/04_dataset_hub_import.png)
+
+The **Import Hub** (`I`) allows loading new image collections and third-party datasets into VisionLab:
+
+- **Active Dataset Directory**:
+  - Browse and select any local folder containing images or datasets.
+  - Automatically scans and builds an ultra-fast SQLite index of all images and labels.
+- **Import New Image Files**:
+  - Drag and drop or browse JPG, PNG, and WebP images.
+  - Automatically copies and registers incoming files into the workspace.
+- **Dataset Compatibility**:
+  - Seamlessly imports existing YOLO `data.yaml` projects, COCO `annotations.json` datasets, and Roboflow Universe exports.
+
+---
+
+### 5. High-Velocity Keyboard Shortcuts
+
+![Keyboard Shortcuts Reference](docs/images/05_keyboard_shortcuts.png)
+
+VisionLab is built for maximum annotation speed with extensive hotkeys (`?` or `F1`):
+
+| Category | Shortcut | Action |
+| :--- | :--- | :--- |
+| **Tools** | `V` | Select & Transform tool |
+| | `B` | 2D Bounding Box drawing tool |
+| | `H` | Hand / Pan Canvas tool |
+| | `P` | Polygon Segmentation tool |
+| **Navigation** | `A` / `[` / `←` | Previous image in queue |
+| | `D` / `]` / `→` | Next image in queue |
+| | `Home` | Jump to first image |
+| | `End` | Jump to last image |
+| **Triage** | `Tab` | Cycle select next bounding box |
+| | `Shift + Tab` | Cycle select previous bounding box |
+| | `Enter` / `Space` | Accept / Validate selected box (100% confidence) |
+| | `Del` / `Backspace` | Delete selected bounding box |
+| | `Esc` | Deselect active box / Close open modal |
+| **Quick Classes** | `1` - `6` | Assign corresponding class 1 to 6 to selected object |
+| **AI Actions** | `R` / `Ctrl + Enter` | Run AI detection on active frame |
+| | `L` / `M` | Open Auto-Label AI Configuration modal |
+| **Project** | `Ctrl + S` | Save current annotations to disk |
+| | `I` | Open Dataset Import dialog |
+| | `E` | Open Dataset Export dialog |
+| | `?` | Toggle Shortcuts Guide |
+
+---
+
+## Key Features
+
+- **Universal & Unbiased**: Annotate any objects without predefined class restrictions or domain constraints.
+- **Multi-Model AI Foundation**: Integrates state-of-the-art architectures (Grounding DINO 1.5, YOLO11, SAM 2, Florence-2 VLM).
+- **Active Learning & Disagreement Ranking**: Automatically scores image difficulty based on model disagreement, density, occlusion, and missing boxes to surface edge cases.
+- **Smart Overlap Pruning & Deduplication**: Removes duplicate annotations across model proposals while preserving nested or multi-class valid detections.
+- **Cross-Platform**: Standalone native desktop app for Windows (x64 installer / portable EXE) and Linux (Ubuntu 22.04 / 24.04 & Jetson Orin).
+
+---
+
+## Getting Started
+
+### One-Click Launch
+
+#### Linux
 ```bash
-uv sync --extra dev
-uv run visionlab
-uv run pytest
+./run_desktop.sh
 ```
+This automatically starts the Python AI backend engine on `127.0.0.1:8765` and launches the desktop studio window.
 
-## Install on Ubuntu
-
-Run the installer from this directory as the normal desktop user:
-
-```bash
-./install.sh
-```
-
-It installs the application under `~/.local/share/traffic-annotator`, adds a
-`~/.local/bin/traffic-annotator` command, and creates an application-menu entry.
-The installer supports Ubuntu 24.04 on x86_64 and ARM64. On Jetson systems with
-`nvidia-l4t-core` installed, it requires an explicitly supplied CUDA-enabled
-PyTorch wheel instead of downloading the incompatible generic PyPI wheel. The
-wheel must target the installed Python version and include `sm_87` for Orin:
-
-```bash
-./install.sh --torch-wheel /path/to/torch-jetson.whl
-```
-
-An HTTPS wheel URL is also accepted. The installer verifies CUDA availability,
-Orin compute capability `8.7`, and the presence of `sm_87` before completing.
-Use `--cpu-only` to force the normal PyPI installation. Remove the application
-with:
-
-```bash
-~/.local/share/traffic-annotator/uninstall.sh
-```
-
-The installer does not remove datasets, cache, or logs.
-
-## Install on Windows
-
-### Quick Install (Automated)
-
-Run the PowerShell installer or double-click `install.bat`:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-Or for CPU-only systems:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -CpuOnly
-```
-
-The installer:
-1. Verifies or installs `uv` and Python 3.12+.
-2. Copies files into `%LOCALAPPDATA%\VisionLab\app`.
-3. Synchronizes locked dependencies.
-4. Creates Desktop and Start Menu shortcuts (**VisionLab**).
-5. Adds a `visionlab` CLI launcher to `%USERPROFILE%\.local\bin`.
-
-To uninstall on Windows:
-```powershell
-powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
-```
-Or double-click `uninstall.bat`.
-
-### One-Click Run from Source
-
+#### Windows
 Double-click `run.bat` or run:
-
 ```cmd
 run.bat
 ```
 
-### Standalone Executable (.exe) & Packaging
+---
 
-To compile a standalone, self-contained Windows executable distribution (no Python installation required on the target machine):
+### Development Setup
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1
+#### Prerequisites
+- [uv](https://github.com/astral-sh/uv) (ultra-fast Python package installer)
+- Python 3.12+
+- Node.js 20+ & npm
+
+#### 1. Setup Backend
+```bash
+# Clone the repository
+git clone https://github.com/Marsel204/VisionLabs.git
+cd VisionLabs
+
+# Sync locked Python dependencies
+uv sync --extra dev
+
+# Run test suite
+uv run pytest
 ```
 
-Or double-click `scripts\build_windows_exe.bat`.
+#### 2. Setup Frontend Studio
+```bash
+cd desktop
+npm install
+npm run dev
+```
 
-This produces:
-- `dist\VisionLab\VisionLab.exe`: Standalone portable folder.
-- `dist\VisionLab-windows-x64.zip`: Ready-to-distribute ZIP archive.
+The web studio is accessible at `http://localhost:1420`, connecting to the Python engine on `http://127.0.0.1:8765`.
 
-#### Creating a Windows Setup Wizard (.exe)
-If you have [Inno Setup](https://jrsoftware.org/isinfo.php) installed, compile `installer.iss`:
+---
+
+## Standalone Distribution & Packaging
+
+### Windows Executable (.exe)
+To compile a fully self-contained portable Windows distribution (no Python installation required):
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scriptsuild_windows_exe.ps1
+```
+Output:
+- `dist/VisionLab/VisionLab.exe`: Standalone portable distribution folder.
+- `dist/VisionLab-windows-x64.zip`: Portable ZIP release package.
+
+### Windows Setup Wizard (.exe)
+Compile `installer.iss` with [Inno Setup](https://jrsoftware.org/isinfo.php):
 ```cmd
 "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 ```
-This generates `dist\VisionLab-Setup.exe` with a complete installation wizard.
+Output: `dist/VisionLab-Setup.exe`.
 
-The model adapters are intentionally isolated from the UI and will be implemented as separate features.
+---
 
+## Core AI Engines & Programmatic API
 
-## Label Fusion
+VisionLab also provides standalone Python services that can be imported directly into Python workflows:
 
-Label Fusion compares detections from Grounding DINO, YOLO11, and future model adapters. It
-automatically accepts matching same-class detections, while sending single detections, class
-conflicts, confidence disagreements, and very small boxes for review.
-
+### Label Fusion Engine
 ```python
 from app.services.fusion import FusionEngine
 
+# Fuse multi-model detections and eliminate hallucinations
 result = FusionEngine().fuse([grounding_dino_detection, yolo_detection])
 for item in result.detections:
     print(item.class_name, item.status, item.bbox)
-print(result.statistics)
 ```
 
-Defaults are stored in `fusion.yaml`. The public API is `FusionEngine`, `FusionConfig`,
-`FusionResult`, `FusionStatistics`, `FusionStatus`, and fusion `Detection`.
-
-## Active Learning
-
-Active Learning ranks images by uncertainty, model disagreement, object density, occlusion,
-small objects, conflicts, missing detections, duplicates, and motorcycle concentration.
-Weights and thresholds are stored in `configs/active_learning.yaml`.
-
+### Active Learning Engine
 ```python
-from app.services.active_learning import (
-    ActiveLearningConfig,
-    ActiveLearningEngine,
-    ImageAnalysis,
-)
+from app.services.active_learning import ActiveLearningConfig, ActiveLearningEngine
 
 engine = ActiveLearningEngine(ActiveLearningConfig())
-ranked = engine.score_many(analyses, max_workers=8)
-for result in ranked[:10]:
-    print(result.image_path, result.difficulty_score, result.recommended_action)
+ranked_images = engine.score_many(analyses, max_workers=8)
+for item in ranked_images[:10]:
+    print(item.image_path, item.difficulty_score, item.recommended_action)
 engine.close()
 ```
 
-Results are cached in SQLite and automatically invalidated when detections, fusion results, or
-active-learning configuration change. The desktop UI scores the active image in a background
-worker after Label Fusion and displays its review priority and recommendation.
+### Dataset Exporter
+```python
+from app.export.exporters import YoloExporter, split_documents
 
-## Dataset Import (YOLO data.yaml, Roboflow & COCO)
+splits = split_documents(documents, train=0.7, val=0.2, test=0.1, seed=42)
+exporter = YoloExporter(splits=splits)
+exporter.export(documents, destination_dir)
+```
 
-Use `File > Import YOLO Dataset (data.yaml)` to import any Ultralytics or Roboflow YOLO dataset.
-Select the `data.yaml` or `dataset.yaml` file and choose a new project destination. Supported
-classes (`motorcycle`, `car`, `bus`, `truck`) and common aliases are automatically recognized,
-overlapping duplicates are cleaned, and images/labels across splits are imported into the workspace.
+---
 
-Use `File > Import from Roboflow...` to download and import a dataset version directly from
-Roboflow Universe or your private workspace using your Roboflow API key. You can paste full URLs
-such as `https://universe.roboflow.com/workspace/project/dataset/1` or enter `workspace/project`.
+## License
 
-Use `File > Upload to Roboflow...` to push images and bounding box annotations directly to a
-target Roboflow project.
-
-Use `File > Import COCO Dataset` to choose an annotations JSON, the source image directory, and a
-new project destination. Supported categories are imported as bounding boxes; unsupported
-categories and invalid records are reported and skipped. Images are copied into the project, so
-the source dataset is never modified.
-
-## Train/Validation/Test & Google Colab Export
-
-Use `File > Export Dataset` and select from:
-- `YOLO (Google Colab .zip)`: Creates a standalone ZIP archive containing `data.yaml`, `images/`, and `labels/` ready for 1-click Google Colab training (`model.train(data=".../data.yaml")`).
-- `YOLOv11 Detection`, `YOLOv8 Detection`, `YOLOv26 Detection`: Direct directory export with both `dataset.yaml` and `data.yaml`.
-- `COCO Detection`: Self-contained directory with `annotations.json`.
-
-Choose `Train / validation / test split` with custom ratios (e.g. `0.8,0.1,0.1`) and random seed for reproducible dataset splits.
-
-## Motorcycle and Rider Annotation
-
-The supported classes include both `motorcycle` and `rider`. Keep the boxes separate:
-the motorcycle box describes the motorcycle and the rider box describes the person riding it.
-Overlapping motorcycle and rider boxes are preserved during duplicate cleanup. Use
-`Annotation > DINO Annotate Entire Dataset` for Grounding DINO-only prompt-ensemble annotation.
-The DINO dataset pass runs full-image and overlapping tiled inference, and accepts comma- or
-period-separated prompts such as `motorcycle. rider. motorbike. motorcyclist.`
-The selected annotation can be marked occluded or truncated from the Review & Cleanup actions.
-
-Dense traffic annotation uses multi-scale YOLO proposals plus Grounding DINO proposals. The
-combined dataset action keeps YOLO vehicle detections authoritative and uses DINO to supplement
-motorcycles and riders. DINO-only annotation preserves existing YOLO boxes, so it can be used as
-a second pass without replacing the baseline.
-
-## Crop Assist
-
-Use `Annotation > Crop Assist > Start Crop Assist` on crowded images. The app creates overlapping
-temporary `640x640` crops with 20% overlap, or divides smaller images into four visible regions.
-Existing boxes are assigned to one crop by object center, and each crop uses the normal box editor.
-`Next Crop` and `Previous Crop` navigate the session; `Commit Crop Session` maps all local boxes
-back to the current original image and removes crop-boundary duplicates. `Cancel Crop Session`
-restores the original document without changing it.
+Apache 2.0 / MIT. Developed by Marsel204 for [VisionLabs](https://github.com/Marsel204/VisionLabs).

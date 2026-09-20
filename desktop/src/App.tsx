@@ -29,8 +29,10 @@ export const App: React.FC = () => {
   const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
   const [isAutoLabelOpen, setIsAutoLabelOpen] = useState(urlParams?.get('modal') === 'autolabel');
   const [isDatasetHubOpen, setIsDatasetHubOpen] = useState(urlParams?.get('modal') === 'dataset');
-  const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
-  const [datasetHubTab, setDatasetHubTab] = useState<'export' | 'import'>('import');
+  const [isShortcutsOpen, setIsShortcutsOpen] = useState(urlParams?.get('modal') === 'shortcuts');
+  const [datasetHubTab, setDatasetHubTab] = useState<'export' | 'import'>(
+    urlParams?.get('tab') === 'export' ? 'export' : 'import'
+  );
   const [isDetecting, setIsDetecting] = useState(false);
   const [hudToast, setHudToast] = useState<{ message: string; icon: string } | null>(null);
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
