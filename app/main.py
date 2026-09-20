@@ -14,6 +14,30 @@ from pathlib import Path
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 
+def _apply_torch_grid_sample_patch() -> None:
+    """Ensure torch.nn.functional.grid_sample aligns grid dtype to input dtype."""
+    try:
+        import torch.nn.functional as F
+
+        if getattr(F.grid_sample, "_is_dtype_safe", False):
+            return
+
+        orig_grid_sample = F.grid_sample
+
+        def _safe_grid_sample(input, grid, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if hasattr(input, "dtype") and hasattr(grid, "dtype") and input.dtype != grid.dtype:
+                grid = grid.to(input.dtype)
+            return orig_grid_sample(input, grid, *args, **kwargs)
+
+        _safe_grid_sample._is_dtype_safe = True  # type: ignore[attr-defined]
+        F.grid_sample = _safe_grid_sample
+    except Exception:
+        pass
+
+
+_apply_torch_grid_sample_patch()
+
+
 def get_base_dir() -> Path:
     """Return the application base directory, handling PyInstaller frozen binaries."""
     if getattr(sys, "frozen", False):
@@ -41,7 +65,7 @@ LOGGER = logging.getLogger(__name__)
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line parser."""
-    parser = argparse.ArgumentParser(description="AI-assisted traffic annotation application")
+    parser = argparse.ArgumentParser(description="VisionLab: Universal AI-assisted visual annotation application")
     parser.add_argument("--config", type=Path, help="path to a JSON configuration file")
     return parser
 

@@ -54,6 +54,12 @@ class CocoImportResult:
 class CocoImporter:
     """Import COCO bounding-box annotations into a copied project dataset."""
 
+    def __init__(
+        self,
+        allowed_classes: Sequence[str] | frozenset[str] | set[str] | None = None,
+    ) -> None:
+        self.allowed_classes = frozenset(allowed_classes) if allowed_classes is not None else None
+
     def import_dataset(
         self,
         annotation_file: Path,
@@ -96,11 +102,14 @@ class CocoImporter:
                 norm_name = CLASS_ALIASES.get(raw_name, str(item["name"]).strip().lower())
                 category_names[int(item["id"])] = norm_name
 
-        supported = {
-            category_id: name
-            for category_id, name in category_names.items()
-            if name in TARGET_CLASSES
-        }
+        if self.allowed_classes is not None:
+            supported = {
+                category_id: name
+                for category_id, name in category_names.items()
+                if name in self.allowed_classes
+            }
+        else:
+            supported = dict(category_names)
         by_image: dict[int, list[dict[str, Any]]] = {}
         for item in annotations:
             by_image.setdefault(int(item.get("image_id", -1)), []).append(item)

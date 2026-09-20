@@ -73,6 +73,12 @@ class YoloImportResult:
 class YoloImporter:
     """Import YOLO detection annotations and images into a copied project dataset."""
 
+    def __init__(
+        self,
+        allowed_classes: Sequence[str] | frozenset[str] | set[str] | None = None,
+    ) -> None:
+        self.allowed_classes = frozenset(allowed_classes) if allowed_classes is not None else None
+
     def import_dataset(
         self,
         yaml_file: Path,
@@ -88,9 +94,14 @@ class YoloImporter:
 
         payload = self._read_yaml(yaml_file)
         category_map = self._parse_categories(payload)
-        supported_categories = {
-            cat_id: name for cat_id, name in category_map.items() if name in TARGET_CLASSES
-        }
+        if self.allowed_classes is not None:
+            supported_categories = {
+                cat_id: name
+                for cat_id, name in category_map.items()
+                if name in self.allowed_classes
+            }
+        else:
+            supported_categories = dict(category_map)
 
         base_dir = self._resolve_base_dir(yaml_file, payload)
         image_paths = self._discover_images(payload, base_dir, yaml_file.parent)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -13,15 +12,6 @@ from app.services.ai_tuner.models import TunerIteration, TunerResult
 from app.services.annotation.domain import Annotation, AnnotationDocument, BoundingBox
 from app.services.auto_label.models import AutoLabelClass, AutoLabelConfig
 from app.ui.dialogs.ai_tuner_dialog import AITunerDialog
-
-
-@pytest.fixture(scope="session")
-def qapp() -> QApplication:
-    os.environ["QT_QPA_PLATFORM"] = "offscreen"
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication([])
-    return app
 
 
 @pytest.fixture

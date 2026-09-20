@@ -32,7 +32,7 @@ def write_coco_fixture(tmp_path: Path) -> tuple[Path, Path]:
 
 def test_import_copies_images_skips_categories_and_removes_overlaps(tmp_path: Path) -> None:
     annotation_path, image_root = write_coco_fixture(tmp_path)
-    result = CocoImporter().import_dataset(
+    result = CocoImporter(allowed_classes={"car"}).import_dataset(
         annotation_path,
         image_root,
         tmp_path / "project",
@@ -53,7 +53,7 @@ def test_import_copies_images_skips_categories_and_removes_overlaps(tmp_path: Pa
 
 def test_cleaned_documents_export_to_new_coco_dataset(tmp_path: Path) -> None:
     annotation_path, image_root = write_coco_fixture(tmp_path)
-    imported = CocoImporter().import_dataset(
+    imported = CocoImporter(allowed_classes={"car"}).import_dataset(
         annotation_path, image_root, tmp_path / "project", remove_overlaps=True
     )
     output = tmp_path / "cleaned"

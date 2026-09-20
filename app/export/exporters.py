@@ -14,7 +14,8 @@ from xml.etree.ElementTree import Element, ElementTree, SubElement
 from app.services.annotation.domain import TARGET_CLASSES, AnnotationDocument
 
 LOGGER = logging.getLogger(__name__)
-CLASS_ORDER = ("motorcycle", "car", "bus", "truck")
+DEFAULT_CLASS_ORDER = ("motorcycle", "car", "bus", "truck")
+CLASS_ORDER = DEFAULT_CLASS_ORDER
 SPLIT_NAMES = ("train", "val", "test")
 
 
@@ -28,6 +29,25 @@ class DatasetExporter(ABC):
     @abstractmethod
     def export(self, documents: list[AnnotationDocument], destination: Path) -> Path:
         """Export documents and return the generated artifact path."""
+
+
+def resolve_class_order(
+    documents: list[AnnotationDocument],
+    class_order: Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    """Determine category order from explicit configuration or documents."""
+    if class_order is not None and len(class_order) > 0:
+        return tuple(class_order)
+    classes_in_docs: list[str] = []
+    seen: set[str] = set()
+    for doc in documents:
+        for ann in doc.annotations:
+            if ann.class_name not in seen:
+                seen.add(ann.class_name)
+                classes_in_docs.append(ann.class_name)
+    if classes_in_docs:
+        return tuple(classes_in_docs)
+    return DEFAULT_CLASS_ORDER
 
 
 def split_documents(
@@ -59,13 +79,20 @@ class YoloExporter(DatasetExporter):
         self,
         variant: str = "generic",
         splits: dict[str, list[AnnotationDocument]] | None = None,
+        class_order: Sequence[str] | None = None,
     ) -> None:
         self.variant = variant
         self.splits = splits
+        self.class_order = tuple(class_order) if class_order is not None else None
 
     def export(self, documents: list[AnnotationDocument], destination: Path) -> Path:
         validate_documents(documents)
         destination.mkdir(parents=True, exist_ok=True)
+        active_classes = (
+            self.class_order
+            if self.class_order is not None
+            else resolve_class_order(documents)
+        )
         split_documents_map = self.splits or {"": documents}
         metadata: dict[str, list[dict[str, object]]] = {}
         import concurrent.futures
@@ -99,8 +126,13 @@ class YoloExporter(DatasetExporter):
             lines = []
             for annotation in document.annotations:
                 center_x, center_y, width, height = annotation.box.to_yolo()
+                cls_idx = (
+                    active_classes.index(annotation.class_name)
+                    if annotation.class_name in active_classes
+                    else 0
+                )
                 lines.append(
-                    f"{CLASS_ORDER.index(annotation.class_name)} {center_x:.6f} "
+                    f"{cls_idx} {center_x:.6f} "
                     f"{center_y:.6f} {width:.6f} {height:.6f}"
                 )
             label_target.write_text(
@@ -137,14 +169,14 @@ class YoloExporter(DatasetExporter):
         yaml_content = (
             f"path: {destination.resolve()}\n"
             f"{split_paths}\n"
-            f"names: {list(CLASS_ORDER)}\n"
+            f"names: {list(active_classes)}\n"
         )
         yaml_path.write_text(yaml_content, encoding="utf-8")
         # Also write data.yaml with relative path for seamless Google Colab/Roboflow portability
         colab_yaml_content = (
             "path: .\n"
             f"{split_paths}\n"
-            f"names: {list(CLASS_ORDER)}\n"
+            f"names: {list(active_classes)}\n"
         )
         data_yaml_path.write_text(colab_yaml_content, encoding="utf-8")
         LOGGER.info(
@@ -159,21 +191,31 @@ class YoloExporter(DatasetExporter):
 class CocoExporter(DatasetExporter):
     """Export COCO detection JSON and source images."""
 
-    def __init__(self, splits: dict[str, list[AnnotationDocument]] | None = None) -> None:
+    def __init__(
+        self,
+        splits: dict[str, list[AnnotationDocument]] | None = None,
+        class_order: Sequence[str] | None = None,
+    ) -> None:
         self.splits = splits
+        self.class_order = tuple(class_order) if class_order is not None else None
 
     def export(self, documents: list[AnnotationDocument], destination: Path) -> Path:
         validate_documents(documents)
+        active_classes = (
+            self.class_order
+            if self.class_order is not None
+            else resolve_class_order(documents)
+        )
         if self.splits:
             for split, split_documents_list in self.splits.items():
-                CocoExporter().export(split_documents_list, destination / split)
+                CocoExporter(class_order=active_classes).export(split_documents_list, destination / split)
             return destination
         destination.mkdir(parents=True, exist_ok=True)
         payload = {
             "images": [],
             "annotations": [],
             "categories": [
-                {"id": index + 1, "name": name} for index, name in enumerate(CLASS_ORDER)
+                {"id": index + 1, "name": name} for index, name in enumerate(active_classes)
             ],
         }
         annotation_id = 1
@@ -188,11 +230,16 @@ class CocoExporter(DatasetExporter):
             )
             for annotation in document.annotations:
                 box = annotation.box
+                cat_id = (
+                    active_classes.index(annotation.class_name) + 1
+                    if annotation.class_name in active_classes
+                    else 1
+                )
                 payload["annotations"].append(
                     {
                         "id": annotation_id,
                         "image_id": image_id,
-                        "category_id": CLASS_ORDER.index(annotation.class_name) + 1,
+                        "category_id": cat_id,
                         "bbox": [
                             box.left * document.image_width,
                             box.top * document.image_height,
@@ -326,8 +373,8 @@ class RoboflowExporter(YoloExporter):
 
 
 def validate_documents(documents: list[AnnotationDocument]) -> None:
-    """Reject unsupported classes before writing a partially valid export."""
+    """Validate that annotations have non-empty valid names and positive dimensions."""
     for document in documents:
-        invalid = {item.class_name for item in document.annotations} - TARGET_CLASSES
-        if invalid:
-            raise ExportError(f"unsupported classes in {document.image_path}: {sorted(invalid)}")
+        for item in document.annotations:
+            if not item.class_name or not str(item.class_name).strip():
+                raise ExportError(f"invalid empty class name in {document.image_path}")

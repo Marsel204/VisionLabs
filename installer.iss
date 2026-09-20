@@ -1,12 +1,12 @@
-; Inno Setup script for Traffic Annotator
-; Generates a professional Windows installer: TrafficAnnotator-Setup.exe
+; Inno Setup script for VisionLab
+; Generates a professional Windows installer: VisionLab-Setup.exe
 ; Compile this script using Inno Setup (ISCC.exe installer.iss)
 
-#define MyAppName "Traffic Annotator"
+#define MyAppName "VisionLab"
 #define MyAppVersion "0.1.0"
 #define MyAppPublisher "VisionLabs"
 #define MyAppURL "https://github.com/Marsel204/VisionLabs"
-#define MyAppExeName "TrafficAnnotator.exe"
+#define MyAppExeName "VisionLab.exe"
 
 [Setup]
 AppId={{D37E88A1-94F2-4F16-B0B2-6BE53C93EA35}
@@ -21,7 +21,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 LicenseFile=README.md
 OutputDir=dist
-OutputBaseFilename=TrafficAnnotator-Setup
+OutputBaseFilename=VisionLab-Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -36,7 +36,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "dist\TrafficAnnotator\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\VisionLab\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

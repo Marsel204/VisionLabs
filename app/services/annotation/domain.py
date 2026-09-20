@@ -108,8 +108,8 @@ class Annotation:
     annotation_id: UUID = field(default_factory=uuid4)
 
     def __post_init__(self) -> None:
-        if self.class_name not in TARGET_CLASSES:
-            raise AnnotationValidationError(f"unsupported target class: {self.class_name}")
+        if not self.class_name or not str(self.class_name).strip():
+            raise AnnotationValidationError("class name cannot be empty")
         if self.confidence is not None and not 0.0 <= self.confidence <= 1.0:
             raise AnnotationValidationError("confidence must be between 0 and 1")
 

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 from PIL import Image
-import pytest
 
 from app.configs.settings import AppSettings
 from app.services.annotation.domain import Annotation, AnnotationDocument, BoundingBox

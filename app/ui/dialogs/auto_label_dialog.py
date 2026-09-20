@@ -60,7 +60,6 @@ from app.services.auto_label.models import (
     DEFAULT_AUTO_LABEL_CLASSES,
     AutoLabelClass,
     AutoLabelConfig,
-    AutoLabelDetection,
     AutoLabelPipelineMode,
     AutoLabelResult,
 )
@@ -347,122 +346,6 @@ class PreviewCardWidget(QFrame):
             self.clicked.emit(self.image_path)
 
 
-class CherryPickDialog(QDialog):
-    """Modal dialog allowing the user to search and cherry-pick up to 4 images for preview."""
-
-    def __init__(
-        self,
-        all_images: list[Path],
-        selected_images: list[Path],
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Cherry-Pick Preview Images")
-        self.setFixedSize(580, 500)
-        self.all_images = all_images
-        self.selected_images: list[Path] = list(selected_images)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(12)
-
-        title = QLabel("Select up to 4 sample images to preview:")
-        title.setStyleSheet("font-size: 14px; font-weight: 700; color: #f8fafc;")
-        layout.addWidget(title)
-
-        # Search Bar
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("🔍 Filter images by filename...")
-        self.search_input.setStyleSheet(
-            "background-color: #0f172a; border: 1px solid #334155; border-radius: 6px; "
-            "padding: 6px 10px; color: #f8fafc; font-size: 12px;"
-        )
-        self.search_input.textChanged.connect(self._filter_list)
-        layout.addWidget(self.search_input)
-
-        # Image List Widget with Checkboxes
-        self.list_widget = QListWidget()
-        self.list_widget.setStyleSheet(
-            "QListWidget { background-color: #0f172a; border: 1px solid #334155; "
-            "border-radius: 8px; padding: 6px; color: #f8fafc; } "
-            "QListWidget::item { padding: 6px; border-radius: 4px; } "
-            "QListWidget::item:selected { background-color: #312e81; color: #ffffff; }"
-        )
-        self.list_widget.itemChanged.connect(self._on_item_changed)
-        layout.addWidget(self.list_widget, 1)
-
-        self._populate_list()
-
-        # Bottom row: Count & Buttons
-        bottom_row = QHBoxLayout()
-        self.count_label = QLabel(f"Selected: {len(self.selected_images)} / 4")
-        self.count_label.setStyleSheet("color: #a5b4fc; font-weight: 600; font-size: 12px;")
-
-        random_btn = QPushButton("🎲 Pick 4 Random")
-        random_btn.setStyleSheet(
-            "background-color: #1e293b; border: 1px solid #334155; border-radius: 6px; "
-            "color: #f8fafc; padding: 6px 12px; font-weight: 600;"
-        )
-        random_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        random_btn.clicked.connect(self._pick_random)
-
-        apply_btn = QPushButton("✔ Apply Selection")
-        apply_btn.setStyleSheet(
-            "background-color: #6366f1; border: none; border-radius: 6px; "
-            "color: #ffffff; padding: 6px 16px; font-weight: 700;"
-        )
-        apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        apply_btn.clicked.connect(self.accept)
-
-        bottom_row.addWidget(self.count_label)
-        bottom_row.addStretch(1)
-        bottom_row.addWidget(random_btn)
-        bottom_row.addWidget(apply_btn)
-        layout.addLayout(bottom_row)
-
-    def _populate_list(self, filter_text: str = "") -> None:
-        self.list_widget.blockSignals(True)
-        self.list_widget.setUpdatesEnabled(False)
-        self.list_widget.clear()
-        filter_lower = filter_text.lower()
-        for p in self.all_images:
-            if filter_lower and filter_lower not in p.name.lower():
-                continue
-            item = QListWidgetItem(f"📄 {p.name}")
-            item.setData(Qt.ItemDataRole.UserRole, str(p))
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            if p in self.selected_images:
-                item.setCheckState(Qt.CheckState.Checked)
-            else:
-                item.setCheckState(Qt.CheckState.Unchecked)
-            self.list_widget.addItem(item)
-        self.list_widget.setUpdatesEnabled(True)
-        self.list_widget.blockSignals(False)
-
-    def _filter_list(self, text: str) -> None:
-        self._populate_list(text)
-
-    def _on_item_changed(self, item: QListWidgetItem) -> None:
-        path_str = item.data(Qt.ItemDataRole.UserRole)
-        p = Path(path_str)
-        if item.checkState() == Qt.CheckState.Checked:
-            if p not in self.selected_images:
-                if len(self.selected_images) >= 4:
-                    removed = self.selected_images.pop(0)
-                    for idx in range(self.list_widget.count()):
-                        it = self.list_widget.item(idx)
-                        if it.data(Qt.ItemDataRole.UserRole) == str(removed):
-                            it.setCheckState(Qt.CheckState.Unchecked)
-                self.selected_images.append(p)
-        else:
-            if p in self.selected_images:
-                self.selected_images.remove(p)
-        self.count_label.setText(f"Selected: {len(self.selected_images)} / 4")
-
-    def _pick_random(self) -> None:
-        self.selected_images = random.sample(self.all_images, min(4, len(self.all_images)))
-        self._populate_list(self.search_input.text())
-        self.count_label.setText(f"Selected: {len(self.selected_images)} / 4")
 
 
 _THUMBNAIL_BASE_CACHE: OrderedDict[Path, QPixmap] = OrderedDict()
@@ -1361,7 +1244,6 @@ class AutoLabelDialog(QDialog):
                 p = Path(path_str)
                 self.current_image_path = p
                 is_preview = p in self.preview_image_paths
-                slot = (self.preview_image_paths.index(p) + 1) if is_preview else 0
                 self._ensure_autolabel_item_thumbnail(item)
                 if is_preview:
                     self._on_card_zoomed(p)
@@ -1375,16 +1257,6 @@ class AutoLabelDialog(QDialog):
         self._populate_image_list(self.search_input.text() if hasattr(self, "search_input") else "")
         self._render_initial_images()
         self._run_single_preview()
-
-    def _open_cherry_pick_dialog(self) -> None:
-        dialog = CherryPickDialog(self.image_paths, self.preview_image_paths, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            if dialog.selected_images:
-                self.preview_image_paths = dialog.selected_images
-                self.current_image_path = self.preview_image_paths[0]
-                self._populate_image_list(self.search_input.text() if hasattr(self, "search_input") else "")
-                self._render_initial_images()
-                self._run_single_preview()
 
     def _set_preview_view_mode(self, mode: int) -> None:
         """Mode 0: 4-Grid View, Mode 1: Focused Single View."""
@@ -2511,7 +2383,7 @@ class AutoLabelDialog(QDialog):
                 new_anns = list(existing_anns)
 
                 for det in res.detections:
-                    if det.class_name not in TARGET_CLASSES:
+                    if not det.class_name or not str(det.class_name).strip():
                         continue
                     # Safely validate and clamp bounding box
                     try:

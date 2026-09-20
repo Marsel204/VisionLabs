@@ -12,7 +12,6 @@ from PIL import Image
 from app.services.annotation.domain import AnnotationDocument, AnnotationSource, BoundingBox
 from app.services.auto_label.engine import AutoLabelEngine, compute_box_iou
 from app.services.auto_label.models import (
-    DEFAULT_AUTO_LABEL_CLASSES,
     AutoLabelClass,
     AutoLabelConfig,
     AutoLabelDetection,

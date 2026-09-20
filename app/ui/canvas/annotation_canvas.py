@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import Enum, auto
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPen, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 
 from app.services.annotation.domain import Annotation, AnnotationDocument, BoundingBox
 from app.services.fusion.fusion_models import FusionStatus
-from app.ui.theme import CLASS_COLORS, PALETTE
+from app.ui.theme import PALETTE
 
 
 class CanvasMode(Enum):

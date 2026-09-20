@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import yaml
 
-from app.export.exporters import RoboflowExporter, YoloExporter
+from app.export.exporters import RoboflowExporter
 from app.services.dataset.yolo_importer import (
     YoloImportError,
     YoloImporter,
@@ -59,7 +59,7 @@ def test_yolo_importer_roboflow_layout(tmp_path: Path) -> None:
     yaml_path.write_text(yaml.dump(yaml_content), encoding="utf-8")
 
     destination = tmp_path / "project_dest"
-    importer = YoloImporter()
+    importer = YoloImporter(allowed_classes={"motorcycle", "car", "bus", "truck"})
     result = importer.import_dataset(
         yaml_path,
         destination,
@@ -179,4 +179,4 @@ def test_colab_zip_exporter_produces_valid_archive(tmp_path: Path) -> None:
         parsed_yaml = yaml.safe_load(data_yaml_str)
         assert parsed_yaml["path"] == "."
         assert "train" in parsed_yaml
-        assert parsed_yaml["names"] == ["motorcycle", "car", "bus", "truck"]
+        assert parsed_yaml["names"] == ["car"]

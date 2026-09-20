@@ -2,7 +2,7 @@ import io
 import json
 import zipfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -96,7 +96,7 @@ def test_download_and_import_mock(tmp_path: Path) -> None:
         zf.writestr("train/labels/car1.txt", "0 0.5 0.5 0.2 0.2\n")
     zip_bytes = zip_bytes_io.getvalue()
 
-    def mock_download_file(url, dest_path, progress_cb=None):
+    def mock_download_file(_url, dest_path, _progress_cb=None):
         dest_path.write_bytes(zip_bytes)
 
     with (
@@ -135,7 +135,7 @@ def test_upload_document_mock(tmp_path: Path) -> None:
 
     posted_urls = []
 
-    def mock_http_post(url, data, headers):
+    def mock_http_post(url, _data=None, _headers=None, **_kwargs):
         posted_urls.append(url)
         if "upload?" in url:
             return json.dumps({"id": "uploaded_img_123", "success": True}).encode("utf-8")

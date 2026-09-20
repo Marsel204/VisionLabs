@@ -65,7 +65,7 @@ def test_auto_label_dialog_lifecycle(sample_images: list[Path], qapp: QApplicati
 
     assert dialog.image_list.count() == 2
     assert dialog.current_image_path == sample_images[0]
-    assert len(dialog.classes) == 4  # Default classes
+    assert len(dialog.classes) == 1  # Universal starter class (object)
 
     # Test adding a class
     initial_count = len(dialog.classes)

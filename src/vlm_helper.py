@@ -1,7 +1,8 @@
 """Florence-2 Vision-Language Model (VLM) execution helper, verification, and annotation generation.
 
 This module integrates existing image loading utilities across VisionLab:
-- PIL Image loading (pipeline_bridge.py, app/ui/main_window.py, app/services/inference/dense_motorcycle.py)
+- PIL Image loading (pipeline_bridge.py, app/ui/main_window.py,
+  app/services/inference/dense_motorcycle.py)
 - OpenCV image loading and slicing (app/services/crop_assisted/crop_generator.py)
 - Domain bounding boxes and target classes (app/services/annotation/domain.py)
 
@@ -181,17 +182,13 @@ def load_image(source: str | Path | Image.Image | np.ndarray) -> Image.Image:
             return Image.fromarray(source).convert("RGB")
         if source.ndim == 3:
             channels = source.shape[2]
-            if channels == 3:
-                # Default assume OpenCV BGR if uint8, convert BGR -> RGB
-                # However, if values are in RGB, fromarray handles it; here we convert BGR -> RGB standard
+            if channels in (3, 4):
+                # Default assume OpenCV BGR(A) if uint8, convert BGR(A) -> RGB
+                # If values are in RGB, fromarray handles it; here we convert to RGB standard
                 import cv2
 
-                rgb_array = cv2.cvtColor(source, cv2.COLOR_BGR2RGB)
-                return Image.fromarray(rgb_array)
-            if channels == 4:  # BGRA
-                import cv2
-
-                rgb_array = cv2.cvtColor(source, cv2.COLOR_BGRA2RGB)
+                conv_code = cv2.COLOR_BGR2RGB if channels == 3 else cv2.COLOR_BGRA2RGB
+                rgb_array = cv2.cvtColor(source, conv_code)
                 return Image.fromarray(rgb_array)
             if channels == 1:
                 return Image.fromarray(source[:, :, 0]).convert("RGB")
@@ -211,7 +208,8 @@ def crop_image(
         image: Source image (path, numpy array, or PIL Image).
         box: Coordinates (xmin, ymin, xmax, ymax) or (left, top, right, bottom).
              Can also be a BoundingBox dataclass with left, top, right, bottom attributes.
-        normalized: Whether coordinates are normalized in [0, 1]. If False, coordinates are in pixels.
+        normalized: Whether coordinates are normalized in [0, 1].
+            If False, coordinates are in pixels.
 
     Returns:
         Cropped PIL.Image.Image in RGB mode.
@@ -219,9 +217,19 @@ def crop_image(
     img = load_image(image)
     width, height = img.width, img.height
 
-    if hasattr(box, "left") and hasattr(box, "top") and hasattr(box, "right") and hasattr(box, "bottom"):
+    if (
+        hasattr(box, "left")
+        and hasattr(box, "top")
+        and hasattr(box, "right")
+        and hasattr(box, "bottom")
+    ):
         # app.services.annotation.domain.BoundingBox object
-        xmin, ymin, xmax, ymax = float(box.left), float(box.top), float(box.right), float(box.bottom)
+        xmin, ymin, xmax, ymax = (
+            float(box.left),
+            float(box.top),
+            float(box.right),
+            float(box.bottom),
+        )
     elif len(box) == 4:
         xmin, ymin, xmax, ymax = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
     else:
@@ -240,7 +248,13 @@ def crop_image(
 
     if left >= right or top >= bottom:
         # Fallback to full image crop or minimal 1x1 patch to avoid crash
-        LOGGER.warning("Degenerate crop coordinates [%s, %s, %s, %s]; using full image", left, top, right, bottom)
+        LOGGER.warning(
+            "Degenerate crop coordinates [%s, %s, %s, %s]; using full image",
+            left,
+            top,
+            right,
+            bottom,
+        )
         return img
 
     return img.crop((int(round(left)), int(round(top)), int(round(right)), int(round(bottom))))
@@ -279,9 +293,8 @@ def _apply_transformers_compatibility_patch() -> None:
                     return [str(t) for t in self._additional_special_tokens_list]
                 return self.special_tokens_map.get("additional_special_tokens", [])
 
-            transformers.tokenization_utils_base.PreTrainedTokenizerBase.additional_special_tokens = (
-                _additional_special_tokens
-            )
+            tok_cls = transformers.tokenization_utils_base.PreTrainedTokenizerBase
+            tok_cls.additional_special_tokens = _additional_special_tokens
     except Exception:
         pass
 
@@ -291,7 +304,7 @@ def _apply_transformers_compatibility_patch() -> None:
         transformers.modeling_utils.PreTrainedModel._supports_sdpa = True
         transformers.modeling_utils.PreTrainedModel._supports_flash_attn_2 = False
 
-        def _safe_sdpa_can_dispatch(self: Any, is_init_check: bool = False) -> bool:
+        def _safe_sdpa_can_dispatch(_self: Any, _is_init_check: bool = False) -> bool:
             return True
 
         transformers.modeling_utils.PreTrainedModel._sdpa_can_dispatch = _safe_sdpa_can_dispatch
@@ -372,7 +385,8 @@ class Florence2VLM:
                 torch_dtype=dtype,
             ).to(torch.device(target_device))
 
-            # Florence-2 safetensors store shared embeddings under language_model.model.shared.weight.
+            # Florence-2 safetensors store shared embeddings under
+            # language_model.model.shared.weight.
             # Tie encoder/decoder embed_tokens and lm_head to shared weights if freshly initialized.
             if (
                 hasattr(self._model, "language_model")
@@ -390,6 +404,16 @@ class Florence2VLM:
                     self._model.language_model.model.decoder.embed_tokens.weight = shared_w
                 if hasattr(self._model.language_model, "lm_head"):
                     self._model.language_model.lm_head.weight = shared_w
+
+            # Disable past_key_values cache across model and language_model configs:
+            # Florence-2 remote modeling code indexes past_key_values as tuples (past_key_values[0][0]),
+            # which raises TypeError with transformers >= 4.45's EncoderDecoderCache.
+            for obj in (self._model, getattr(self._model, "language_model", None)):
+                if obj is not None:
+                    if hasattr(obj, "config") and obj.config is not None:
+                        obj.config.use_cache = False
+                    if hasattr(obj, "generation_config") and obj.generation_config is not None:
+                        obj.generation_config.use_cache = False
 
             self._model.eval()
 
@@ -420,7 +444,12 @@ class Florence2VLM:
         prompt = task_token if not text_input else f"{task_token} {text_input}"
 
         if max_new_tokens is None:
-            max_new_tokens = 256 if task_token in ("<OD>", "<DENSE_REGION_CAPTION>", "<CAPTION_TO_PHRASE_GROUNDING>") else 64
+            high_token_tasks = (
+                "<OD>",
+                "<DENSE_REGION_CAPTION>",
+                "<CAPTION_TO_PHRASE_GROUNDING>",
+            )
+            max_new_tokens = 256 if task_token in high_token_tasks else 64
 
         # Prepare pixel_values directly via image_processor to guarantee square resizing (768, 768)
         # across all crop aspect ratios on modern transformers versions.
@@ -462,9 +491,9 @@ class Florence2VLM:
                 pixel_values=device_inputs.get("pixel_values"),
                 max_new_tokens=max_new_tokens,
                 num_beams=num_beams,
-                use_cache=True,
+                use_cache=False,
                 do_sample=False,
-                early_stopping=True if num_beams > 1 else False,
+                early_stopping=num_beams > 1,
             )
 
         generated_text = self._processor.batch_decode(
@@ -546,7 +575,7 @@ class Florence2VLM:
                 pixel_values=device_inputs.get("pixel_values"),
                 max_new_tokens=max_new_tokens,
                 num_beams=1,
-                use_cache=True,
+                use_cache=False,
                 do_sample=False,
             )
 
@@ -556,7 +585,7 @@ class Florence2VLM:
         )
 
         results: list[str] = []
-        for text, img in zip(decoded_texts, pil_images):
+        for text, img in zip(decoded_texts, pil_images, strict=True):
             try:
                 parsed = self._processor.post_process_generation(
                     text,
@@ -598,8 +627,6 @@ class Florence2VLM:
             if not caption and result:
                 # Fallback to the first value if key differs
                 caption = next(iter(result.values()))
-            if isinstance(caption, str):
-                return caption.strip()
             return str(caption).strip()
 
         if isinstance(result, str):
@@ -633,7 +660,7 @@ class Florence2VLM:
             if isinstance(od_data, dict):
                 bboxes = od_data.get("bboxes", [])
                 labels = od_data.get("labels", [])
-                for bbox, label in zip(bboxes, labels):
+                for bbox, label in zip(bboxes, labels, strict=False):
                     detections.append({"label": str(label), "box": [float(c) for c in bbox]})
 
         return detections
@@ -660,7 +687,8 @@ def match_caption_to_class(caption: str, target_class: str) -> bool:
     """Check if a model-predicted caption string matches a target detection object class.
 
     Performs case-insensitive token and phrase matching using known domain synonyms
-    and word boundaries to avoid false substring collisions (e.g., prevents 'carpet' from matching 'car').
+    and word boundaries to avoid false substring collisions
+    (e.g., prevents 'carpet' from matching 'car').
 
     Args:
         caption: Text caption predicted by Florence-2.
@@ -753,11 +781,11 @@ def verify_crop_classes_batch(
         LOGGER.debug("Batched VLM verification failed, falling back to sequential: %s", err)
         return [
             verify_crop_class(crop, target_cls, vlm=model_runner, task_token=task_token)
-            for crop, target_cls in zip(crops, target_classes)
+            for crop, target_cls in zip(crops, target_classes, strict=True)
         ]
     return [
         match_caption_to_class(caption=caption, target_class=target_cls)
-        for caption, target_cls in zip(captions, target_classes)
+        for caption, target_cls in zip(captions, target_classes, strict=True)
     ]
 
 

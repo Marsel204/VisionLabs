@@ -1,0 +1,297 @@
+import React, { useState } from 'react';
+import type { BoundingBox } from '../../types';
+import { getClassColor } from '../../types';
+
+interface Props {
+  selectedBox: BoundingBox | null;
+  availableClasses?: string[];
+  onUpdateBox: (updated: BoundingBox) => void;
+  onDeleteBox: (id: string) => void;
+  onAcceptBox: (id: string) => void;
+}
+
+const DEFAULT_CLASSES = ['object', 'person', 'car', 'bus', 'truck', 'motorcycle'];
+
+export const ObjectInspector: React.FC<Props> = ({
+  selectedBox,
+  availableClasses,
+  onUpdateBox,
+  onDeleteBox,
+  onAcceptBox,
+}) => {
+  const [customClassName, setCustomClassName] = useState('');
+
+  if (!selectedBox) {
+    return (
+      <aside className="w-[245px] flex-shrink-0 bg-[#0f1524]/85 backdrop-blur-2xl border-l border-[#2a3a48]/40 flex flex-col items-center justify-center p-4 text-center select-none z-20">
+        <div className="w-10 h-10 rounded-xl bg-[#141c2e] border border-[#2a3a48]/40 flex items-center justify-center text-[#4a6070] mb-2">
+          <span className="material-symbols-outlined text-[20px]">crop_square</span>
+        </div>
+        <p className="text-xs font-semibold text-[#a0b4c4]">No Object Selected</p>
+        <p className="text-[10px] text-[#4a6070] mt-1">
+          Click an existing bounding box or draw a new box on the canvas.
+        </p>
+      </aside>
+    );
+  }
+
+  const colorConfig = getClassColor(selectedBox.class_name);
+
+  // Combine available classes with the active box class if not present
+  const baseClasses = availableClasses && availableClasses.length > 0 ? availableClasses : DEFAULT_CLASSES;
+  const classList = baseClasses.includes(selectedBox.class_name.toLowerCase())
+    ? baseClasses
+    : [selectedBox.class_name.toLowerCase(), ...baseClasses];
+
+  return (
+    <aside className="w-[245px] flex-shrink-0 bg-[#0f1524]/85 backdrop-blur-2xl border-l border-[#2a3a48]/40 flex flex-col z-20 shadow-2xl overflow-y-auto select-none">
+      {/* Header */}
+      <div className="p-2.5 bg-[#111828]/90 border-b border-[#2a3a48]/30 flex items-center justify-between">
+        <div className="flex items-center gap-1.5">
+          <span className="material-symbols-outlined text-[#06b6d4] text-[18px]">fact_check</span>
+          <span className="font-bold text-xs tracking-tight text-[#e0e8f0] uppercase">
+            Object Inspector
+          </span>
+        </div>
+        <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-[#10b981]/20 text-[#34d399] font-bold">
+          VALIDATED
+        </span>
+      </div>
+
+      {/* Selected Box Info */}
+      <div className="p-2.5 border-b border-[#2a3a48]/30 space-y-2.5">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <span
+              className="w-2.5 h-2.5 rounded-full shadow-sm"
+              style={{ backgroundColor: colorConfig.stroke }}
+            ></span>
+            <span className="font-mono font-bold text-xs text-[#e0e8f0]">
+              #{selectedBox.id.toUpperCase()}
+            </span>
+          </div>
+          <span className="text-[10px] font-mono text-[#cbd5e1] bg-[#141c2e] px-2 py-0.5 rounded border border-[#2a3a48]/40">
+            2D Box
+          </span>
+        </div>
+
+        {/* Class Designation */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">
+            <span>Class Designation</span>
+            <span className="text-[#64748b] font-mono">Keys 1-6</span>
+          </div>
+
+          {/* Prominent High-Contrast Active Class Pill */}
+          <div
+            className="flex items-center justify-between px-2.5 py-1.5 rounded-md border text-xs font-semibold shadow-inner"
+            style={{
+              backgroundColor: '#0a0f1d',
+              borderColor: `${colorConfig.stroke}99`,
+            }}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                className="w-3 h-3 rounded-full shadow-sm shrink-0"
+                style={{ backgroundColor: colorConfig.stroke }}
+              />
+              <span
+                className="font-bold uppercase tracking-wider text-sm"
+                style={{ color: colorConfig.stroke }}
+              >
+                {selectedBox.class_name}
+              </span>
+            </div>
+            <span className="text-xs font-mono px-2 py-0.5 rounded bg-[#172136] text-[#e2e8f0] border border-[#334155]">
+              ID: {selectedBox.class_id ?? 1}
+            </span>
+          </div>
+
+          {/* Styled Dark Select Dropdown with Zero GTK Interference */}
+          <div className="relative">
+            <select
+              value={selectedBox.class_name.toLowerCase()}
+              onChange={(e) => {
+                const val = e.target.value;
+                const idx = classList.indexOf(val);
+                onUpdateBox({
+                  ...selectedBox,
+                  class_name: val,
+                  class_id: idx >= 0 ? idx : 0,
+                });
+              }}
+              style={{
+                backgroundColor: '#111827',
+                color: '#ffffff',
+                WebkitAppearance: 'none',
+                MozAppearance: 'none',
+                appearance: 'none',
+              }}
+              className="w-full text-white text-xs font-medium pl-3 pr-8 py-2 rounded-md border border-[#334155] focus:outline-none focus:border-[#06b6d4] focus:ring-1 focus:ring-[#06b6d4] cursor-pointer shadow-sm"
+            >
+              {classList.map((c, idx) => (
+                <option
+                  key={c}
+                  value={c}
+                  style={{ backgroundColor: '#111827', color: '#ffffff' }}
+                >
+                  [{idx + 1}] {c.charAt(0).toUpperCase() + c.slice(1)}
+                </option>
+              ))}
+            </select>
+            <span className="material-symbols-outlined absolute right-2.5 top-1/2 -translate-y-1/2 text-[18px] text-[#94a3b8] pointer-events-none">
+              expand_more
+            </span>
+          </div>
+
+          {/* Custom Class Input */}
+          <div className="flex gap-1 pt-1">
+            <input
+              type="text"
+              placeholder="Custom class name..."
+              value={customClassName}
+              onChange={(e) => setCustomClassName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && customClassName.trim()) {
+                  const val = customClassName.trim().toLowerCase();
+                  const idx = classList.indexOf(val);
+                  onUpdateBox({
+                    ...selectedBox,
+                    class_name: val,
+                    class_id: idx >= 0 ? idx : classList.length,
+                  });
+                  setCustomClassName('');
+                }
+              }}
+              className="flex-1 bg-[#111827] text-white text-[11px] px-2 py-1 rounded border border-[#334155] focus:outline-none focus:border-[#06b6d4]"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (customClassName.trim()) {
+                  const val = customClassName.trim().toLowerCase();
+                  const idx = classList.indexOf(val);
+                  onUpdateBox({
+                    ...selectedBox,
+                    class_name: val,
+                    class_id: idx >= 0 ? idx : classList.length,
+                  });
+                  setCustomClassName('');
+                }
+              }}
+              className="px-2 py-1 bg-[#141c2e] hover:bg-[#1a2438] text-[11px] font-semibold text-[#06b6d4] rounded border border-[#334155] cursor-pointer"
+            >
+              Set
+            </button>
+          </div>
+        </div>
+
+        {/* Bounding Geometry */}
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">
+            <span>BOUNDING GEOMETRY (PX)</span>
+          </div>
+          <div className="grid grid-cols-4 gap-1 font-mono">
+            <div className="bg-[#0a0e1a] p-1.5 rounded border border-[#2a3a48]/40 flex flex-col">
+              <span className="text-[9.5px] font-bold text-[#94a3b8]">X</span>
+              <span className="text-xs text-[#06b6d4] font-semibold">{Math.round(selectedBox.x)}</span>
+            </div>
+            <div className="bg-[#0a0e1a] p-1.5 rounded border border-[#2a3a48]/40 flex flex-col">
+              <span className="text-[9.5px] font-bold text-[#94a3b8]">Y</span>
+              <span className="text-xs text-[#06b6d4] font-semibold">{Math.round(selectedBox.y)}</span>
+            </div>
+            <div className="bg-[#0a0e1a] p-1.5 rounded border border-[#2a3a48]/40 flex flex-col">
+              <span className="text-[9.5px] font-bold text-[#94a3b8]">W</span>
+              <span className="text-xs text-[#e0e8f0] font-semibold">{Math.round(selectedBox.width)}</span>
+            </div>
+            <div className="bg-[#0a0e1a] p-1.5 rounded border border-[#2a3a48]/40 flex flex-col">
+              <span className="text-[9.5px] font-bold text-[#94a3b8]">H</span>
+              <span className="text-xs text-[#e0e8f0] font-semibold">{Math.round(selectedBox.height)}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Model Confidence */}
+        <div className="p-2 rounded-md bg-[#0a0e1a] border border-[#2a3a48]/40 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded bg-[#0e4d6e] flex items-center justify-center text-[#7dd3fc]">
+              <span className="material-symbols-outlined text-[15px]">psychology</span>
+            </div>
+            <div>
+              <div className="text-xs font-semibold text-[#e0e8f0]">
+                {Math.round(selectedBox.confidence * 100)}% Confidence
+              </div>
+              <div className="text-[10px] font-mono text-[#94a3b8]">YOLO11</div>
+            </div>
+          </div>
+          <span className="text-[10px] font-mono text-[#10b981] font-bold">+2.1%</span>
+        </div>
+      </div>
+
+      {/* Attributes */}
+      <div className="p-2.5 border-b border-[#2a3a48]/30 space-y-2">
+        <span className="font-semibold text-[10px] text-[#94a3b8] uppercase tracking-wider">
+          Perception Attributes
+        </span>
+        <div className="space-y-1.5 text-xs">
+          {/* Occluded */}
+          <div className="flex items-center justify-between p-1.5 rounded bg-[#0a0e1a] border border-[#2a3a48]/30">
+            <span className="text-[#e0e8f0]">Occluded</span>
+            <input
+              type="checkbox"
+              checked={selectedBox.occluded || false}
+              onChange={(e) => onUpdateBox({ ...selectedBox, occluded: e.target.checked })}
+              className="accent-[#06b6d4] cursor-pointer"
+            />
+          </div>
+
+          {/* Truncated */}
+          <div className="flex items-center justify-between p-1.5 rounded bg-[#0a0e1a] border border-[#2a3a48]/30">
+            <span className="text-[#e0e8f0]">Truncated (Edge)</span>
+            <input
+              type="checkbox"
+              checked={selectedBox.truncated || false}
+              onChange={(e) => onUpdateBox({ ...selectedBox, truncated: e.target.checked })}
+              className="accent-[#06b6d4] cursor-pointer"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Quality Consensus Action Triage */}
+      <div className="p-2.5 space-y-2 flex-1">
+        <span className="font-semibold text-[10px] text-[#94a3b8] uppercase tracking-wider">
+          Consensus Triage
+        </span>
+        <div className="grid grid-cols-3 gap-1.5">
+          <button
+            onClick={() => onAcceptBox(selectedBox.id)}
+            type="button"
+            className="py-2 px-1 rounded-md bg-[#10b981]/20 hover:bg-[#10b981]/30 text-[#34d399] text-[10.5px] font-semibold flex flex-col items-center justify-center gap-1 transition-all cursor-pointer border border-[#10b981]/30"
+            title="Accept / Validate box (Enter / Space)"
+          >
+            <span className="material-symbols-outlined text-[16px]">check_circle</span>
+            <span>Accept [↵]</span>
+          </button>
+          <button
+            type="button"
+            className="py-2 px-1 rounded-md bg-[#f59e0b]/20 hover:bg-[#f59e0b]/30 text-[#fbbf24] text-[10.5px] font-semibold flex flex-col items-center justify-center gap-1 transition-all cursor-pointer border border-[#f59e0b]/30"
+            title="Flag for second review"
+          >
+            <span className="material-symbols-outlined text-[16px]">flag</span>
+            <span>Flag</span>
+          </button>
+          <button
+            onClick={() => onDeleteBox(selectedBox.id)}
+            type="button"
+            className="py-2 px-1 rounded-md bg-[#ef4444]/20 hover:bg-[#ef4444]/30 text-[#f87171] text-[10.5px] font-semibold flex flex-col items-center justify-center gap-1 transition-all cursor-pointer border border-[#ef4444]/30"
+            title="Delete box (Del / Backspace)"
+          >
+            <span className="material-symbols-outlined text-[16px]">delete</span>
+            <span>Delete [Del]</span>
+          </button>
+        </div>
+      </div>
+    </aside>
+  );
+};

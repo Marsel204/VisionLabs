@@ -1,5 +1,4 @@
-# -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller build specification for Traffic Annotator.
+"""PyInstaller build specification for VisionLab.
 
 Produces a standalone, high-performance distribution directory containing
 the executable, PySide6 GUI libraries, PyTorch runtime, model assets, and configs.
@@ -17,7 +16,10 @@ block_cipher = None
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 # Check if console window should be kept for debugging
-console_mode = os.environ.get("TRAFFIC_ANNOTATOR_CONSOLE", "0").lower() in ("1", "true", "yes")
+console_mode = (
+    os.environ.get("VISIONLAB_CONSOLE", os.environ.get("TRAFFIC_ANNOTATOR_CONSOLE", "0")).lower()
+    in ("1", "true", "yes")
+)
 
 # Base datas: configuration files and UI assets
 datas = [
@@ -154,7 +156,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="TrafficAnnotator",
+    name="VisionLab",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -175,5 +177,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="TrafficAnnotator",
+    name="VisionLab",
 )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -77,49 +78,55 @@ class AutoLabelEngine:
             self._yolo_detectors[yolo_model_name] = yolo_detector
         self._yolo_model_name = yolo_model_name
         self._device = device
+        self._model_lock = threading.Lock()
 
     def _get_grounding_detector(self) -> Any:
-        if self._grounding_detector is None:
-            from pipeline_bridge import GroundingDinoDetector
+        with self._model_lock:
+            if self._grounding_detector is None:
+                from pipeline_bridge import GroundingDinoDetector
 
-            self._grounding_detector = GroundingDinoDetector(device=self._device)
-        return self._grounding_detector
+                self._grounding_detector = GroundingDinoDetector(device=self._device)
+            return self._grounding_detector
 
     def _get_sam_segmenter(self) -> Any:
-        if self._sam_segmenter is None:
-            from pipeline_bridge import SamSegmenter
+        with self._model_lock:
+            if self._sam_segmenter is None:
+                from pipeline_bridge import SamSegmenter
 
-            self._sam_segmenter = SamSegmenter(device=self._device)
-        return self._sam_segmenter
+                self._sam_segmenter = SamSegmenter(device=self._device)
+            return self._sam_segmenter
 
     def _get_vlm_helper(self) -> Any:
-        if self._vlm_helper is None:
-            from src.vlm_helper import Florence2VLM
+        with self._model_lock:
+            if self._vlm_helper is None:
+                from src.vlm_helper import Florence2VLM
 
-            self._vlm_helper = Florence2VLM(device=self._device)
-        return self._vlm_helper
+                self._vlm_helper = Florence2VLM(device=self._device)
+            return self._vlm_helper
 
     def _get_polygon_processor(self) -> Any:
-        if self._polygon_processor is None:
-            from pipeline_bridge import MaskToPolygonProcessor
+        with self._model_lock:
+            if self._polygon_processor is None:
+                from pipeline_bridge import MaskToPolygonProcessor
 
-            self._polygon_processor = MaskToPolygonProcessor()
-        return self._polygon_processor
+                self._polygon_processor = MaskToPolygonProcessor()
+            return self._polygon_processor
 
     def _get_yolo_detector(self, model_name: str | None = None) -> Any:
         target_name = model_name or self._yolo_model_name
-        if target_name in self._yolo_detectors:
-            return self._yolo_detectors[target_name]
+        with self._model_lock:
+            if target_name in self._yolo_detectors:
+                return self._yolo_detectors[target_name]
 
-        if self._yolo_detector is not None and (model_name is None or model_name == self._yolo_model_name):
-            self._yolo_detectors[target_name] = self._yolo_detector
-            return self._yolo_detector
+            if self._yolo_detector is not None and (model_name is None or model_name == self._yolo_model_name):
+                self._yolo_detectors[target_name] = self._yolo_detector
+                return self._yolo_detector
 
-        from ultralytics import YOLO
+            from ultralytics import YOLO
 
-        detector = YOLO(target_name)
-        self._yolo_detectors[target_name] = detector
-        return detector
+            detector = YOLO(target_name)
+            self._yolo_detectors[target_name] = detector
+            return detector
 
     @property
     def yolo_model_name(self) -> str:
@@ -135,8 +142,8 @@ class AutoLabelEngine:
         classes: list[AutoLabelClass],
         scores: list[float],
         iou_threshold: float = 0.45,
-        same_class_only: bool = False,
-        containment_threshold: float = 0.70,
+        same_class_only: bool = True,
+        containment_threshold: float = 0.90,
     ) -> tuple[list[list[float]], list[AutoLabelClass], list[float]]:
         """Suppress duplicate overlapping bounding boxes using IoU Non-Maximum Suppression (anti-duplication).
 
@@ -241,6 +248,20 @@ class AutoLabelEngine:
             if cls_obj.name.lower() in clean or clean in cls_obj.name.lower():
                 return cls_obj
 
+        # Synonym mappings for traffic / vehicle classes
+        synonym_map = {
+            "car": {"car", "mobil", "sedan", "suv", "vehicle", "automobile"},
+            "motorcycle": {"motorcycle", "motor", "bike", "motorbike", "scooter", "moped"},
+            "bus": {"bus", "bis", "minibus", "angkot", "transjakarta"},
+            "truck": {"truck", "truk", "pickup", "lorry"},
+            "person": {"person", "pedestrian", "orang", "pejalan_kaki"},
+        }
+        for target_key, synonyms in synonym_map.items():
+            if clean in synonyms or any(s in clean for s in synonyms):
+                for cls_obj in classes:
+                    if cls_obj.name.lower() == target_key or target_key in cls_obj.name.lower():
+                        return cls_obj
+
         return None
 
     def run_preview(
@@ -280,10 +301,21 @@ class AutoLabelEngine:
         run_yolo = False
         run_florence2 = False
 
-        if config.mode.is_ensemble:
+        active_detector_count = (
+            (1 if config.enable_grounding_dino else 0)
+            + (1 if config.enable_yolo else 0)
+            + (1 if config.enable_florence2 else 0)
+        )
+        if config.mode.is_ensemble or active_detector_count > 1 or (config.enable_yolo and len(config.yolo_models or []) > 1):
             run_dino = config.enable_grounding_dino
             run_yolo = config.enable_yolo
             run_florence2 = config.enable_florence2
+        elif config.enable_yolo and not config.enable_grounding_dino and not config.enable_florence2:
+            run_yolo = True
+        elif config.enable_florence2 and not config.enable_grounding_dino and not config.enable_yolo:
+            run_florence2 = True
+        elif config.enable_grounding_dino and not config.enable_yolo and not config.enable_florence2:
+            run_dino = True
         elif config.mode in (
             AutoLabelPipelineMode.DINO_SAM2_MASKS,
             AutoLabelPipelineMode.DINO_BOXES,
@@ -300,29 +332,39 @@ class AutoLabelEngine:
         ):
             run_florence2 = True
 
-        prompt_str, token_map = self.build_prompt_mapping(active_classes)
+        _, token_map = self.build_prompt_mapping(active_classes)
 
         # 1. Grounding DINO
         if run_dino:
-            detector = self._get_grounding_detector()
-            raw_detections = detector.detect(
-                image=image,
-                image_filename=path.name,
-                classes=[c.effective_prompt for c in active_classes],
-                confidence_threshold=config.confidence_threshold,
-                text_threshold=config.text_threshold,
-            )
+            try:
+                detector = self._get_grounding_detector()
+                raw_detections = detector.detect(
+                    image=image,
+                    image_filename=path.name,
+                    classes=[c.effective_prompt for c in active_classes],
+                    confidence_threshold=config.confidence_threshold,
+                    text_threshold=config.text_threshold,
+                )
 
-            for raw_label, _class_id, score, box in raw_detections:
-                matched_cls = self.match_detected_label(raw_label, active_classes, token_map)
-                if matched_cls is None:
-                    matched_cls = active_classes[0]
+                for raw_label, _class_id, score, box in raw_detections:
+                    matched_cls = self.match_detected_label(raw_label, active_classes, token_map)
+                    if matched_cls is None:
+                        matched_cls = active_classes[0]
 
-                candidate_boxes_px.append([box.xmin, box.ymin, box.xmax, box.ymax])
-                candidate_classes.append(matched_cls)
-                candidate_scores.append(score)
+                    candidate_boxes_px.append([box.xmin, box.ymin, box.xmax, box.ymax])
+                    candidate_classes.append(matched_cls)
+                    candidate_scores.append(score)
+            except Exception as err:
+                LOGGER.warning("Grounding DINO detector error: %s", err)
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
 
         # 2. YOLO (Support 1 to 3 models simultaneously)
+        active_models: list[str] = []
         if run_yolo:
             active_models = (
                 config.yolo_models
@@ -343,21 +385,23 @@ class AutoLabelEngine:
             for model_name in active_models:
                 try:
                     yolo = self._get_yolo_detector(model_name)
+                    input_source = str(path) if path else image
                     try:
                         yolo_results = yolo(
-                            image,
+                            input_source,
                             conf=config.confidence_threshold,
                             device=yolo_device,
                             verbose=False,
                         )
                     except Exception as err:
                         LOGGER.warning(
-                            "YOLO (%s) inference on PIL Image failed, trying filepath: %s",
+                            "YOLO (%s) inference failed on %s: %s, retrying with PIL image",
                             model_name,
+                            type(input_source).__name__,
                             err,
                         )
                         yolo_results = yolo(
-                            str(path),
+                            image,
                             conf=config.confidence_threshold,
                             device=yolo_device,
                             verbose=False,
@@ -431,14 +475,62 @@ class AutoLabelEngine:
                     candidate_classes.append(matched_cls)
                     candidate_scores.append(score)
 
-        # Apply Anti-Duplication Suppression (NMS / Fusion across all models)
-        if candidate_boxes_px:
+        total_model_count = (
+            (1 if run_dino else 0)
+            + (len(active_models) if run_yolo else 0)
+            + (1 if run_florence2 else 0)
+        )
+
+        # Apply Anti-Duplication Suppression (NMS / Fusion across multiple models only)
+        if candidate_boxes_px and total_model_count > 1:
             candidate_boxes_px, candidate_classes, candidate_scores = self.suppress_duplicate_boxes(
                 candidate_boxes_px,
                 candidate_classes,
                 candidate_scores,
                 iou_threshold=config.box_iou_threshold,
+                same_class_only=True,
             )
+
+        # 4. Florence-2 VLM Semantic Verification & Hallucination Filter
+        if config.enable_florence2_verifier and candidate_boxes_px:
+            try:
+                vlm = self._get_vlm_helper()
+                from src.vlm_helper import crop_image, verify_crop_classes_batch
+
+                crops = [
+                    crop_image(image, b, normalized=False)
+                    for b in candidate_boxes_px
+                ]
+                labels = [c.name for c in candidate_classes]
+                matches = verify_crop_classes_batch(crops, labels, vlm=vlm)
+
+                verified_boxes: list[list[float]] = []
+                verified_classes: list[AutoLabelClass] = []
+                verified_scores: list[float] = []
+
+                for b, c, s, is_match in zip(
+                    candidate_boxes_px, candidate_classes, candidate_scores, matches, strict=False
+                ):
+                    if is_match:
+                        verified_boxes.append(b)
+                        verified_classes.append(c)
+                        verified_scores.append(s)
+                    else:
+                        LOGGER.info(
+                            "Florence-2 VLM verifier rejected false positive '%s' at %s",
+                            c.name,
+                            b,
+                        )
+
+                rejected_count = len(candidate_boxes_px) - len(verified_boxes)
+                if rejected_count > 0:
+                    LOGGER.info("Florence-2 VLM verifier pruned %d false-positive candidate box(es)", rejected_count)
+
+                candidate_boxes_px = verified_boxes
+                candidate_classes = verified_classes
+                candidate_scores = verified_scores
+            except Exception as err:
+                LOGGER.warning("Florence-2 VLM verification failed: %s", err)
 
         # Early exit if no candidates survived
         if not candidate_boxes_px:
@@ -455,7 +547,7 @@ class AutoLabelEngine:
         # ------------------------------------------------------------------
         final_detections: list[AutoLabelDetection] = []
 
-        if config.mode.produces_masks:
+        if config.enable_sam2_masks and config.mode.produces_masks:
             from pipeline_bridge import BoxPixel
 
             sam = self._get_sam_segmenter()
@@ -506,10 +598,10 @@ class AutoLabelEngine:
                         continue
                     refined_box = BoundingBox(xmin_n, ymin_n, xmax_n, ymax_n)
 
-                # IoU and containment deduplication check against already accepted detections
-                if any(
-                    compute_box_iou(det.box, refined_box) >= config.box_iou_threshold
-                    or det.box.intersection_over_min(refined_box) >= 0.70
+                # IoU deduplication check against already accepted detections of the same class (multi-model fusion only)
+                if total_model_count > 1 and any(
+                    det.class_name.lower() == cls_item.name.lower()
+                    and compute_box_iou(det.box, refined_box) >= config.box_iou_threshold
                     for det in final_detections
                 ):
                     continue
@@ -540,10 +632,10 @@ class AutoLabelEngine:
 
                 box_obj = BoundingBox(xmin_n, ymin_n, xmax_n, ymax_n)
 
-                # IoU and containment deduplication check against already accepted detections
-                if any(
-                    compute_box_iou(det.box, box_obj) >= config.box_iou_threshold
-                    or det.box.intersection_over_min(box_obj) >= 0.70
+                # IoU deduplication check against already accepted detections of the same class (multi-model fusion only)
+                if total_model_count > 1 and any(
+                    det.class_name.lower() == cls_item.name.lower()
+                    and compute_box_iou(det.box, box_obj) >= config.box_iou_threshold
                     for det in final_detections
                 ):
                     continue
@@ -586,8 +678,7 @@ class AutoLabelEngine:
         ann_source = source or AnnotationSource.SAM2
 
         for det in result.detections:
-            if det.class_name not in TARGET_CLASSES:
-                # If custom class not in strict TARGET_CLASSES, skip domain validation error
+            if not det.class_name or not str(det.class_name).strip():
                 continue
             annotations.append(
                 Annotation(

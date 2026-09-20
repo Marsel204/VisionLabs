@@ -9,7 +9,6 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 from threading import Event
-from typing import Any
 
 from PySide6.QtCore import QEvent, QObject, QRunnable, QSize, Qt, QThreadPool, Signal
 from PySide6.QtGui import (
@@ -19,7 +18,6 @@ from PySide6.QtGui import (
     QColor,
     QIcon,
     QImage,
-    QImageReader,
     QPainter,
     QPixmap,
 )
@@ -186,7 +184,6 @@ class _DatasetAnnotationTask(QRunnable):
         self._prompts = prompt_variants(prompt)
         self._confidence = confidence
         self._iou_threshold = iou_threshold
-        self._containment_threshold = containment_threshold
         self._use_yolo = use_yolo
         self._tile_size = tile_size
         self._tile_overlap = tile_overlap
@@ -555,7 +552,7 @@ class MainWindow(QMainWindow):
         active_learning_config: ActiveLearningConfig | None = None,
     ) -> None:
         super().__init__()
-        self.setWindowTitle("Traffic Annotator")
+        self.setWindowTitle("VisionLab")
         self.resize(1440, 900)
         self._build_central_view()
         QApplication.instance().installEventFilter(self)
@@ -571,7 +568,7 @@ class MainWindow(QMainWindow):
         self._vlm_model_id = "microsoft/Florence-2-base"
         self._vlm_filter_enabled = True
         self._confidence_threshold = 0.25
-        self._grounding_prompt = "motorcycle. motorbike. scooter. car. bus. truck."
+        self._grounding_prompt = "object. visual entity."
         self._grounding_detections: list[ModelDetection] = []
         self._yolo_detections: list[ModelDetection] = []
         self._fusion_result: FusionResult | None = None
@@ -763,7 +760,7 @@ class MainWindow(QMainWindow):
             "truck": "🚚",
         }
 
-        for idx, name in enumerate(("car", "motorcycle", "bus", "truck"), start=1):
+        for name in ("car", "motorcycle", "bus", "truck"):
             color = AnnotationCanvas.CLASS_COLORS.get(name, "#29b6f6")
             ico = class_icons.get(name, "●")
             item = QTreeWidgetItem(self._class_list, [f"{ico}  {name.capitalize():<12}"])
@@ -1030,56 +1027,12 @@ class MainWindow(QMainWindow):
         self._setup_properties_panel(
             draw_tool=draw_tool,
             pan_tool=pan_tool,
-            auto_label_workspace=auto_label_workspace,
-            fit_view=fit_view,
-            zoom_in=zoom_in,
-            zoom_out=zoom_out,
-            zoom_actual=zoom_actual,
-            refine_sam2=refine_sam2,
-            fuse=fuse,
-            cleanup=cleanup,
-            cleanup_dataset=cleanup_dataset,
-            toggle_occluded=toggle_occluded,
-            toggle_truncated=toggle_truncated,
-            fusion_colors=fusion_colors,
-            active_learning=active_learning,
-            crop_start=crop_start,
-            crop_previous=crop_previous,
-            crop_next=crop_next,
-            crop_commit=crop_commit,
-            crop_cancel=crop_cancel,
-            import_folder=import_folder,
-            import_coco=import_coco,
-            save=save,
-            export_dataset=export_dataset,
         )
 
     def _setup_properties_panel(
         self,
         draw_tool: QAction,
         pan_tool: QAction,
-        auto_label_workspace: QAction,
-        fit_view: QAction,
-        zoom_in: QAction,
-        zoom_out: QAction,
-        zoom_actual: QAction,
-        refine_sam2: QAction,
-        fuse: QAction,
-        cleanup: QAction,
-        cleanup_dataset: QAction,
-        toggle_occluded: QAction,
-        toggle_truncated: QAction,
-        fusion_colors: QAction,
-        active_learning: QAction,
-        crop_start: QAction,
-        crop_previous: QAction,
-        crop_next: QAction,
-        crop_commit: QAction,
-        crop_cancel: QAction,
-        import_folder: QAction,
-        import_coco: QAction,
-        save: QAction,
-        export_dataset: QAction,
     ) -> None:
         """Construct a clean, modern VisionForge AI (Option 4) Properties Inspector."""
         # 1. Annotation Info Card
@@ -1339,34 +1292,6 @@ class MainWindow(QMainWindow):
             self._notes_edit.setEnabled(True)
 
 
-
-    def _add_property_action(self, group: str, action: QAction) -> None:
-        """Add an action to its grouped tool section in the Properties dock."""
-        if hasattr(self, "_property_group_layouts") and group in self._property_group_layouts:
-            button = QToolButton(self)
-            button.setDefaultAction(action)
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-            button.setSizePolicy(
-                QSizePolicy.Policy.Expanding,
-                QSizePolicy.Policy.Fixed,
-            )
-            self._property_group_layouts[group].addWidget(button)
-
-    def _set_confidence_threshold(self, value: float) -> None:
-        self._confidence_threshold = value
-
-    def _set_enabled_classes(self, value: str) -> None:
-        supported = {"motorcycle", "car", "bus", "truck"}
-        selected = {
-            item.strip().lower()
-            for item in value.split(",")
-            if item.strip().lower() in supported
-        }
-        if selected:
-            self._enabled_classes = selected
-
-    def _set_grounding_prompt(self, value: str) -> None:
-        self._grounding_prompt = value
 
     def _update_fusion_filter(self) -> None:
         """Apply checked fusion status filters to the canvas."""
@@ -1662,7 +1587,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("A Crop Assist session is already active")
             return
         try:
-            self._crop_directory = Path(tempfile.mkdtemp(prefix="traffic-annotator-crops-"))
+            self._crop_directory = Path(tempfile.mkdtemp(prefix="visionlab-crops-"))
             self._crop_original_document = self._document
             self._crop_original_history = self._history
             self._crop_session = CropGenerator().generate(
@@ -2713,43 +2638,6 @@ class MainWindow(QMainWindow):
             dialog._update_yolo_button_ui()
         dialog.batch_completed.connect(self._on_auto_label_batch_completed)
         dialog.exec()
-
-    def _on_auto_label_preview_applied(self, result: Any) -> None:
-        """Apply previewed Auto Label detections directly to the active document."""
-        if self._document is None or self._history is None:
-            return
-        from app.services.annotation.domain import TARGET_CLASSES
-
-        added = 0
-        for det in result.detections:
-            if det.class_name not in TARGET_CLASSES:
-                continue
-            if any(
-                existing.class_name == det.class_name
-                and self._box_iou(existing.box, det.box) >= 0.5
-                for existing in self._document.annotations
-            ):
-                continue
-            source = (
-                AnnotationSource.SAM2
-                if det.polygon_normalized
-                else AnnotationSource.GROUNDING_DINO
-            )
-            ann = Annotation(
-                class_name=det.class_name,
-                box=det.box,
-                confidence=det.confidence,
-                source=source,
-            )
-            self._document = self._history.execute(AddAnnotationCommand(ann))
-            added += 1
-
-        self.canvas.set_document(self._document)
-        self._remember_current_document()
-        self._refresh_image_browser_order(preserve_current=True)
-        self.statusBar().showMessage(
-            f"Auto Label applied {added} annotation(s) to {self._document.image_path.name}"
-        )
 
     def _on_auto_label_batch_completed(
         self, updated_documents: dict[Path, AnnotationDocument]

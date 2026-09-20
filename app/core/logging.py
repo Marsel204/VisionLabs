@@ -13,17 +13,19 @@ def configure_logging(log_root: Path, level: str = "INFO") -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
     if not any(
-        getattr(handler, "name", None) == "traffic-console" for handler in root_logger.handlers
+        getattr(handler, "name", None) in {"visionlab-console", "traffic-console"}
+        for handler in root_logger.handlers
     ):
         console = logging.StreamHandler()
-        console.name = "traffic-console"
+        console.name = "visionlab-console"
         console.setFormatter(formatter)
         root_logger.addHandler(console)
 
     if not any(
-        getattr(handler, "name", None) == "traffic-file" for handler in root_logger.handlers
+        getattr(handler, "name", None) in {"visionlab-file", "traffic-file"}
+        for handler in root_logger.handlers
     ):
-        file_handler = logging.FileHandler(log_root / "traffic-annotator.log", encoding="utf-8")
-        file_handler.name = "traffic-file"
+        file_handler = logging.FileHandler(log_root / "visionlab.log", encoding="utf-8")
+        file_handler.name = "visionlab-file"
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)

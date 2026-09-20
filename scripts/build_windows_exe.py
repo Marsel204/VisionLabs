@@ -16,7 +16,6 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DIST_DIR = ROOT_DIR / "dist"
-BUILD_DIR = ROOT_DIR / "build"
 SPEC_FILE = ROOT_DIR / "traffic_annotator.spec"
 
 
@@ -48,12 +47,12 @@ def run_build(clean: bool = True, console: bool = False) -> Path:
     print(f"[*] Running PyInstaller build: {' '.join(cmd)}")
     subprocess.check_call(cmd, cwd=str(ROOT_DIR), env=env)
 
-    target_dir = DIST_DIR / "TrafficAnnotator"
+    target_dir = DIST_DIR / "VisionLab"
     if not target_dir.is_dir():
         raise RuntimeError(f"Build failed: output directory {target_dir} was not created.")
 
     # Determine executable name
-    exe_name = "TrafficAnnotator.exe" if sys.platform == "win32" else "TrafficAnnotator"
+    exe_name = "VisionLab.exe" if sys.platform == "win32" else "VisionLab"
     exe_path = target_dir / exe_name
     if not exe_path.exists():
         found = list(target_dir.iterdir())[:5]
@@ -63,26 +62,26 @@ def run_build(clean: bool = True, console: bool = False) -> Path:
         print(f"[+] Executable created successfully: {exe_path}")
 
     # Create a quick-launch batch file inside the distribution folder
-    launch_bat = target_dir / "Launch_TrafficAnnotator.bat"
+    launch_bat = target_dir / "Launch_VisionLab.bat"
     launch_bat.write_text(
         "@echo off\r\n"
         "cd /d \"%~dp0\"\r\n"
-        "start \"\" \"TrafficAnnotator.exe\" %*\r\n",
+        "start \"\" \"VisionLab.exe\" %*\r\n",
         encoding="utf-8",
     )
 
     # Create a portable README inside the distribution folder
     readme_txt = target_dir / "README.txt"
     readme_txt.write_text(
-        "Traffic Annotator - Windows Standalone Distribution\r\n"
-        "====================================================\r\n\r\n"
+        "VisionLab - Windows Standalone Distribution\r\n"
+        "===========================================\r\n\r\n"
         "To start the application:\r\n"
-        "  - Double-click 'TrafficAnnotator.exe' or 'Launch_TrafficAnnotator.bat'.\r\n\r\n"
+        "  - Double-click 'VisionLab.exe' or 'Launch_VisionLab.bat'.\r\n\r\n"
         "Features:\r\n"
         "  - Fully self-contained (no Python installation required).\r\n"
         "  - CUDA acceleration enabled automatically if NVIDIA GPU and drivers are present.\r\n"
-        "  - Datasets are stored in '%USERPROFILE%\\TrafficAnnotator\\datasets'.\r\n"
-        "  - Cache and logs are stored in '%LOCALAPPDATA%\\TrafficAnnotator'.\r\n",
+        "  - Datasets are stored in '%USERPROFILE%\\VisionLab\\datasets'.\r\n"
+        "  - Cache and logs are stored in '%LOCALAPPDATA%\\VisionLab'.\r\n",
         encoding="utf-8",
     )
 
@@ -91,7 +90,7 @@ def run_build(clean: bool = True, console: bool = False) -> Path:
 
 def create_zip(target_dir: Path) -> Path:
     """Package the standalone directory into a zip archive for release."""
-    zip_path = DIST_DIR / "TrafficAnnotator-windows-x64.zip"
+    zip_path = DIST_DIR / "VisionLab-windows-x64.zip"
     print(f"[*] Packaging {target_dir} into {zip_path}...")
     if zip_path.exists():
         zip_path.unlink()
