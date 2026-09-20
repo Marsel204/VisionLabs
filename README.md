@@ -2,6 +2,18 @@
 
 Universal AI-assisted visual annotation software and computer vision studio.
 
+## Quick Start (One-Click)
+
+Run the unified cross-platform launcher (automatically bootstraps `uv`, `.venv`, and dependencies on first run):
+- **Windows**: Double-click `run.bat` (or run `run.bat` in CMD)
+- **Linux**: Double-click `run.bat` / `run.sh` (or run `./run.sh` / `./run.bat` in terminal)
+
+To force the standalone PySide6 Qt GUI instead of the modern Desktop Studio, pass `--qt`:
+```bash
+./run.sh --qt     # Linux
+run.bat --qt      # Windows
+```
+
 ## Development
 
 ```bash
