@@ -103,7 +103,7 @@ class DenseMotorcycleInference:
             names = self._yolo_model.names
             for box in result.boxes:
                 class_name = str(names[int(box.cls[0])])
-                if class_name not in TARGET_CLASSES:
+                if self.config.enabled_classes and class_name not in self.config.enabled_classes:
                     continue
                 left, top, right, bottom = box.xyxy[0].tolist()
                 annotation = self._annotation(

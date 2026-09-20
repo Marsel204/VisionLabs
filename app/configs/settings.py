@@ -20,25 +20,27 @@ class ConfigurationError(ValueError):
 
 
 def _default_dataset_root() -> Path:
-    return Path.home() / "TrafficAnnotator" / "datasets"
+    primary = Path.home() / "VisionLab" / "datasets"
+    legacy = Path.home() / "TrafficAnnotator" / "datasets"
+    return legacy if legacy.is_dir() and not primary.is_dir() else primary
 
 
 def _default_cache_root() -> Path:
     if sys.platform == "win32":
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
-            return Path(local_app_data) / "TrafficAnnotator" / "cache"
-        return Path.home() / "AppData" / "Local" / "TrafficAnnotator" / "cache"
-    return Path.home() / ".cache" / "traffic-annotator"
+            return Path(local_app_data) / "VisionLab" / "cache"
+        return Path.home() / "AppData" / "Local" / "VisionLab" / "cache"
+    return Path.home() / ".cache" / "visionlab"
 
 
 def _default_log_root() -> Path:
     if sys.platform == "win32":
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
-            return Path(local_app_data) / "TrafficAnnotator" / "logs"
-        return Path.home() / "AppData" / "Local" / "TrafficAnnotator" / "logs"
-    return Path.home() / ".local" / "state" / "traffic-annotator" / "logs"
+            return Path(local_app_data) / "VisionLab" / "logs"
+        return Path.home() / "AppData" / "Local" / "VisionLab" / "logs"
+    return Path.home() / ".local" / "state" / "visionlab" / "logs"
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,11 +182,8 @@ class AppSettings:
 
 def load_settings(config_path: Path | None = None) -> AppSettings:
     """Load explicit configuration or construct validated defaults."""
-    path_value = config_path or (
-        Path(os.environ["TRAFFIC_ANNOTATOR_CONFIG"])
-        if os.getenv("TRAFFIC_ANNOTATOR_CONFIG")
-        else None
-    )
+    env_config = os.getenv("VISIONLAB_CONFIG") or os.getenv("TRAFFIC_ANNOTATOR_CONFIG")
+    path_value = config_path or (Path(env_config) if env_config else None)
     settings = AppSettings.from_json(path_value) if path_value else AppSettings()
     settings.validate()
     return settings

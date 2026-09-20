@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import type { ImageMeta, SystemHealth } from '../../types';
+import { getClassColor } from '../../types';
 import {
   autoRefinePrompt,
   runAutoLabelPreview,
@@ -60,36 +61,43 @@ export const AutoLabelModal: React.FC<Props> = ({
   const [modelActionMessage, setModelActionMessage] = useState<string | null>(null);
 
   // Semantic class prompts
-  const [classes, setClasses] = useState<SemanticClass[]>([
-    {
-      id: '01',
-      name: 'Car',
-      prompt: 'passenger sedan, hatchback, tesla, modern coupe',
-      color: '#06b6d4',
-      enabled: true,
-    },
-    {
-      id: '02',
-      name: 'Motorcycle',
-      prompt: 'motorcycle with rider, motorbike, moped, scooter',
-      color: '#f59e0b',
-      enabled: true,
-    },
-    {
-      id: '03',
-      name: 'Bus',
-      prompt: 'city transit bus, double decker, shuttle, transit',
-      color: '#10b981',
-      enabled: true,
-    },
-    {
-      id: '04',
-      name: 'Truck',
-      prompt: 'delivery truck, heavy freight semi-trailer, box truck',
-      color: '#a855f7',
-      enabled: true,
-    },
-  ]);
+  const [classes, setClasses] = useState<SemanticClass[]>(() => {
+    if (health?.classes && health.classes.length > 0) {
+      return health.classes.map((cls, idx) => ({
+        id: String(idx + 1).padStart(2, '0'),
+        name: cls.charAt(0).toUpperCase() + cls.slice(1),
+        prompt: `${cls}, visual entity`,
+        color: getClassColor(cls).stroke,
+        enabled: true,
+      }));
+    }
+    return [
+      {
+        id: '01',
+        name: 'Object',
+        prompt: 'object, visual entity, item',
+        color: '#06b6d4',
+        enabled: true,
+      },
+    ];
+  });
+
+  useEffect(() => {
+    if (health?.classes && health.classes.length > 0) {
+      setClasses((prev) => {
+        if (prev.length === 1 && prev[0].name === 'Object') {
+          return health.classes.map((cls, idx) => ({
+            id: String(idx + 1).padStart(2, '0'),
+            name: cls.charAt(0).toUpperCase() + cls.slice(1),
+            prompt: `${cls}, visual entity`,
+            color: getClassColor(cls).stroke,
+            enabled: true,
+          }));
+        }
+        return prev;
+      });
+    }
+  }, [health?.classes]);
 
   // Hyperparameters
   const [confidence, setConfidence] = useState<number>(0.25);
@@ -473,7 +481,7 @@ export const AutoLabelModal: React.FC<Props> = ({
                 Auto-Label AI Configuration &amp; Batch Pipeline
               </h1>
               <span className="px-2 py-0.5 rounded bg-[#222a3d] border border-[#3d494c]/60 text-[10px] text-[#4cd7f6] font-mono font-medium">
-                VisionForge AI • v3.2-prod
+                VisionLab AI • Universal Annotation
               </span>
             </div>
           </div>
@@ -1385,7 +1393,7 @@ export const AutoLabelModal: React.FC<Props> = ({
                 <div className="text-xs font-semibold text-[#dae2fd] flex items-center space-x-2">
                   <span>Target: {(totalImages > 1 ? totalImages : 1420).toLocaleString()} unannotated frames</span>
                   <span className="text-[#869397]">•</span>
-                  <span className="text-[#bcc9cd]">Autonomous Driving Cam-Front-04</span>
+                  <span className="text-[#bcc9cd]">Active Dataset</span>
                 </div>
                 <div className="text-[10px] font-mono text-[#869397] flex items-center space-x-2">
                   <span>Est. Compute: 4.8 GPU-hrs</span>

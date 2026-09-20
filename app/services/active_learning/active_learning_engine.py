@@ -216,6 +216,7 @@ def _collections(features: DifficultyFeatures, score: float) -> frozenset[str]:
     if score >= 60.0:
         collections.add("HardExamples")
     if features.object_count >= 50:
+        collections.add("CrowdedScene")
         collections.add("CrowdedTraffic")
     if features.occlusion >= 0.50:
         collections.add("Occlusion")

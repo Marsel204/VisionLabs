@@ -37,7 +37,6 @@ from app.services.annotation.domain import (
     AnnotationSource,
     BoundingBox as DomainBoundingBox,
     ReviewStatus,
-    TARGET_CLASSES,
 )
 from app.services.auto_label.engine import AutoLabelEngine
 from app.services.auto_label.models import (
@@ -57,9 +56,9 @@ logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger("api_server")
 
 app = FastAPI(
-    title="VisionForge AI Annotation API",
+    title="VisionLab AI Annotation API",
     version="2.0.0",
-    description="Backend AI API for modern desktop annotation studio with SQLite database & active learning",
+    description="Backend AI API for VisionLab universal desktop annotation studio with SQLite database & active learning",
 )
 
 # Enable CORS for Tauri desktop and web dev server
@@ -521,7 +520,7 @@ def health():
         "database_connected": True,
         "database_stats": db_stats,
         "gpu": gpu_info,
-        "classes": CLASS_NAMES,
+        "classes": get_dataset_class_names(str(ACTIVE_DATASET_DIR)),
         "models": {
             "yolo11": YOLO_MODEL is not None or (PROJECT_ROOT / "yolo11n.pt").is_file(),
             "sam2": True,
@@ -1310,36 +1309,40 @@ def get_autolabel_status():
 
 @app.post("/api/prompt/auto-refine")
 def auto_refine_prompt(req: PromptRefineRequest):
-    """Generate optimized Grounding DINO text prompt for a traffic class."""
+    """Generate optimized Grounding DINO text prompt for any object class."""
     c = req.class_name.lower().strip()
 
     PROMPT_LIBRARY = {
-        "motorcycle": "motorcycle, scooter, moped, two-wheeler, motorbike with rider wearing helmet in traffic, Gojek Grab delivery rider",
-        "car": "passenger car, sedan, hatchback, SUV, taxi, private vehicle on city road",
-        "minivan": "blue Angkot minivan, orange minibus, Daihatsu Gran Max, Suzuki Carry public minivan in Indonesian traffic",
-        "bus": "large transit bus, TransJakarta city bus, intercity coach, Metromini bus",
-        "truck": "cargo truck, delivery truck, box truck, flatbed truck on highway",
-        "person": "pedestrian, commuter walking on street, roadside vendor, person crossing street",
+        "motorcycle": "motorcycle, motorbike, scooter, moped, two-wheeler",
+        "car": "car, sedan, hatchback, automobile, vehicle",
+        "minivan": "minivan, van, passenger van",
+        "bus": "bus, transit bus, coach",
+        "truck": "truck, cargo truck, delivery truck, box truck",
+        "person": "person, pedestrian, human, individual",
+        "object": "object, visual entity, item of interest",
     }
 
-    refined = PROMPT_LIBRARY.get(c, f"{c}, vehicle on urban street")
-
-    try:
-        from src.vlm_helper import CLASS_SYNONYMS
-        if c in CLASS_SYNONYMS:
-            synonyms = ", ".join(list(CLASS_SYNONYMS[c])[:4])
-            refined = f"{c}, {synonyms}, on Indonesian road"
-    except Exception:
-        pass
+    if c in PROMPT_LIBRARY:
+        refined = PROMPT_LIBRARY[c]
+    else:
+        try:
+            from src.vlm_helper import CLASS_SYNONYMS
+            if c in CLASS_SYNONYMS:
+                synonyms = ", ".join(list(CLASS_SYNONYMS[c])[:4])
+                refined = f"{c}, {synonyms}"
+            else:
+                refined = f"{c}, visual object, clear photograph of {c}"
+        except Exception:
+            refined = f"{c}, visual object, clear photograph of {c}"
 
     return {
         "class_name": req.class_name,
         "original_prompt": req.current_prompt,
         "refined_prompt": refined,
         "suggestions": [
-            f"{c} during daytime",
-            f"dense {c} in traffic congestion",
-            f"occluded {c} behind other vehicles",
+            f"isolated {c}",
+            f"clear close-up of {c}",
+            f"group of {c}s in natural setting",
         ],
     }
 
@@ -1516,7 +1519,7 @@ def get_dataset_stats():
     stats = index_db.stats()
 
     # Tally class distributions from label files
-    class_counts: Dict[str, int] = {c: 0 for c in CLASS_NAMES}
+    class_counts: Dict[str, int] = {c: 0 for c in get_dataset_class_names(str(ACTIVE_DATASET_DIR))}
     labels_dir = ACTIVE_DATASET_DIR / "labels"
     if labels_dir.is_dir():
         for f in labels_dir.glob("*.json"):
@@ -1525,8 +1528,8 @@ def get_dataset_stats():
                     data = json.load(jf)
                     for b in data.get("boxes", []):
                         cn = b.get("class_name")
-                        if cn in class_counts:
-                            class_counts[cn] += 1
+                        if cn:
+                            class_counts[cn] = class_counts.get(cn, 0) + 1
             except Exception:
                 pass
 
@@ -1564,15 +1567,7 @@ def export_dataset(req: ExportRequest):
                 with open(ann_file, "r") as f:
                     data = json.load(f)
                     for b in data.get("boxes", []):
-                        cls_name = b.get("class_name", "car")
-                        # Map minivan to car for strict 4-class TARGET_CLASSES compliance
-                        if cls_name not in TARGET_CLASSES:
-                            if "van" in cls_name or "mini" in cls_name:
-                                cls_name = "car"
-                            elif cls_name in {"person", "pedestrian"}:
-                                continue
-                            else:
-                                cls_name = "car"
+                        cls_name = str(b.get("class_name", "object")).strip() or "object"
 
                         nl = max(0.0, min(1.0, float(b.get("norm_left", 0.0))))
                         nt = max(0.0, min(1.0, float(b.get("norm_top", 0.0))))

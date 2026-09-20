@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "vision-studio",
+  "productName": "VisionLab",
   "version": "1.0.0",
-  "identifier": "com.visionforge.annotator",
+  "identifier": "com.visionlabs.visionlab",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "VisionForge AI - Indonesian Traffic Annotation Studio",
+        "title": "VisionLab - AI Annotation Studio",
         "width": 1600,
         "height": 1000,
         "minWidth": 1280,

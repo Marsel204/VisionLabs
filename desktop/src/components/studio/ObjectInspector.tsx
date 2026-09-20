@@ -1,29 +1,26 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { BoundingBox } from '../../types';
-import { CLASS_COLORS } from '../../types';
+import { getClassColor } from '../../types';
 
 interface Props {
   selectedBox: BoundingBox | null;
+  availableClasses?: string[];
   onUpdateBox: (updated: BoundingBox) => void;
   onDeleteBox: (id: string) => void;
   onAcceptBox: (id: string) => void;
 }
 
-const AVAILABLE_CLASSES = [
-  { key: '1', value: 'motorcycle', label: 'Motorcycle', detail: 'Scooter / Bike' },
-  { key: '2', value: 'car', label: 'Car', detail: 'Sedan / SUV' },
-  { key: '3', value: 'bus', label: 'Bus', detail: 'City / Transit' },
-  { key: '4', value: 'truck', label: 'Truck', detail: 'Cargo / Lorry' },
-  { key: '5', value: 'minivan', label: 'Minivan', detail: 'Angkot / Van' },
-  { key: '6', value: 'person', label: 'Person', detail: 'Pedestrian' },
-];
+const DEFAULT_CLASSES = ['object', 'person', 'car', 'bus', 'truck', 'motorcycle'];
 
 export const ObjectInspector: React.FC<Props> = ({
   selectedBox,
+  availableClasses,
   onUpdateBox,
   onDeleteBox,
   onAcceptBox,
 }) => {
+  const [customClassName, setCustomClassName] = useState('');
+
   if (!selectedBox) {
     return (
       <aside className="w-[245px] flex-shrink-0 bg-[#0f1524]/85 backdrop-blur-2xl border-l border-[#2a3a48]/40 flex flex-col items-center justify-center p-4 text-center select-none z-20">
@@ -38,11 +35,13 @@ export const ObjectInspector: React.FC<Props> = ({
     );
   }
 
-  const colorConfig = CLASS_COLORS[selectedBox.class_name.toLowerCase()] || {
-    stroke: '#06b6d4',
-    bg: 'rgba(6, 182, 212, 0.15)',
-    text: '#06b6d4',
-  };
+  const colorConfig = getClassColor(selectedBox.class_name);
+
+  // Combine available classes with the active box class if not present
+  const baseClasses = availableClasses && availableClasses.length > 0 ? availableClasses : DEFAULT_CLASSES;
+  const classList = baseClasses.includes(selectedBox.class_name.toLowerCase())
+    ? baseClasses
+    : [selectedBox.class_name.toLowerCase(), ...baseClasses];
 
   return (
     <aside className="w-[245px] flex-shrink-0 bg-[#0f1524]/85 backdrop-blur-2xl border-l border-[#2a3a48]/40 flex flex-col z-20 shadow-2xl overflow-y-auto select-none">
@@ -113,19 +112,12 @@ export const ObjectInspector: React.FC<Props> = ({
             <select
               value={selectedBox.class_name.toLowerCase()}
               onChange={(e) => {
-                const targetCls = AVAILABLE_CLASSES.find((c) => c.value === e.target.value);
-                const classIds: Record<string, number> = {
-                  motorcycle: 0,
-                  car: 1,
-                  bus: 2,
-                  truck: 3,
-                  minivan: 4,
-                  person: 5,
-                };
+                const val = e.target.value;
+                const idx = classList.indexOf(val);
                 onUpdateBox({
                   ...selectedBox,
-                  class_name: e.target.value,
-                  class_id: classIds[e.target.value] ?? (targetCls ? parseInt(targetCls.key) - 1 : 1),
+                  class_name: val,
+                  class_id: idx >= 0 ? idx : 0,
                 });
               }}
               style={{
@@ -137,19 +129,60 @@ export const ObjectInspector: React.FC<Props> = ({
               }}
               className="w-full text-white text-xs font-medium pl-3 pr-8 py-2 rounded-md border border-[#334155] focus:outline-none focus:border-[#06b6d4] focus:ring-1 focus:ring-[#06b6d4] cursor-pointer shadow-sm"
             >
-              {AVAILABLE_CLASSES.map((c) => (
+              {classList.map((c, idx) => (
                 <option
-                  key={c.value}
-                  value={c.value}
+                  key={c}
+                  value={c}
                   style={{ backgroundColor: '#111827', color: '#ffffff' }}
                 >
-                  [{c.key}] {c.label} ({c.detail})
+                  [{idx + 1}] {c.charAt(0).toUpperCase() + c.slice(1)}
                 </option>
               ))}
             </select>
             <span className="material-symbols-outlined absolute right-2.5 top-1/2 -translate-y-1/2 text-[18px] text-[#94a3b8] pointer-events-none">
               expand_more
             </span>
+          </div>
+
+          {/* Custom Class Input */}
+          <div className="flex gap-1 pt-1">
+            <input
+              type="text"
+              placeholder="Custom class name..."
+              value={customClassName}
+              onChange={(e) => setCustomClassName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && customClassName.trim()) {
+                  const val = customClassName.trim().toLowerCase();
+                  const idx = classList.indexOf(val);
+                  onUpdateBox({
+                    ...selectedBox,
+                    class_name: val,
+                    class_id: idx >= 0 ? idx : classList.length,
+                  });
+                  setCustomClassName('');
+                }
+              }}
+              className="flex-1 bg-[#111827] text-white text-[11px] px-2 py-1 rounded border border-[#334155] focus:outline-none focus:border-[#06b6d4]"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (customClassName.trim()) {
+                  const val = customClassName.trim().toLowerCase();
+                  const idx = classList.indexOf(val);
+                  onUpdateBox({
+                    ...selectedBox,
+                    class_name: val,
+                    class_id: idx >= 0 ? idx : classList.length,
+                  });
+                  setCustomClassName('');
+                }
+              }}
+              className="px-2 py-1 bg-[#141c2e] hover:bg-[#1a2438] text-[11px] font-semibold text-[#06b6d4] rounded border border-[#334155] cursor-pointer"
+            >
+              Set
+            </button>
           </div>
         </div>
 
@@ -188,7 +221,7 @@ export const ObjectInspector: React.FC<Props> = ({
               <div className="text-xs font-semibold text-[#e0e8f0]">
                 {Math.round(selectedBox.confidence * 100)}% Confidence
               </div>
-              <div className="text-[10px] font-mono text-[#94a3b8]">YOLO11n-VisionForge</div>
+              <div className="text-[10px] font-mono text-[#94a3b8]">YOLO11</div>
             </div>
           </div>
           <span className="text-[10px] font-mono text-[#10b981] font-bold">+2.1%</span>

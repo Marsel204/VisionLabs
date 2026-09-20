@@ -1,12 +1,12 @@
-# Traffic Annotator
+# VisionLab
 
-Production-oriented desktop annotation software for Indonesian traffic imagery.
+Universal AI-assisted visual annotation software and computer vision studio.
 
 ## Development
 
 ```bash
 uv sync --extra dev
-uv run traffic-annotator
+uv run visionlab
 uv run pytest
 ```
 
@@ -58,10 +58,10 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -CpuOnly
 
 The installer:
 1. Verifies or installs `uv` and Python 3.12+.
-2. Copies files into `%LOCALAPPDATA%\TrafficAnnotator\app`.
+2. Copies files into `%LOCALAPPDATA%\VisionLab\app`.
 3. Synchronizes locked dependencies.
-4. Creates Desktop and Start Menu shortcuts (**Traffic Annotator**).
-5. Adds a `traffic-annotator` CLI launcher to `%USERPROFILE%\.local\bin`.
+4. Creates Desktop and Start Menu shortcuts (**VisionLab**).
+5. Adds a `visionlab` CLI launcher to `%USERPROFILE%\.local\bin`.
 
 To uninstall on Windows:
 ```powershell
@@ -88,15 +88,15 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1
 Or double-click `scripts\build_windows_exe.bat`.
 
 This produces:
-- `dist\TrafficAnnotator\TrafficAnnotator.exe`: Standalone portable folder.
-- `dist\TrafficAnnotator-windows-x64.zip`: Ready-to-distribute ZIP archive.
+- `dist\VisionLab\VisionLab.exe`: Standalone portable folder.
+- `dist\VisionLab-windows-x64.zip`: Ready-to-distribute ZIP archive.
 
 #### Creating a Windows Setup Wizard (.exe)
 If you have [Inno Setup](https://jrsoftware.org/isinfo.php) installed, compile `installer.iss`:
 ```cmd
 "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 ```
-This generates `dist\TrafficAnnotator-Setup.exe` with a complete installation wizard.
+This generates `dist\VisionLab-Setup.exe` with a complete installation wizard.
 
 The model adapters are intentionally isolated from the UI and will be implemented as separate features.
 

@@ -2383,7 +2383,7 @@ class AutoLabelDialog(QDialog):
                 new_anns = list(existing_anns)
 
                 for det in res.detections:
-                    if det.class_name not in TARGET_CLASSES:
+                    if not det.class_name or not str(det.class_name).strip():
                         continue
                     # Safely validate and clamp bounding box
                     try:

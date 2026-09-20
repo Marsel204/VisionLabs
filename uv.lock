@@ -1968,60 +1968,6 @@ wheels = [
 ]
 
 [[package]]
-name = "traffic-annotator"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "bitsandbytes" },
-    { name = "decord" },
-    { name = "einops" },
-    { name = "lmdb" },
-    { name = "numpy" },
-    { name = "opencv-python" },
-    { name = "peft" },
-    { name = "pyside6" },
-    { name = "pyyaml" },
-    { name = "timm" },
-    { name = "torch" },
-    { name = "transformers" },
-    { name = "ultralytics" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pyinstaller" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-    { name = "types-pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "bitsandbytes", specifier = ">=0.50.1" },
-    { name = "decord", specifier = ">=0.6.0" },
-    { name = "einops", specifier = ">=0.8.2" },
-    { name = "lmdb", specifier = ">=2.3.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11" },
-    { name = "numpy", specifier = ">=2.0" },
-    { name = "opencv-python", specifier = ">=4.10" },
-    { name = "peft", specifier = ">=0.20.0" },
-    { name = "pyinstaller", marker = "extra == 'dev'", specifier = ">=6.10" },
-    { name = "pyside6", specifier = ">=6.7" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
-    { name = "timm", specifier = ">=1.0.28" },
-    { name = "torch", specifier = ">=2.4" },
-    { name = "transformers", specifier = ">=4.45" },
-    { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
-    { name = "ultralytics", specifier = ">=8.3" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "transformers"
 version = "5.14.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2134,3 +2080,57 @@ sdist = { url = "https://files.pythonhosted.org/packages/53/0c/06f8b233b8fd13b9e
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl", hash = "sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897", size = 131087, upload-time = "2026-05-07T16:13:17.151Z" },
 ]
+
+[[package]]
+name = "visionlab"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "bitsandbytes" },
+    { name = "decord" },
+    { name = "einops" },
+    { name = "lmdb" },
+    { name = "numpy" },
+    { name = "opencv-python" },
+    { name = "peft" },
+    { name = "pyside6" },
+    { name = "pyyaml" },
+    { name = "timm" },
+    { name = "torch" },
+    { name = "transformers" },
+    { name = "ultralytics" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pyinstaller" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+    { name = "types-pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bitsandbytes", specifier = ">=0.50.1" },
+    { name = "decord", specifier = ">=0.6.0" },
+    { name = "einops", specifier = ">=0.8.2" },
+    { name = "lmdb", specifier = ">=2.3.0" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11" },
+    { name = "numpy", specifier = ">=2.0" },
+    { name = "opencv-python", specifier = ">=4.10" },
+    { name = "peft", specifier = ">=0.20.0" },
+    { name = "pyinstaller", marker = "extra == 'dev'", specifier = ">=6.10" },
+    { name = "pyside6", specifier = ">=6.7" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+    { name = "timm", specifier = ">=1.0.28" },
+    { name = "torch", specifier = ">=2.4" },
+    { name = "transformers", specifier = ">=4.45" },
+    { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "ultralytics", specifier = ">=8.3" },
+]
+provides-extras = ["dev"]

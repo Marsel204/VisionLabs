@@ -24,7 +24,7 @@ export const App: React.FC = () => {
   const [boxes, setBoxes] = useState<BoundingBox[]>([]);
   const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
   const [activeTool, setActiveTool] = useState<ToolType>('bbox');
-  const [activeClassName, setActiveClassName] = useState<string>('car');
+  const [activeClassName, setActiveClassName] = useState<string>('object');
 
   const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
   const [isAutoLabelOpen, setIsAutoLabelOpen] = useState(urlParams?.get('modal') === 'autolabel');
@@ -46,6 +46,8 @@ export const App: React.FC = () => {
   const currentImage = images[currentImageIndex] || null;
   const selectedBox = boxes.find((b) => b.id === selectedBoxId) || null;
 
+  const healthRef = useRef<SystemHealth | null>(health);
+  healthRef.current = health;
   const boxesRef = useRef<BoundingBox[]>(boxes);
   boxesRef.current = boxes;
   const selectedBoxIdRef = useRef<string | null>(selectedBoxId);
@@ -87,6 +89,9 @@ export const App: React.FC = () => {
       try {
         const h = await fetchHealth();
         setHealth(h);
+        if (h.classes && h.classes.length > 0) {
+          setActiveClassName(h.classes[0]);
+        }
       } catch (err) {
         console.error('API health check error:', err);
       }
@@ -276,26 +281,22 @@ export const App: React.FC = () => {
 
       // 6. Quick Class Assignment (Keys 1-6)
       else if (['1', '2', '3', '4', '5', '6'].includes(e.key)) {
-        const CLASS_MAP: Record<string, { name: string; id: number }> = {
-          '1': { name: 'motorcycle', id: 0 },
-          '2': { name: 'car', id: 1 },
-          '3': { name: 'bus', id: 2 },
-          '4': { name: 'truck', id: 3 },
-          '5': { name: 'minivan', id: 4 },
-          '6': { name: 'person', id: 5 },
-        };
-        const targetClass = CLASS_MAP[e.key];
-        if (targetClass) {
-          setActiveClassName(targetClass.name);
+        const availableClasses = healthRef.current?.classes && healthRef.current.classes.length > 0
+          ? healthRef.current.classes
+          : ['object', 'person', 'car', 'bus', 'truck', 'motorcycle'];
+        const keyIndex = parseInt(e.key, 10) - 1;
+        if (keyIndex >= 0 && keyIndex < availableClasses.length) {
+          const targetName = availableClasses[keyIndex];
+          setActiveClassName(targetName);
           if (curSelectedBox) {
             handleUpdateBox({
               ...curSelectedBox,
-              class_name: targetClass.name,
-              class_id: targetClass.id,
+              class_name: targetName,
+              class_id: keyIndex,
             });
-            showToast(`Class: ${targetClass.name.toUpperCase()} [#${curSelectedBox.id.slice(-4)}]`, 'label');
+            showToast(`Class: ${targetName.toUpperCase()} [#${curSelectedBox.id.slice(-4)}]`, 'label');
           } else {
-            showToast(`Default Class: ${targetClass.name.toUpperCase()}`, 'label');
+            showToast(`Default Class: ${targetName.toUpperCase()}`, 'label');
           }
         }
       }
@@ -398,6 +399,7 @@ export const App: React.FC = () => {
         {/* Right Compact Object Inspector (245px) */}
         <ObjectInspector
           selectedBox={selectedBox}
+          availableClasses={health?.classes}
           onUpdateBox={handleUpdateBox}
           onDeleteBox={handleDeleteBox}
           onAcceptBox={handleAcceptBox}

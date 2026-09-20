@@ -1,7 +1,7 @@
 [project]
-name = "traffic-annotator"
+name = "visionlab"
 version = "0.1.0"
-description = "AI-assisted annotation application for Indonesian traffic datasets"
+description = "Universal AI-assisted visual annotation application for computer vision datasets"
 requires-python = ">=3.12"
 dependencies = [
     "bitsandbytes>=0.50.1",
@@ -31,6 +31,7 @@ dev = [
 
 
 [project.scripts]
+visionlab = "app.main:main"
 traffic-annotator = "app.main:main"
 
 [build-system]

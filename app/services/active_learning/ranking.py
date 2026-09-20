@@ -45,7 +45,10 @@ def filter_results(
     if conflicts_only:
         filtered = [item for item in filtered if item.features.conflict_count > 0]
     if dense_only:
-        filtered = [item for item in filtered if "CrowdedTraffic" in item.collections]
+        filtered = [
+            item for item in filtered
+            if "CrowdedScene" in item.collections or "CrowdedTraffic" in item.collections
+        ]
     if motorcycles_only:
         filtered = [item for item in filtered if item.features.motorcycle_count > 0]
     return filtered

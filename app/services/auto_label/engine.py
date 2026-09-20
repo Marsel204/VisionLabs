@@ -678,8 +678,7 @@ class AutoLabelEngine:
         ann_source = source or AnnotationSource.SAM2
 
         for det in result.detections:
-            if det.class_name not in TARGET_CLASSES:
-                # If custom class not in strict TARGET_CLASSES, skip domain validation error
+            if not det.class_name or not str(det.class_name).strip():
                 continue
             annotations.append(
                 Annotation(

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VisionForge AI - Modern Desktop Studio Launcher (Tauri v2 + React)
+# VisionLab - Modern Desktop Studio Launcher (Tauri v2 + React)
 
 set -e
 
@@ -16,7 +16,7 @@ if [ -z "$XAUTHORITY" ] || [ ! -f "$XAUTHORITY" ]; then
   fi
 fi
 
-echo "=== VisionForge AI: Starting Desktop Studio ==="
+echo "=== VisionLab: Starting Desktop Studio ==="
 
 # 1. Start Python AI API Server if not already running
 if ! curl -s http://127.0.0.1:8765/api/health > /dev/null 2>&1; then

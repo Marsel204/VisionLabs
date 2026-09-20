@@ -552,7 +552,7 @@ class MainWindow(QMainWindow):
         active_learning_config: ActiveLearningConfig | None = None,
     ) -> None:
         super().__init__()
-        self.setWindowTitle("Traffic Annotator")
+        self.setWindowTitle("VisionLab")
         self.resize(1440, 900)
         self._build_central_view()
         QApplication.instance().installEventFilter(self)
@@ -568,7 +568,7 @@ class MainWindow(QMainWindow):
         self._vlm_model_id = "microsoft/Florence-2-base"
         self._vlm_filter_enabled = True
         self._confidence_threshold = 0.25
-        self._grounding_prompt = "motorcycle. motorbike. scooter. car. bus. truck."
+        self._grounding_prompt = "object. visual entity."
         self._grounding_detections: list[ModelDetection] = []
         self._yolo_detections: list[ModelDetection] = []
         self._fusion_result: FusionResult | None = None
@@ -1587,7 +1587,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("A Crop Assist session is already active")
             return
         try:
-            self._crop_directory = Path(tempfile.mkdtemp(prefix="traffic-annotator-crops-"))
+            self._crop_directory = Path(tempfile.mkdtemp(prefix="visionlab-crops-"))
             self._crop_original_document = self._document
             self._crop_original_history = self._history
             self._crop_session = CropGenerator().generate(

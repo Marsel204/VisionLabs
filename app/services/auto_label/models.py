@@ -130,24 +130,9 @@ class AutoLabelClass:
 
 DEFAULT_AUTO_LABEL_CLASSES: list[AutoLabelClass] = [
     AutoLabelClass(
-        name="truck",
-        prompt="large commercial delivery truck, flatbed, semi-trailer, or dump truck",
-        color="#ef5350",
-    ),
-    AutoLabelClass(
-        name="motorcycle",
-        prompt="motorcycle, motorbike, scooter, or moped with rider",
-        color="#ff9800",
-    ),
-    AutoLabelClass(
-        name="car",
-        prompt="passenger car, sedan, suv, coupe, taxi, or hatchback",
+        name="object",
+        prompt="object, visual item",
         color="#29b6f6",
-    ),
-    AutoLabelClass(
-        name="bus",
-        prompt="city transit bus, coach bus, minibus, or double-decker",
-        color="#66bb6a",
     ),
 ]
 

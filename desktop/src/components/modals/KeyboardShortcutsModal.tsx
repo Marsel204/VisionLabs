@@ -56,12 +56,7 @@ export const KeyboardShortcutsModal: React.FC<Props> = ({ isOpen, onClose }) => 
       title: 'Quick Class Assignment (1-6)',
       icon: 'label',
       items: [
-        { keys: ['1'], description: 'Set class: Motorcycle', badge: '#f59e0b' },
-        { keys: ['2'], description: 'Set class: Car', badge: '#06b6d4' },
-        { keys: ['3'], description: 'Set class: Bus', badge: '#10b981' },
-        { keys: ['4'], description: 'Set class: Truck', badge: '#3b82f6' },
-        { keys: ['5'], description: 'Set class: Minivan', badge: '#a855f7' },
-        { keys: ['6'], description: 'Set class: Person', badge: '#ec4899' },
+        { keys: ['1-6'], description: 'Quickly assign corresponding class 1-6 to selected object' },
       ],
     },
     {
@@ -104,7 +99,7 @@ export const KeyboardShortcutsModal: React.FC<Props> = ({ isOpen, onClose }) => 
                 Keyboard Shortcuts Reference
               </h2>
               <p className="text-[11px] text-[#7dd3fc]/80 font-mono">
-                VisionForge AI High-Velocity Annotation Hotkeys
+                VisionLab AI High-Velocity Annotation Hotkeys
               </p>
             </div>
           </div>

@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import type { BoundingBox, ImageMeta, ToolType } from '../../types';
-import { CLASS_COLORS } from '../../types';
+import { getClassColor } from '../../types';
 import { getImageUrl } from '../../services/api';
 
 interface Props {
@@ -27,7 +27,7 @@ export const AnnotationCanvas: React.FC<Props> = ({
   activeTool,
   imageIndex,
   totalImages,
-  activeClassName = 'car',
+  activeClassName = 'object',
   onSelectBox,
   onAddBox,
   onPrevImage,
@@ -119,8 +119,9 @@ export const AnnotationCanvas: React.FC<Props> = ({
 
       // Minimum size check
       if (w > 10 && h > 10) {
-        const cls = (activeClassName || 'car').toLowerCase();
+        const cls = (activeClassName || 'object').toLowerCase();
         const classIds: Record<string, number> = {
+          object: 0,
           motorcycle: 0,
           car: 1,
           bus: 2,
@@ -131,7 +132,7 @@ export const AnnotationCanvas: React.FC<Props> = ({
         const newBox: BoundingBox = {
           id: `box-${Date.now().toString().slice(-4)}`,
           class_name: cls,
-          class_id: classIds[cls] ?? 1,
+          class_id: classIds[cls] ?? 0,
           confidence: 0.95,
           x: Math.round(x1),
           y: Math.round(y1),
@@ -224,7 +225,7 @@ export const AnnotationCanvas: React.FC<Props> = ({
           }}
           className="relative max-w-[94%] max-h-[86%] shadow-2xl rounded-lg overflow-hidden transition-transform duration-75 ease-out select-none border border-[#2a3a48]/40"
         >
-          {/* Real Indonesian Traffic Image */}
+          {/* Active Image Viewport */}
           <img
             ref={imgRef}
             src={getImageUrl(image.filename)}
@@ -241,11 +242,7 @@ export const AnnotationCanvas: React.FC<Props> = ({
           >
             {boxes.map((box) => {
               const isSelected = box.id === selectedBoxId;
-              const color = CLASS_COLORS[box.class_name.toLowerCase()] || {
-                stroke: '#06b6d4',
-                bg: 'rgba(6, 182, 212, 0.15)',
-                text: '#06b6d4',
-              };
+              const color = getClassColor(box.class_name);
 
               return (
                 <g

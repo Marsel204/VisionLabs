@@ -37,8 +37,8 @@ def test_box_converts_to_yolo_coordinates() -> None:
 
 
 def test_invalid_annotation_is_rejected() -> None:
-    with pytest.raises(AnnotationValidationError, match="unsupported target class"):
-        Annotation("person", BoundingBox(0.1, 0.2, 0.4, 0.6))
+    with pytest.raises(AnnotationValidationError, match="cannot be empty"):
+        Annotation("", BoundingBox(0.1, 0.2, 0.4, 0.6))
 
 
 def test_history_supports_add_undo_and_redo(tmp_path: Path) -> None:

@@ -26,7 +26,7 @@ export const StudioHeader: React.FC<Props> = ({
           <div className="w-7 h-7 rounded-lg bg-[#0e4d6e] border border-[#7dd3fc]/30 flex items-center justify-center text-[#7dd3fc] shadow-sm">
             <span className="material-symbols-outlined text-[17px]">view_in_ar</span>
           </div>
-          <span className="font-semibold text-xs tracking-tight text-[#e0e8f0]">VisionStudio</span>
+          <span className="font-semibold text-xs tracking-tight text-[#e0e8f0]">VisionLab</span>
           <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-[#06b6d4]/20 text-[#06b6d4]">AI</span>
         </div>
 
@@ -38,7 +38,7 @@ export const StudioHeader: React.FC<Props> = ({
 
         <div className="hidden xl:flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#111828] text-[11px] text-[#a0b4c4] font-mono border border-[#2a3a48]/20">
           <span className="w-1.5 h-1.5 rounded-full bg-[#06b6d4] animate-pulse"></span>
-          <span>Model: YOLO11n-VisionForge</span>
+          <span>Model: YOLO11</span>
         </div>
       </div>
 

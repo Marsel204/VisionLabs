@@ -65,7 +65,7 @@ LOGGER = logging.getLogger(__name__)
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line parser."""
-    parser = argparse.ArgumentParser(description="AI-assisted traffic annotation application")
+    parser = argparse.ArgumentParser(description="VisionLab: Universal AI-assisted visual annotation application")
     parser.add_argument("--config", type=Path, help="path to a JSON configuration file")
     return parser
 
