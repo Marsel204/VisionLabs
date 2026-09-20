@@ -168,6 +168,7 @@ class AutoLabelConfig:
     enable_grounding_dino: bool = True
     enable_yolo: bool = True
     enable_florence2: bool = False
+    enable_florence2_verifier: bool = False
     enable_sam2_masks: bool = True
 
 

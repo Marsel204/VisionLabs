@@ -6,3 +6,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+*.sqlite*
+.active_dataset_config.json
+test_shot.png
+test image/labels/
