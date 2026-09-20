@@ -291,18 +291,23 @@ def _parse_input_classes(raw_classes: List[Union[AutoLabelClassInput, str]]) -> 
 # ------------------------------------------------------------------------------
 
 def get_yolo_model():
-    """Lazily load the YOLO11 model into memory."""
+    """Lazily load the default YOLO model into memory, prioritizing custom trained Final.pt if present."""
     global YOLO_MODEL
     if YOLO_MODEL is None:
         try:
             from ultralytics import YOLO
-            weights_path = PROJECT_ROOT / "yolo11n.pt"
-            if weights_path.is_file():
-                YOLO_MODEL = YOLO(str(weights_path))
-                LOGGER.info("Loaded YOLO11 model from %s", weights_path)
+            custom_path = Path("/home/marsel/Work/Models/Final.pt")
+            if custom_path.is_file():
+                YOLO_MODEL = YOLO(str(custom_path))
+                LOGGER.info("Loaded custom YOLO model from %s", custom_path)
             else:
-                YOLO_MODEL = YOLO("yolo11n.pt")
-                LOGGER.info("Initialized default YOLO11n")
+                weights_path = PROJECT_ROOT / "yolo11n.pt"
+                if weights_path.is_file():
+                    YOLO_MODEL = YOLO(str(weights_path))
+                    LOGGER.info("Loaded YOLO11 model from %s", weights_path)
+                else:
+                    YOLO_MODEL = YOLO("yolo11n.pt")
+                    LOGGER.info("Initialized default YOLO11n")
         except Exception as err:
             LOGGER.error("Failed to load YOLO model: %s", err)
     return YOLO_MODEL
@@ -313,20 +318,28 @@ def get_dataset_class_names(dataset_dir: str | None = None) -> list[str]:
     """Dynamically get class names from active dataset data.yaml or fallback to CLASS_NAMES.
     Result is cached per dataset_dir to avoid repeated YAML reads.
     """
-    target_dir = Path(dataset_dir) if dataset_dir else ACTIVE_DATASET_DIR
-    yaml_file = target_dir / "data.yaml"
-    if yaml_file.is_file():
-        try:
-            import yaml
-            with open(yaml_file, "r", encoding="utf-8") as f:
-                d = yaml.safe_load(f)
-                names = d.get("names", {})
-                if isinstance(names, dict):
-                    return [names[k] for k in sorted(names.keys(), key=lambda x: int(x))]
-                elif isinstance(names, list):
-                    return names
-        except Exception as err:
-            LOGGER.debug("Could not parse data.yaml classes: %s", err)
+    if not dataset_dir:
+        dataset_dir = str(ACTIVE_DATASET_DIR)
+    
+    yaml_candidates = [
+        Path(dataset_dir) / "data.yaml",
+        Path(dataset_dir).parent / "data.yaml",
+        PROJECT_ROOT / "data.yaml",
+    ]
+    for ypath in yaml_candidates:
+        if ypath.is_file():
+            try:
+                import yaml
+                with open(ypath, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                    names = data.get("names")
+                    if isinstance(names, list) and names:
+                        return names
+                    elif isinstance(names, dict) and names:
+                        return [names[k] for k in sorted(names.keys())]
+            except Exception as err:
+                LOGGER.warning("Could not read class names from %s: %s", ypath, err)
+
     return CLASS_NAMES
 
 
@@ -334,8 +347,10 @@ def _prewarm_yolo_model() -> None:
     """Pre-warm the default YOLO model at startup in a background thread."""
     try:
         LOGGER.info("Pre-warming YOLO model in background…")
-        model = AUTOLABEL_ENGINE._get_yolo_detector("yolo11n.pt")
-        LOGGER.info("YOLO model pre-warmed: %s", type(model).__name__)
+        custom_path = Path("/home/marsel/Work/Models/Final.pt")
+        target_name = str(custom_path) if custom_path.is_file() else "yolo11n.pt"
+        model = AUTOLABEL_ENGINE._get_yolo_detector(target_name)
+        LOGGER.info("YOLO model pre-warmed: %s (%s)", type(model).__name__, target_name)
     except Exception as err:
         LOGGER.warning("YOLO pre-warm failed: %s", err)
 
@@ -800,7 +815,10 @@ def detect_yolo(req: DetectionRequest):
     """Run YOLO object detection on an image (supports multi-model ensemble)."""
     img_path = get_image_path(req.image_name)
 
-    active_models = (req.models if req.models else ["yolo11n.pt"])[:3]
+    active_models = req.models if req.models else [
+        AUTOLABEL_ENGINE.yolo_model_name if AUTOLABEL_ENGINE.yolo_model_name else "yolo11n.pt"
+    ]
+    active_models = active_models[:3]
 
     with Image.open(img_path) as img:
         img_w, img_h = img.size
@@ -851,12 +869,18 @@ def detect_yolo(req: DetectionRequest):
 
     boxes: list[BoundingBox] = []
     if raw_candidates_px:
-        fused_px, fused_cls, fused_scores = AUTOLABEL_ENGINE.suppress_duplicate_boxes(
-            raw_candidates_px,
-            raw_candidate_classes,
-            raw_candidate_scores,
-            iou_threshold=0.45,
-        )
+        if len(active_models) > 1:
+            fused_px, fused_cls, fused_scores = AUTOLABEL_ENGINE.suppress_duplicate_boxes(
+                raw_candidates_px,
+                raw_candidate_classes,
+                raw_candidate_scores,
+                iou_threshold=0.45,
+                same_class_only=True,
+            )
+        else:
+            fused_px, fused_cls, fused_scores = raw_candidates_px, raw_candidate_classes, raw_candidate_scores
+
+        dataset_classes = get_dataset_class_names(str(ACTIVE_DATASET_DIR))
         for i, (b_px, c_obj, sc) in enumerate(zip(fused_px, fused_cls, fused_scores)):
             x1, y1, x2, y2 = b_px
             w = max(0.0, x2 - x1)
@@ -865,7 +889,20 @@ def detect_yolo(req: DetectionRequest):
             norm_top = max(0.0, min(1.0, y1 / img_h))
             norm_right = max(0.0, min(1.0, x2 / img_w))
             norm_bottom = max(0.0, min(1.0, y2 / img_h))
-            target_cls_id = CLASS_NAMES.index(c_obj.name) if c_obj.name in CLASS_NAMES else 0
+
+            c_name_lower = c_obj.name.lower().strip()
+            target_cls_id = 0
+            found_id = False
+            for idx, c in enumerate(dataset_classes):
+                if c.lower().strip() == c_name_lower:
+                    target_cls_id = idx
+                    found_id = True
+                    break
+            if not found_id:
+                for idx, c in enumerate(CLASS_NAMES):
+                    if c.lower().strip() == c_name_lower:
+                        target_cls_id = idx
+                        break
 
             boxes.append(BoundingBox(
                 id=f"yolo-{i+1}",
@@ -1099,15 +1136,29 @@ def _run_batch_autolabel_worker(
 
         try:
             res = AUTOLABEL_ENGINE.run_preview(p, config)
-            boxes = []
+            dataset_classes = get_dataset_class_names(str(ACTIVE_DATASET_DIR))
+            new_boxes: list[BoundingBox] = []
             for i, det in enumerate(res.detections):
-                target_cls_id = CLASS_NAMES.index(det.class_name) if det.class_name in CLASS_NAMES else 0
+                d_name_lower = det.class_name.lower().strip()
+                target_cls_id = 0
+                found_id = False
+                for idx, c in enumerate(dataset_classes):
+                    if c.lower().strip() == d_name_lower:
+                        target_cls_id = idx
+                        found_id = True
+                        break
+                if not found_id:
+                    for idx, c in enumerate(CLASS_NAMES):
+                        if c.lower().strip() == d_name_lower:
+                            target_cls_id = idx
+                            break
+
                 x1 = det.box.left * res.image_width
                 y1 = det.box.top * res.image_height
                 w = det.box.width * res.image_width
                 h = det.box.height * res.image_height
 
-                boxes.append(BoundingBox(
+                new_boxes.append(BoundingBox(
                     id=f"auto-{i+1}",
                     class_name=det.class_name,
                     class_id=target_cls_id,
@@ -1123,20 +1174,55 @@ def _run_batch_autolabel_worker(
                     source="sam2" if mode.produces_masks else "yolo",
                 ))
 
+            # Preserve existing human or prior annotations if present
+            existing_data = get_annotations(p.name)
+            preserved_boxes: list[BoundingBox] = []
+            if existing_data and existing_data.get("boxes"):
+                for eb in existing_data["boxes"]:
+                    try:
+                        preserved_boxes.append(BoundingBox(**eb))
+                    except Exception:
+                        pass
+
+            # Merge new AI detections avoiding duplicate overlap with preserved boxes of the same class
+            final_boxes: list[BoundingBox] = list(preserved_boxes)
+            for nb in new_boxes:
+                is_dup = False
+                for pb in preserved_boxes:
+                    if pb.class_name.lower() == nb.class_name.lower():
+                        ix1 = max(pb.norm_left, nb.norm_left)
+                        iy1 = max(pb.norm_top, nb.norm_top)
+                        ix2 = min(pb.norm_right, nb.norm_right)
+                        iy2 = min(pb.norm_bottom, nb.norm_bottom)
+                        iw = max(0.0, ix2 - ix1)
+                        ih = max(0.0, iy2 - iy1)
+                        inter = iw * ih
+                        area_p = (pb.norm_right - pb.norm_left) * (pb.norm_bottom - pb.norm_top)
+                        area_n = (nb.norm_right - nb.norm_left) * (nb.norm_bottom - nb.norm_top)
+                        union = area_p + area_n - inter
+                        if union > 0 and (inter / union) >= req.iou_threshold:
+                            is_dup = True
+                            break
+                if not is_dup:
+                    final_boxes.append(nb)
+
+            # Re-index ids
+            for idx, b in enumerate(final_boxes):
+                b.id = f"box-{idx+1}"
+
             # Save annotations
-            save_payload = SaveAnnotationRequest(image_name=p.name, boxes=boxes)
             ann_file = get_annotation_file(p.name)
             with open(ann_file, "w") as f:
                 json.dump({
                     "image_name": p.name,
-                    "boxes": [b.model_dump() for b in boxes],
+                    "boxes": [b.model_dump() for b in final_boxes],
                     "auto_labeled": True,
                     "updated_at": datetime.now().isoformat(),
                 }, f, indent=2)
 
             yolo_file = ann_file.with_suffix(".txt")
             with open(yolo_file, "w") as f:
-                for b in boxes:
+                for b in final_boxes:
                     xc = (b.norm_left + b.norm_right) / 2.0
                     yc = (b.norm_top + b.norm_bottom) / 2.0
                     nw = b.norm_right - b.norm_left

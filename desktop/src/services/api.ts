@@ -62,11 +62,15 @@ export async function saveAnnotations(filename: string, boxes: BoundingBox[]): P
   if (!res.ok) throw new Error(`Failed to save annotations: ${res.statusText}`);
 }
 
-export async function detectYolo(filename: string, confThreshold: number = 0.25): Promise<{ boxes: BoundingBox[]; width: number; height: number }> {
+export async function detectYolo(filename: string, confThreshold: number = 0.25, models?: string[]): Promise<{ boxes: BoundingBox[]; width: number; height: number }> {
+  const payload: Record<string, any> = { image_name: filename, conf_threshold: confThreshold };
+  if (models && models.length > 0) {
+    payload.models = models;
+  }
   const res = await fetch(`${BASE_URL}/api/detect/yolo`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ image_name: filename, conf_threshold: confThreshold }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`YOLO detection failed: ${res.statusText}`);
   return res.json();

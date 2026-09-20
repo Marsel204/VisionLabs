@@ -142,8 +142,8 @@ class AutoLabelEngine:
         classes: list[AutoLabelClass],
         scores: list[float],
         iou_threshold: float = 0.45,
-        same_class_only: bool = False,
-        containment_threshold: float = 0.70,
+        same_class_only: bool = True,
+        containment_threshold: float = 0.90,
     ) -> tuple[list[list[float]], list[AutoLabelClass], list[float]]:
         """Suppress duplicate overlapping bounding boxes using IoU Non-Maximum Suppression (anti-duplication).
 
@@ -364,6 +364,7 @@ class AutoLabelEngine:
                     pass
 
         # 2. YOLO (Support 1 to 3 models simultaneously)
+        active_models: list[str] = []
         if run_yolo:
             active_models = (
                 config.yolo_models
@@ -474,13 +475,20 @@ class AutoLabelEngine:
                     candidate_classes.append(matched_cls)
                     candidate_scores.append(score)
 
-        # Apply Anti-Duplication Suppression (NMS / Fusion across all models)
-        if candidate_boxes_px:
+        total_model_count = (
+            (1 if run_dino else 0)
+            + (len(active_models) if run_yolo else 0)
+            + (1 if run_florence2 else 0)
+        )
+
+        # Apply Anti-Duplication Suppression (NMS / Fusion across multiple models only)
+        if candidate_boxes_px and total_model_count > 1:
             candidate_boxes_px, candidate_classes, candidate_scores = self.suppress_duplicate_boxes(
                 candidate_boxes_px,
                 candidate_classes,
                 candidate_scores,
                 iou_threshold=config.box_iou_threshold,
+                same_class_only=True,
             )
 
         # 4. Florence-2 VLM Semantic Verification & Hallucination Filter
@@ -590,10 +598,10 @@ class AutoLabelEngine:
                         continue
                     refined_box = BoundingBox(xmin_n, ymin_n, xmax_n, ymax_n)
 
-                # IoU and containment deduplication check against already accepted detections
-                if any(
-                    compute_box_iou(det.box, refined_box) >= config.box_iou_threshold
-                    or det.box.intersection_over_min(refined_box) >= 0.70
+                # IoU deduplication check against already accepted detections of the same class (multi-model fusion only)
+                if total_model_count > 1 and any(
+                    det.class_name.lower() == cls_item.name.lower()
+                    and compute_box_iou(det.box, refined_box) >= config.box_iou_threshold
                     for det in final_detections
                 ):
                     continue
@@ -624,10 +632,10 @@ class AutoLabelEngine:
 
                 box_obj = BoundingBox(xmin_n, ymin_n, xmax_n, ymax_n)
 
-                # IoU and containment deduplication check against already accepted detections
-                if any(
-                    compute_box_iou(det.box, box_obj) >= config.box_iou_threshold
-                    or det.box.intersection_over_min(box_obj) >= 0.70
+                # IoU deduplication check against already accepted detections of the same class (multi-model fusion only)
+                if total_model_count > 1 and any(
+                    det.class_name.lower() == cls_item.name.lower()
+                    and compute_box_iou(det.box, box_obj) >= config.box_iou_threshold
                     for det in final_detections
                 ):
                     continue

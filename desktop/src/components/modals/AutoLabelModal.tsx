@@ -1224,110 +1224,112 @@ export const AutoLabelModal: React.FC<Props> = ({
                       </div>
 
                       {/* Viewport Graphic Layer with Overlay HUD & Annotations */}
-                      <div className="relative flex-1 bg-black min-h-[220px] overflow-hidden flex items-center justify-center">
-                        <img
-                          className="w-full h-full object-cover select-none"
-                          alt={img.filename}
-                          src={getImageUrl(img.filename)}
-                        />
+                      <div className="relative flex-1 bg-[#070b14] min-h-[260px] overflow-hidden flex items-center justify-center p-2">
+                        <div className="relative inline-flex items-center justify-center max-w-full max-h-full">
+                          <img
+                            className="w-auto h-auto max-w-full max-h-[280px] object-contain block select-none rounded shadow-md pointer-events-none"
+                            alt={img.filename}
+                            src={getImageUrl(img.filename)}
+                          />
 
-                        {/* Loading / Scanning HUD indicator */}
-                        {isRescoring && (
-                          <div className="absolute inset-0 bg-[#060e20]/60 backdrop-blur-[2px] flex flex-col items-center justify-center space-y-2 pointer-events-none">
-                            <span className="material-symbols-outlined text-[#4cd7f6] text-3xl animate-spin">
-                              auto_awesome
-                            </span>
-                            <span className="text-xs font-mono text-[#4cd7f6] tracking-wider uppercase">
-                              AI Ensemble Reasoning...
-                            </span>
-                          </div>
-                        )}
+                          {/* Loading / Scanning HUD indicator */}
+                          {isRescoring && (
+                            <div className="absolute inset-0 bg-[#060e20]/60 backdrop-blur-[2px] flex flex-col items-center justify-center space-y-2 pointer-events-none">
+                              <span className="material-symbols-outlined text-[#4cd7f6] text-3xl animate-spin">
+                                auto_awesome
+                              </span>
+                              <span className="text-xs font-mono text-[#4cd7f6] tracking-wider uppercase">
+                                AI Ensemble Reasoning...
+                              </span>
+                            </div>
+                          )}
 
-                        {/* SVG HUD Overlay */}
-                        {viewMode !== 'raw' && (
-                          <svg
-                            className="absolute inset-0 w-full h-full pointer-events-none"
-                            preserveAspectRatio="none"
-                            viewBox="0 0 1000 1000"
-                          >
-                            {dets.map((det: any, detIdx: number) => {
-                              const x = (det.norm_left ?? 0) * 1000;
-                              const y = (det.norm_top ?? 0) * 1000;
-                              const width = Math.max(4, ((det.norm_right ?? 0) - (det.norm_left ?? 0)) * 1000);
-                              const height = Math.max(4, ((det.norm_bottom ?? 0) - (det.norm_top ?? 0)) * 1000);
+                          {/* SVG HUD Overlay */}
+                          {viewMode !== 'raw' && (
+                            <svg
+                              className="absolute inset-0 w-full h-full pointer-events-none"
+                              preserveAspectRatio="none"
+                              viewBox="0 0 1000 1000"
+                            >
+                              {dets.map((det: any, detIdx: number) => {
+                                const x = (det.norm_left ?? 0) * 1000;
+                                const y = (det.norm_top ?? 0) * 1000;
+                                const width = Math.max(4, ((det.norm_right ?? 0) - (det.norm_left ?? 0)) * 1000);
+                                const height = Math.max(4, ((det.norm_bottom ?? 0) - (det.norm_top ?? 0)) * 1000);
+                                const detColor = det.color || '#06b6d4';
+
+                                const polygonPoints =
+                                  det.polygon_normalized && det.polygon_normalized.length > 0
+                                    ? det.polygon_normalized
+                                        .map(([px, py]: [number, number]) => `${px * 1000},${py * 1000}`)
+                                        .join(' ')
+                                    : null;
+
+                                return (
+                                  <g key={`svg-det-${detIdx}`}>
+                                    {/* Mask Polygon */}
+                                    {enableSam2Masks && polygonPoints && (
+                                      <polygon
+                                        points={polygonPoints}
+                                        fill={detColor}
+                                        fillOpacity="0.3"
+                                        stroke={detColor}
+                                        strokeWidth="1.5"
+                                      />
+                                    )}
+
+                                    {/* Bounding Box */}
+                                    {viewMode === 'both' && (
+                                      <rect
+                                        x={x}
+                                        y={y}
+                                        width={width}
+                                        height={height}
+                                        fill={detColor}
+                                        fillOpacity="0.18"
+                                        stroke={detColor}
+                                        strokeWidth="2"
+                                        className="reticle-glow"
+                                      />
+                                    )}
+                                  </g>
+                                );
+                              })}
+                            </svg>
+                          )}
+
+                          {/* Floating Micro Confidence Pills */}
+                          {viewMode !== 'raw' &&
+                            dets.slice(0, 6).map((det: any, detIdx: number) => {
+                              const left = Math.min(85, Math.max(3, (det.norm_left ?? 0) * 100));
+                              const top = Math.min(88, Math.max(3, (det.norm_top ?? 0) * 100));
                               const detColor = det.color || '#06b6d4';
 
-                              const polygonPoints =
-                                det.polygon_normalized && det.polygon_normalized.length > 0
-                                  ? det.polygon_normalized
-                                      .map(([px, py]: [number, number]) => `${px * 1000},${py * 1000}`)
-                                      .join(' ')
-                                  : null;
-
                               return (
-                                <g key={`svg-det-${detIdx}`}>
-                                  {/* Mask Polygon */}
-                                  {enableSam2Masks && polygonPoints && (
-                                    <polygon
-                                      points={polygonPoints}
-                                      fill={detColor}
-                                      fillOpacity="0.3"
-                                      stroke={detColor}
-                                      strokeWidth="1.5"
-                                    />
+                                <div
+                                  key={`tag-${detIdx}`}
+                                  style={{
+                                    left: `${left}%`,
+                                    top: `${top}%`,
+                                    borderColor: detColor,
+                                  }}
+                                  className="absolute px-1.5 py-0.5 rounded bg-[#090d16]/90 border text-[9px] font-mono text-[#dae2fd] flex items-center space-x-1 shadow-lg pointer-events-none -translate-y-1"
+                                >
+                                  <span
+                                    className="w-1.5 h-1.5 rounded-full"
+                                    style={{ backgroundColor: detColor }}
+                                  />
+                                  <span className="font-bold capitalize">{det.class_name}:</span>
+                                  <span style={{ color: detColor }}>
+                                    {Math.round((det.confidence ?? 0.9) * 100)}%
+                                  </span>
+                                  {enableSam2Masks && det.polygon_normalized && det.polygon_normalized.length > 0 && (
+                                    <span className="text-[#4edea3] text-[8px]">SAM-2 ✓</span>
                                   )}
-
-                                  {/* Bounding Box */}
-                                  {viewMode === 'both' && (
-                                    <rect
-                                      x={x}
-                                      y={y}
-                                      width={width}
-                                      height={height}
-                                      fill={detColor}
-                                      fillOpacity="0.18"
-                                      stroke={detColor}
-                                      strokeWidth="2"
-                                      className="reticle-glow"
-                                    />
-                                  )}
-                                </g>
+                                </div>
                               );
                             })}
-                          </svg>
-                        )}
-
-                        {/* Floating Micro Confidence Pills */}
-                        {viewMode !== 'raw' &&
-                          dets.slice(0, 6).map((det: any, detIdx: number) => {
-                            const left = Math.min(85, Math.max(3, (det.norm_left ?? 0) * 100));
-                            const top = Math.min(88, Math.max(3, (det.norm_top ?? 0) * 100));
-                            const detColor = det.color || '#06b6d4';
-
-                            return (
-                              <div
-                                key={`tag-${detIdx}`}
-                                style={{
-                                  left: `${left}%`,
-                                  top: `${top}%`,
-                                  borderColor: detColor,
-                                }}
-                                className="absolute px-1.5 py-0.5 rounded bg-[#090d16]/90 border text-[9px] font-mono text-[#dae2fd] flex items-center space-x-1 shadow-lg pointer-events-none -translate-y-1"
-                              >
-                                <span
-                                  className="w-1.5 h-1.5 rounded-full"
-                                  style={{ backgroundColor: detColor }}
-                                />
-                                <span className="font-bold capitalize">{det.class_name}:</span>
-                                <span style={{ color: detColor }}>
-                                  {Math.round((det.confidence ?? 0.9) * 100)}%
-                                </span>
-                                {enableSam2Masks && det.polygon_normalized && det.polygon_normalized.length > 0 && (
-                                  <span className="text-[#4edea3] text-[8px]">SAM-2 ✓</span>
-                                )}
-                              </div>
-                            );
-                          })}
+                        </div>
 
                         {/* Floating Reticle Controls (Bottom HUD) */}
                         <div className="absolute bottom-2 left-2 flex items-center space-x-1 bg-[#060e20]/80 backdrop-blur-md px-2 py-1 rounded border border-[#3d494c]/60 text-[10px] font-mono text-[#bcc9cd]">
