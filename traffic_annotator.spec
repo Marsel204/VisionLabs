@@ -13,7 +13,8 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 sys.setrecursionlimit(5000)
 
 block_cipher = None
-PROJECT_ROOT = Path(__file__).resolve().parent
+# PyInstaller executes specs without __file__; SPECPATH is its spec directory.
+PROJECT_ROOT = Path(SPECPATH).resolve()
 
 # Check if console window should be kept for debugging
 console_mode = (
