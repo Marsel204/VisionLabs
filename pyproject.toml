@@ -54,4 +54,7 @@ target-version = "py312"
 select = ["E", "F", "I", "B", "UP"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["app"]
+packages = ["app", "src"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"pipeline_bridge.py" = "pipeline_bridge.py"

@@ -11,6 +11,8 @@ interface Props {
   imageIndex: number;
   totalImages: number;
   activeClassName?: string;
+  availableClasses?: string[];
+  readOnly?: boolean;
   onSelectBox: (id: string | null) => void;
   onAddBox: (box: BoundingBox) => void;
   onUpdateBox?: (box: BoundingBox) => void;
@@ -28,6 +30,9 @@ export const AnnotationCanvas: React.FC<Props> = ({
   imageIndex,
   totalImages,
   activeClassName = 'object',
+  availableClasses = [],
+  readOnly = false,
+  onUpdateBox,
   onSelectBox,
   onAddBox,
   onPrevImage,
@@ -47,13 +52,19 @@ export const AnnotationCanvas: React.FC<Props> = ({
   const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(null);
   const [drawCurrent, setDrawCurrent] = useState<{ x: number; y: number } | null>(null);
 
+  const [polygonPoints, setPolygonPoints] = useState<{ x: number; y: number }[]>([]);
+  const transformRef = useRef<{ box: BoundingBox; start: { x: number; y: number }; corner?: number } | null>(null);
+  const [transformPreview, setTransformPreview] = useState<BoundingBox | null>(null);
+  const transformPreviewRef = useRef<BoundingBox | null>(null);
   const [labelOpacity, setLabelOpacity] = useState<number>(75);
 
   // Reset zoom & pan when image changes
   useEffect(() => {
     setZoom(100);
     setPan({ x: 0, y: 0 });
-  }, [image?.filename]);
+    setPolygonPoints([]); setIsDrawing(false); setDrawStart(null); setDrawCurrent(null);
+    transformRef.current = null; setTransformPreview(null); transformPreviewRef.current = null;
+  }, [image?.path, image?.image_id, image?.filename]);
 
   // Convert client coordinates to image pixel coordinates
   const clientToImageCoords = (clientX: number, clientY: number) => {
@@ -71,14 +82,19 @@ export const AnnotationCanvas: React.FC<Props> = ({
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0) return; // Only left click
+    if ((e.button !== 0 && e.button !== 1) || readOnly) return;
 
-    if (activeTool === 'pan' || e.buttons === 4) {
+    if (activeTool === 'pan' || e.button === 1) {
       setIsPanning(true);
       setStartPan({ x: e.clientX - pan.x, y: e.clientY - pan.y });
       return;
     }
 
+    if (activeTool === 'polygon') {
+      const point = clientToImageCoords(e.clientX, e.clientY);
+      if (point) setPolygonPoints(previous => [...previous, point]);
+      return;
+    }
     if (activeTool === 'bbox') {
       const coords = clientToImageCoords(e.clientX, e.clientY);
       if (coords) {
@@ -90,6 +106,34 @@ export const AnnotationCanvas: React.FC<Props> = ({
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
+    const transform = transformRef.current;
+    if (transform && image) {
+      const point = clientToImageCoords(e.clientX, e.clientY);
+      if (!point) return;
+      const b = transform.box;
+      const dx = point.x - transform.start.x, dy = point.y - transform.start.y;
+      let x1 = b.x, y1 = b.y, x2 = b.x + b.width, y2 = b.y + b.height;
+      if (transform.corner === undefined) {
+        x1 = Math.max(0, Math.min(image.width - b.width, b.x + dx));
+        y1 = Math.max(0, Math.min(image.height - b.height, b.y + dy));
+        x2 = x1 + b.width; y2 = y1 + b.height;
+      } else {
+        if (transform.corner === 0 || transform.corner === 2) x1 = Math.min(point.x, x2 - 1);
+        else x2 = Math.max(point.x, x1 + 1);
+        if (transform.corner < 2) y1 = Math.min(point.y, y2 - 1);
+        else y2 = Math.max(point.y, y1 + 1);
+      }
+      const polygon = b.polygon_normalized?.map(([x, y]) => [
+        (x1 + (x * image.width - b.x) * (x2 - x1) / b.width) / image.width,
+        (y1 + (y * image.height - b.y) * (y2 - y1) / b.height) / image.height,
+      ]);
+      const updated = { ...b, x: x1, y: y1, width: x2-x1, height: y2-y1,
+        norm_left: x1/image.width, norm_top: y1/image.height, norm_right: x2/image.width, norm_bottom: y2/image.height,
+        polygon_normalized: polygon || b.polygon_normalized,
+        polygon_pixels: polygon?.map(([x,y]) => [x*image.width, y*image.height]) || b.polygon_pixels };
+      transformPreviewRef.current = updated; setTransformPreview(updated);
+      return;
+    }
     if (isPanning) {
       setPan({ x: e.clientX - startPan.x, y: e.clientY - startPan.y });
       return;
@@ -104,6 +148,11 @@ export const AnnotationCanvas: React.FC<Props> = ({
   };
 
   const handleMouseUp = () => {
+    if (transformRef.current) {
+      if (transformPreviewRef.current) onUpdateBox?.(transformPreviewRef.current);
+      transformRef.current = null; transformPreviewRef.current = null; setTransformPreview(null);
+      return;
+    }
     if (isPanning) {
       setIsPanning(false);
     }
@@ -119,21 +168,14 @@ export const AnnotationCanvas: React.FC<Props> = ({
 
       // Minimum size check
       if (w > 10 && h > 10) {
-        const cls = (activeClassName || 'object').toLowerCase();
-        const classIds: Record<string, number> = {
-          object: 0,
-          motorcycle: 0,
-          car: 1,
-          bus: 2,
-          truck: 3,
-          minivan: 4,
-          person: 5,
-        };
+        const cls = activeClassName;
+        const classId = availableClasses.indexOf(cls);
+        if (classId < 0) { setDrawStart(null); setDrawCurrent(null); return; }
         const newBox: BoundingBox = {
-          id: `box-${Date.now().toString().slice(-4)}`,
+          id: crypto.randomUUID(),
           class_name: cls,
-          class_id: classIds[cls] ?? 0,
-          confidence: 0.95,
+          class_id: classId,
+          confidence: 1.0,
           x: Math.round(x1),
           y: Math.round(y1),
           width: Math.round(w),
@@ -142,7 +184,7 @@ export const AnnotationCanvas: React.FC<Props> = ({
           norm_top: Math.round((y1 / image.height) * 10000) / 10000,
           norm_right: Math.round((x2 / image.width) * 10000) / 10000,
           norm_bottom: Math.round((y2 / image.height) * 10000) / 10000,
-          source: 'manual',
+          source: 'human',
         };
         onAddBox(newBox);
         onSelectBox(newBox.id);
@@ -150,6 +192,22 @@ export const AnnotationCanvas: React.FC<Props> = ({
       setDrawStart(null);
       setDrawCurrent(null);
     }
+  };
+
+  const finishPolygon = () => {
+    if (!image || readOnly) return;
+    const points = polygonPoints.filter((point, i) => i === 0 || point.x !== polygonPoints[i-1].x || point.y !== polygonPoints[i-1].y);
+    const classId = availableClasses.indexOf(activeClassName);
+    if (points.length < 3 || classId < 0) return;
+    const xs = points.map(p => p.x), ys = points.map(p => p.y);
+    const x = Math.min(...xs), y = Math.min(...ys), right = Math.max(...xs), bottom = Math.max(...ys);
+    if (right <= x || bottom <= y) return;
+    const polygon = points.map(p => [p.x/image.width, p.y/image.height]);
+    const box: BoundingBox = { id: crypto.randomUUID(), class_name: activeClassName, class_id: classId,
+      confidence: 1, source: 'human', x, y, width: right-x, height: bottom-y,
+      norm_left: x/image.width, norm_top: y/image.height, norm_right: right/image.width, norm_bottom: bottom/image.height,
+      polygon_normalized: polygon, polygon_pixels: points.map(p => [p.x,p.y]) };
+    onAddBox(box); onSelectBox(box.id); setPolygonPoints([]);
   };
 
   const handleWheel = (e: React.WheelEvent) => {
@@ -210,6 +268,7 @@ export const AnnotationCanvas: React.FC<Props> = ({
         ref={containerRef}
         onMouseDown={handleMouseDown}
         onWheel={handleWheel}
+        onDoubleClick={() => { if (activeTool === "polygon") finishPolygon(); }}
         className={`relative flex-1 w-full h-full overflow-hidden flex items-center justify-center ${
           activeTool === 'pan' ? 'cursor-grab active:cursor-grabbing' : 'cursor-crosshair'
         }`}
@@ -228,7 +287,7 @@ export const AnnotationCanvas: React.FC<Props> = ({
           {/* Active Image Viewport */}
           <img
             ref={imgRef}
-            src={getImageUrl(image.filename)}
+            src={getImageUrl(image.path || image.image_id || image.filename)}
             alt={image.filename}
             className="w-auto h-auto max-w-full max-h-[72vh] object-contain pointer-events-none block"
             draggable={false}
@@ -240,7 +299,8 @@ export const AnnotationCanvas: React.FC<Props> = ({
             viewBox={`0 0 ${image.width} ${image.height}`}
             preserveAspectRatio="none"
           >
-            {boxes.map((box) => {
+            {boxes.map((originalBox) => {
+              const box = transformPreview?.id === originalBox.id ? transformPreview : originalBox;
               const isSelected = box.id === selectedBoxId;
               const color = getClassColor(box.class_name);
 
@@ -253,6 +313,9 @@ export const AnnotationCanvas: React.FC<Props> = ({
                   }}
                   className="pointer-events-auto cursor-pointer group"
                 >
+                  {box.polygon_normalized && <polygon
+                    points={box.polygon_normalized.map(([x,y]) => `${x*image.width},${y*image.height}`).join(' ')}
+                    fill={color.bg} stroke={color.stroke} strokeWidth={2} />}
                   {/* Bounding Box Rectangle */}
                   <rect
                     x={box.x}
@@ -264,17 +327,19 @@ export const AnnotationCanvas: React.FC<Props> = ({
                     stroke={color.stroke}
                     strokeWidth={isSelected ? 2.5 : 1.5}
                     rx={3}
+                    onMouseDown={(e) => {
+                      if (activeTool !== 'select' || readOnly) return;
+                      e.stopPropagation(); const point = clientToImageCoords(e.clientX, e.clientY);
+                      if (point) { onSelectBox(box.id); transformRef.current = { box, start: point }; }
+                    }}
                   />
 
                   {/* Corner Handles for selected box */}
-                  {isSelected && (
-                    <>
-                      <rect x={box.x - 3} y={box.y - 3} width={6} height={6} fill={color.stroke} />
-                      <rect x={box.x + box.width - 3} y={box.y - 3} width={6} height={6} fill={color.stroke} />
-                      <rect x={box.x - 3} y={box.y + box.height - 3} width={6} height={6} fill={color.stroke} />
-                      <rect x={box.x + box.width - 3} y={box.y + box.height - 3} width={6} height={6} fill={color.stroke} />
-                    </>
-                  )}
+                  {isSelected && activeTool === 'select' && !readOnly && [
+                    [box.x, box.y], [box.x + box.width, box.y], [box.x, box.y + box.height], [box.x + box.width, box.y + box.height]
+                  ].map(([x,y], corner) => <rect key={corner} x={x-3} y={y-3} width={6} height={6} fill={color.stroke}
+                    onMouseDown={e => { e.stopPropagation(); const point = clientToImageCoords(e.clientX, e.clientY);
+                      if (point) transformRef.current = { box, start: point, corner }; }} />)}
 
                   {/* Label Header Pill */}
                   <rect
@@ -302,6 +367,8 @@ export const AnnotationCanvas: React.FC<Props> = ({
               );
             })}
 
+            {polygonPoints.length > 0 && <polyline points={polygonPoints.map(p => `${p.x},${p.y}`).join(' ')}
+              fill="rgba(6,182,212,0.2)" stroke="#06b6d4" strokeWidth={2} />}
             {/* Drawing Preview Rectangle */}
             {isDrawing && drawStart && drawCurrent && (
               <rect
@@ -319,6 +386,10 @@ export const AnnotationCanvas: React.FC<Props> = ({
         </div>
       </div>
 
+      {activeTool === 'polygon' && <div className="absolute top-10 left-4 z-30 bg-[#0f1524] p-2 text-white text-xs">
+        Click vertices, then double-click or <button onClick={finishPolygon} className="underline">Finish polygon</button>
+        <button onClick={() => setPolygonPoints([])} className="ml-3 underline">Cancel</button>
+      </div>}
       {/* Floating Bottom Static Image Navigation Bar */}
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#0f1524]/90 backdrop-blur-2xl border border-[#2a3a48]/40 shadow-2xl z-30 select-none">
         {/* Pagination Prev/Next */}

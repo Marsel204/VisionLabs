@@ -7,6 +7,8 @@ import logging
 import random
 import shutil
 import zipfile
+import hashlib
+from collections.abc import Sequence
 from abc import ABC, abstractmethod
 from pathlib import Path
 from xml.etree.ElementTree import Element, ElementTree, SubElement
@@ -21,6 +23,29 @@ SPLIT_NAMES = ("train", "val", "test")
 
 class ExportError(RuntimeError):
     """Raised when an export cannot be generated safely."""
+
+
+def unique_image_names(paths: Sequence[Path]) -> dict[Path, str]:
+    """Allocate deterministic names before parallel writes, including stem collisions."""
+    paths = sorted(set(paths), key=str)
+    groups: dict[str, list[Path]] = {}
+    for path in paths:
+        groups.setdefault(path.stem.casefold(), []).append(path)
+    result = {}
+    reserved = {p.stem.casefold() for p in paths}
+    for path in paths:
+        if len(groups[path.stem.casefold()]) == 1:
+            result[path] = path.name
+            continue
+        digest = hashlib.sha256(str(path).encode()).hexdigest()
+        size = 10
+        stem = f"{path.stem}__{digest[:size]}"
+        while stem.casefold() in reserved:
+            size += 1
+            stem = f"{path.stem}__{digest[:size]}"
+        reserved.add(stem.casefold())
+        result[path] = stem + path.suffix
+    return result
 
 
 class DatasetExporter(ABC):
@@ -93,6 +118,8 @@ class YoloExporter(DatasetExporter):
             if self.class_order is not None
             else resolve_class_order(documents)
         )
+        if any(a.class_name not in active_classes for d in documents for a in d.annotations):
+            raise ExportError("annotation class is not in the export registry")
         split_documents_map = self.splits or {"": documents}
         metadata: dict[str, list[dict[str, object]]] = {}
         import concurrent.futures
@@ -106,23 +133,24 @@ class YoloExporter(DatasetExporter):
             labels = destination / "labels" / split if split else destination / "labels"
             images.mkdir(parents=True, exist_ok=True)
             labels.mkdir(parents=True, exist_ok=True)
+            output_names = unique_image_names([d.image_path for d in split_documents_list])
             for document in split_documents_list:
-                export_tasks.append((split, document, images, labels))
+                export_tasks.append((split, document, images, labels, output_names[document.image_path]))
 
         def _write_single_yolo_doc(
-            task: tuple[str, AnnotationDocument, Path, Path],
+            task: tuple[str, AnnotationDocument, Path, Path, str],
         ) -> tuple[str, list[dict[str, object]]]:
-            split, document, images, labels = task
-            image_target = images / document.image_path.name
-            label_target = labels / f"{document.image_path.stem}.txt"
+            split, document, images, labels, output_name = task
+            image_target = images / output_name
+            label_target = labels / f"{Path(output_name).stem}.txt"
             if document.image_path.is_file():
                 if document.image_path.resolve() != image_target.resolve():
                     try:
                         shutil.copyfile(document.image_path, image_target)
                     except OSError as err:
-                        LOGGER.warning("Could not copy image %s: %s", document.image_path, err)
+                        raise ExportError(f"Cannot copy image {document.image_path}: {err}") from err
             else:
-                LOGGER.warning("Source image not found during YOLO export: %s", document.image_path)
+                raise ExportError(f"Source image not found: {document.image_path}")
             lines = []
             for annotation in document.annotations:
                 center_x, center_y, width, height = annotation.box.to_yolo()
@@ -138,12 +166,17 @@ class YoloExporter(DatasetExporter):
             label_target.write_text(
                 "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8"
             )
-            metadata_key = f"{split}/{document.image_path.name}" if split else document.image_path.name
+            metadata_key = f"{split}/{output_name}" if split else output_name
             doc_meta = [
                 {
                     "class_name": annotation.class_name,
                     "occluded": annotation.occluded,
                     "truncated": annotation.truncated,
+                    "confidence": annotation.confidence,
+                    "source": str(annotation.source),
+                    "review_status": str(annotation.review_status),
+                    "id": str(annotation.annotation_id),
+                    "polygon_normalized": annotation.polygon_normalized,
                 }
                 for annotation in document.annotations
             ]
@@ -206,11 +239,14 @@ class CocoExporter(DatasetExporter):
             if self.class_order is not None
             else resolve_class_order(documents)
         )
+        if any(a.class_name not in active_classes for d in documents for a in d.annotations):
+            raise ExportError("annotation class is not in the export registry")
         if self.splits:
             for split, split_documents_list in self.splits.items():
                 CocoExporter(class_order=active_classes).export(split_documents_list, destination / split)
             return destination
         destination.mkdir(parents=True, exist_ok=True)
+        names = unique_image_names([d.image_path for d in documents])
         payload = {
             "images": [],
             "annotations": [],
@@ -223,7 +259,7 @@ class CocoExporter(DatasetExporter):
             payload["images"].append(
                 {
                     "id": image_id,
-                    "file_name": document.image_path.name,
+                    "file_name": names[document.image_path],
                     "width": document.image_width,
                     "height": document.image_height,
                 }
@@ -250,6 +286,9 @@ class CocoExporter(DatasetExporter):
                         "iscrowd": 0,
                         "occluded": annotation.occluded,
                         "truncated": annotation.truncated,
+                        "segmentation": [[c for x, y in annotation.polygon_normalized
+                                          for c in (x*document.image_width, y*document.image_height)]]
+                        if annotation.polygon_normalized else [],
                     }
                 )
                 annotation_id += 1
@@ -262,15 +301,15 @@ class CocoExporter(DatasetExporter):
         max_workers = min(32, max(4, (os.cpu_count() or 4) * 2))
 
         def _copy_coco_img(doc: AnnotationDocument) -> None:
-            target = image_destination / doc.image_path.name
+            target = image_destination / names[doc.image_path]
             if doc.image_path.is_file():
                 if doc.image_path.resolve() != target.resolve():
                     try:
                         shutil.copyfile(doc.image_path, target)
                     except OSError as err:
-                        LOGGER.warning("Could not copy image %s: %s", doc.image_path, err)
+                        raise ExportError(f"Cannot copy image {doc.image_path}: {err}") from err
             else:
-                LOGGER.warning("Source image not found during COCO export: %s", doc.image_path)
+                raise ExportError(f"Source image not found: {doc.image_path}")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
             list(pool.map(_copy_coco_img, documents))
@@ -287,6 +326,7 @@ class PascalVocExporter(DatasetExporter):
     def export(self, documents: list[AnnotationDocument], destination: Path) -> Path:
         validate_documents(documents)
         destination.mkdir(parents=True, exist_ok=True)
+        names = unique_image_names([d.image_path for d in documents])
         for document in documents:
             root = Element("annotation")
             SubElement(root, "filename").text = document.image_path.name
@@ -308,7 +348,7 @@ class PascalVocExporter(DatasetExporter):
                 ):
                     SubElement(box, name).text = str(round(value))
             ElementTree(root).write(
-                destination / f"{document.image_path.stem}.xml",
+                destination / f"{Path(names[document.image_path]).stem}.xml",
                 encoding="utf-8",
                 xml_declaration=True,
             )

@@ -7,6 +7,7 @@ import sqlite3
 import threading
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 LOGGER = logging.getLogger(__name__)
 IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"})
@@ -33,6 +34,7 @@ class DatasetIndex:
                 """CREATE TABLE IF NOT EXISTS images (
                     path TEXT PRIMARY KEY,
                     modified_ns INTEGER NOT NULL,
+                    size_bytes INTEGER NOT NULL DEFAULT -1,
                     width INTEGER,
                     height INTEGER,
                     difficulty REAL NOT NULL DEFAULT 0,
@@ -40,12 +42,11 @@ class DatasetIndex:
                     annotation_count INTEGER NOT NULL DEFAULT -1
                 )"""
             )
-            # Migration: add annotation_count column to existing databases
-            try:
-                self._connection.execute("ALTER TABLE images ADD COLUMN annotation_count INTEGER NOT NULL DEFAULT -1")
-                LOGGER.info("Migrated images table: added annotation_count column")
-            except Exception:
-                pass  # Column already exists — normal case
+            columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(images)")}
+            for column, declaration in (("annotation_count", "INTEGER NOT NULL DEFAULT -1"),
+                                        ("size_bytes", "INTEGER NOT NULL DEFAULT -1")):
+                if column not in columns:
+                    self._connection.execute(f"ALTER TABLE images ADD COLUMN {column} {declaration}")
             # Create indexes for fast filtering and sorting
             self._connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_images_status ON images(status)"
@@ -82,7 +83,9 @@ class DatasetIndex:
                     continue
             except Exception:
                 pass
-            rows.append((str(path.resolve()), path.stat().st_mtime_ns))
+            if path.resolve().is_relative_to(resolved_root):
+                stat = path.stat()
+                rows.append((str(path.resolve()), stat.st_mtime_ns, stat.st_size))
 
         with self._lock:
             # Prune non-existent paths, paths inside excluded directories, or non-resolved duplicates
@@ -104,16 +107,23 @@ class DatasetIndex:
                     if any(part in EXCLUDE_DIRS or part.startswith(".") for part in parts):
                         prune_paths.append((p_str,))
                         continue
-                except Exception:
-                    pass
+                except ValueError:
+                    prune_paths.append((p_str,))
+                    continue
                 seen_resolved.add(resolved_str)
 
             if prune_paths:
                 self._connection.executemany("DELETE FROM images WHERE path=?", prune_paths)
 
             self._connection.executemany(
-                "INSERT INTO images(path, modified_ns) VALUES(?, ?) "
-                "ON CONFLICT(path) DO UPDATE SET modified_ns=excluded.modified_ns",
+                "INSERT INTO images(path, modified_ns, size_bytes) VALUES(?, ?, ?) "
+                "ON CONFLICT(path) DO UPDATE SET "
+                "width=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN NULL ELSE images.width END, "
+                "height=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN NULL ELSE images.height END, "
+                "status=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN 'unreviewed' ELSE images.status END, "
+                "annotation_count=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN -1 ELSE images.annotation_count END, "
+                "difficulty=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN 0 ELSE images.difficulty END, "
+                "modified_ns=excluded.modified_ns, size_bytes=excluded.size_bytes",
                 rows,
             )
             self._connection.commit()
@@ -193,7 +203,7 @@ class DatasetIndex:
         """Fetch metadata, status, and difficulty for a single image."""
         with self._lock:
             row = self._connection.execute(
-                "SELECT path, width, height, difficulty, status, modified_ns FROM images WHERE path=?",
+                "SELECT path, width, height, difficulty, status, modified_ns, annotation_count FROM images WHERE path=?",
                 (str(path),),
             ).fetchone()
             return dict(row) if row else None
@@ -201,11 +211,13 @@ class DatasetIndex:
     def find_by_name(self, filename: str) -> dict[str, Any] | None:
         """Find an image record by filename ending or exact path."""
         with self._lock:
-            row = self._connection.execute(
-                "SELECT path, width, height, difficulty, status, modified_ns FROM images WHERE path = ? OR path LIKE ? LIMIT 1",
+            rows = self._connection.execute(
+                "SELECT path, width, height, difficulty, status, modified_ns FROM images WHERE path = ? OR path LIKE ?",
                 (filename, f"%/{filename}"),
-            ).fetchone()
-            return dict(row) if row else None
+            ).fetchall()
+            if len(rows) > 1:
+                raise ValueError("ambiguous image basename")
+            return dict(rows[0]) if rows else None
 
     def set_annotation_count(self, path: Path, count: int) -> None:
         """Cache the number of annotations for an image to avoid repeated filesystem probes."""
@@ -276,6 +288,4 @@ class DatasetIndex:
             result[st] = cnt
             result["total"] += cnt
         return result
-
-
 

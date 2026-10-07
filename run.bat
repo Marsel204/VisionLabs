@@ -76,6 +76,12 @@ exit /b !ERRORLEVEL!
 echo === VisionLab: Starting Desktop Studio ===
 echo [1/2] Starting Python AI Engine on :8765...
 start "VisionLab Backend" /B %PY_BIN% -m uvicorn app.api.server:app --port 8765 --host 127.0.0.1 --log-level warning
+powershell -NoProfile -Command "for ($i=0; $i -lt 60; $i++) { try { $session=Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/session' -TimeoutSec 1; if ($session.token) { exit 0 } } catch {}; Start-Sleep -Milliseconds 500 }; exit 1"
+if !ERRORLEVEL! neq 0 (
+    echo [ERROR] Python AI Engine did not become ready.
+    pause
+    exit /b 1
+)
 
 echo [2/2] Launching Tauri Desktop Studio...
 cd desktop
@@ -150,19 +156,23 @@ fi
 
 if command -v npm >/dev/null 2>&1 && [ -f "desktop/package.json" ]; then
     echo "=== VisionLab: Starting Desktop Studio ==="
-    if ! curl -s http://127.0.0.1:8765/api/health > /dev/null 2>&1; then
+    if ! curl -fsS http://127.0.0.1:8765/api/session > /dev/null 2>&1; then
         echo "[1/2] Launching Python AI Engine in background..."
         $PY_BIN -m uvicorn app.api.server:app --port 8765 --host 127.0.0.1 --log-level warning &
         API_PID=$!
         trap "kill $API_PID 2>/dev/null || true" EXIT
 
         for i in {1..30}; do
-            if curl -s http://127.0.0.1:8765/api/health > /dev/null 2>&1; then
+            if curl -fsS http://127.0.0.1:8765/api/session > /dev/null 2>&1; then
                 echo "      ✓ Python AI Engine online on :8765"
                 break
             fi
             sleep 0.5
         done
+        if ! curl -fsS http://127.0.0.1:8765/api/session > /dev/null 2>&1; then
+            echo "[ERROR] Python AI Engine did not become ready."
+            exit 1
+        fi
     else
         echo "[1/2] ✓ Python AI Engine is already running on :8765"
     fi

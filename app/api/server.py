@@ -12,38 +12,35 @@ import json
 import logging
 import os
 import functools
-import shutil
 import threading
 import time
+import secrets
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from PIL import Image
 
 from app.services.dataset.index import DatasetIndex, IMAGE_SUFFIXES
+from app.services.dataset.repository import AnnotationRepository, RepositoryError, RevisionConflict
 from app.services.active_learning import (
-    ActiveLearningConfig,
     ActiveLearningEngine,
     ImageAnalysis,
 )
 from app.services.annotation.domain import (
-    Annotation,
     AnnotationDocument,
     AnnotationSource,
     BoundingBox as DomainBoundingBox,
-    ReviewStatus,
 )
 from app.services.auto_label.engine import AutoLabelEngine
 from app.services.auto_label.models import (
     AutoLabelClass,
     AutoLabelConfig,
     AutoLabelPipelineMode,
-    AutoLabelResult,
     DEFAULT_AUTO_LABEL_CLASSES,
 )
 from app.export.exporters import (
@@ -64,7 +61,7 @@ app = FastAPI(
 # Enable CORS for Tauri desktop and web dev server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:1420", "http://127.0.0.1:1420", "http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -110,6 +107,46 @@ CLASS_NAMES = ["motorcycle", "car", "bus", "truck", "minivan", "person"]
 DATASET_INDEX: Optional[DatasetIndex] = None
 ACTIVE_LEARNING_ENGINE = ActiveLearningEngine()
 AUTOLABEL_ENGINE = AutoLabelEngine()
+DATASET_STATE_LOCK = threading.RLock()
+INFERENCE_LOCK = threading.RLock()
+SESSION_TOKEN = secrets.token_urlsafe(32)
+ALLOWED_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:1420", "http://127.0.0.1:1420", "http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"}
+
+
+@app.middleware("http")
+async def authorize_local_client(request: Request, call_next):
+    origin = request.headers.get("origin")
+    if origin and origin not in ALLOWED_ORIGINS:
+        return JSONResponse({"detail": "Client origin is not allowed"}, status_code=403)
+    if request.method != "OPTIONS" and request.url.path != "/api/session":
+        token = request.headers.get("X-VisionLab-Token", "")
+        if request.url.path.startswith("/api/image/"):
+            token = token or request.query_params.get("token", "")
+        if not secrets.compare_digest(token, SESSION_TOKEN):
+            return JSONResponse({"detail": "A local session token is required"}, status_code=401)
+    return await call_next(request)
+
+
+@app.get("/api/session")
+def create_session():
+    return {"token": SESSION_TOKEN}
+
+
+def dataset_operation(function):
+    """Keep selection and a synchronous operation on the same dataset."""
+    @functools.wraps(function)
+    def wrapped(*args, **kwargs):
+        with DATASET_STATE_LOCK:
+            return function(*args, **kwargs)
+    return wrapped
+
+
+def inference_operation(function):
+    @functools.wraps(function)
+    def wrapped(*args, **kwargs):
+        with INFERENCE_LOCK:
+            return function(*args, **kwargs)
+    return wrapped
 
 # Batch auto-label background job tracker
 AUTOLABEL_BATCH_LOCK = threading.Lock()
@@ -146,48 +183,23 @@ def get_dataset_index() -> DatasetIndex:
 
 
 def sync_image_dimensions_and_status(index_db: DatasetIndex, img_path: Path) -> tuple[int, int, str]:
-    """Ensure image dimensions and review status are updated in SQLite."""
-    rec = index_db.get_image(img_path)
-    w, h = 640, 640
-    status = "unreviewed"
-    difficulty = 0.0
-
-    if rec:
-        w = rec.get("width") or 0
-        h = rec.get("height") or 0
-        status = rec.get("status") or "unreviewed"
-        difficulty = rec.get("difficulty") or 0.0
-
-    if w <= 0 or h <= 0:
-        try:
-            with Image.open(img_path) as img:
-                w, h = img.size
-                index_db.set_metadata(img_path, w, h)
-        except Exception:
-            w, h = 640, 640
-
-    # Check annotation files on disk
-    labels_dir = ACTIVE_DATASET_DIR / "labels"
-    ann_json = labels_dir / f"{img_path.stem}.json"
-    ann_txt = labels_dir / f"{img_path.stem}.txt"
-
-    if ann_json.is_file() or ann_txt.is_file():
-        if status == "unreviewed":
-            status = "reviewed"
-            index_db.set_difficulty(img_path, difficulty, status=status)
-
-    return w, h, status
-
+    repo = AnnotationRepository(ACTIVE_DATASET_DIR)
+    data = repo.read(img_path)
+    index_db.set_metadata(img_path, data["width"], data["height"])
+    record = index_db.get_image(img_path) or {}
+    index_db.set_status_and_count(img_path, data["status"], len(data["boxes"]), record.get("difficulty") or 0)
+    return data["width"], data["height"], data["status"]
 
 # ------------------------------------------------------------------------------
 # Request & Response Models
 # ------------------------------------------------------------------------------
 
 class BoundingBox(BaseModel):
+    model_config = ConfigDict(extra="allow", allow_inf_nan=False)
     id: str
     class_name: str
-    class_id: int
-    confidence: float
+    class_id: int = Field(ge=0)
+    confidence: float = Field(ge=0, le=1)
     x: float  # pixel x (top-left)
     y: float  # pixel y (top-left)
     width: float  # pixel width
@@ -199,10 +211,25 @@ class BoundingBox(BaseModel):
     occluded: bool = False
     truncated: bool = False
     source: str = "yolo"
+    polygon_normalized: Optional[List[List[float]]] = None
+    polygon_pixels: Optional[List[List[float]]] = None
+
+    @model_validator(mode="after")
+    def validate_geometry(self):
+        try:
+            DomainBoundingBox(self.norm_left, self.norm_top, self.norm_right, self.norm_bottom)
+        except Exception as err:
+            raise ValueError(str(err)) from err
+        if self.source == "manual":
+            self.source = "human"
+        if self.source not in {str(s) for s in AnnotationSource}:
+            raise ValueError("unknown annotation source")
+        return self
 
 
 class DetectionRequest(BaseModel):
     image_name: str
+    dataset_id: Optional[str] = None
     conf_threshold: float = 0.25
     classes: Optional[List[str]] = None
     models: Optional[List[str]] = None
@@ -216,6 +243,8 @@ class PromptRefineRequest(BaseModel):
 class SaveAnnotationRequest(BaseModel):
     image_name: str
     boxes: List[BoundingBox]
+    expected_revision: Optional[int] = Field(default=None, ge=0)
+    dataset_id: Optional[str] = None
 
 
 class ExportRequest(BaseModel):
@@ -234,6 +263,7 @@ class AutoLabelClassInput(BaseModel):
 
 
 class AutoLabelPreviewRequest(BaseModel):
+    dataset_id: Optional[str] = None
     image_name: Optional[str] = None
     classes: List[Union[AutoLabelClassInput, str]] = []
     confidence_threshold: float = 0.50
@@ -250,6 +280,7 @@ class AutoLabelPreviewRequest(BaseModel):
 
 
 class AutoLabelBatchRequest(BaseModel):
+    dataset_id: Optional[str] = None
     classes: List[Union[AutoLabelClassInput, str]] = []
     confidence_threshold: float = 0.50
     iou_threshold: float = 0.45
@@ -312,35 +343,8 @@ def get_yolo_model():
     return YOLO_MODEL
 
 
-@functools.lru_cache(maxsize=4)
 def get_dataset_class_names(dataset_dir: str | None = None) -> list[str]:
-    """Dynamically get class names from active dataset data.yaml or fallback to CLASS_NAMES.
-    Result is cached per dataset_dir to avoid repeated YAML reads.
-    """
-    if not dataset_dir:
-        dataset_dir = str(ACTIVE_DATASET_DIR)
-    
-    yaml_candidates = [
-        Path(dataset_dir) / "data.yaml",
-        Path(dataset_dir).parent / "data.yaml",
-        PROJECT_ROOT / "data.yaml",
-    ]
-    for ypath in yaml_candidates:
-        if ypath.is_file():
-            try:
-                import yaml
-                with open(ypath, "r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f)
-                    names = data.get("names")
-                    if isinstance(names, list) and names:
-                        return names
-                    elif isinstance(names, dict) and names:
-                        return [names[k] for k in sorted(names.keys())]
-            except Exception as err:
-                LOGGER.warning("Could not read class names from %s: %s", ypath, err)
-
-    return CLASS_NAMES
-
+    return AnnotationRepository(Path(dataset_dir) if dataset_dir else ACTIVE_DATASET_DIR).classes()
 
 def _prewarm_yolo_model() -> None:
     """Pre-warm the default YOLO model at startup in a background thread."""
@@ -348,7 +352,8 @@ def _prewarm_yolo_model() -> None:
         LOGGER.info("Pre-warming YOLO model in background…")
         custom_path = Path("/home/marsel/Work/Models/Final.pt")
         target_name = str(custom_path) if custom_path.is_file() else "yolo11n.pt"
-        model = AUTOLABEL_ENGINE._get_yolo_detector(target_name)
+        with INFERENCE_LOCK:
+            model = AUTOLABEL_ENGINE._get_yolo_detector(target_name)
         LOGGER.info("YOLO model pre-warmed: %s (%s)", type(model).__name__, target_name)
     except Exception as err:
         LOGGER.warning("YOLO pre-warm failed: %s", err)
@@ -368,97 +373,36 @@ def on_startup() -> None:
 
 
 def resolve_annotation_path(img_path: Path) -> tuple[Optional[Path], str]:
-    """Find the annotation file for an image, supporting JSON and standard YOLO txt structures.
-    Returns (path_to_annotation_file, 'json' | 'yolo') or (None, '').
-    """
-    stem = img_path.stem
-
-    # 1. Check direct JSON annotations in ACTIVE_DATASET_DIR / "labels"
-    direct_json = ACTIVE_DATASET_DIR / "labels" / f"{stem}.json"
-    if direct_json.is_file():
-        return direct_json, "json"
-
-    # 2. Check standard YOLO dataset path replacement: /images/ -> /labels/
-    yolo_mirror = Path(str(img_path).replace("/images/", "/labels/")).with_suffix(".txt")
-    if yolo_mirror.is_file():
-        return yolo_mirror, "yolo"
-
-    # 3. Check JSON in mirrored directory: /images/ -> /labels/
-    json_mirror = Path(str(img_path).replace("/images/", "/labels/")).with_suffix(".json")
-    if json_mirror.is_file():
-        return json_mirror, "json"
-
-    # 4. Check direct YOLO .txt in ACTIVE_DATASET_DIR / "labels" / {stem}.txt
-    direct_txt = ACTIVE_DATASET_DIR / "labels" / f"{stem}.txt"
-    if direct_txt.is_file():
-        return direct_txt, "yolo"
-
-    # 5. Check beside the image itself: {img_path.parent}/{stem}.txt or .json
-    sibling_json = img_path.with_suffix(".json")
-    if sibling_json.is_file():
-        return sibling_json, "json"
-    sibling_txt = img_path.with_suffix(".txt")
-    if sibling_txt.is_file():
-        return sibling_txt, "yolo"
-
-    # 6. Fallback: search in subdirectories of ACTIVE_DATASET_DIR / "labels"
-    labels_root = ACTIVE_DATASET_DIR / "labels"
-    if labels_root.is_dir():
-        parent_sub = labels_root / img_path.parent.name
-        if parent_sub.is_dir():
-            sub_json = parent_sub / f"{stem}.json"
-            if sub_json.is_file():
-                return sub_json, "json"
-            sub_txt = parent_sub / f"{stem}.txt"
-            if sub_txt.is_file():
-                return sub_txt, "yolo"
-
-    return None, ""
+    return AnnotationRepository(ACTIVE_DATASET_DIR).resolve(img_path)
 
 
 def get_image_path(image_name: str) -> Path:
-    """Resolve full path to an image in the active dataset directory."""
-    import urllib.parse
-    clean_name = urllib.parse.unquote(str(image_name)).strip()
-    p = Path(clean_name)
-    if p.is_file():
-        return p
-
-    path = ACTIVE_DATASET_DIR / clean_name
-    if path.is_file():
-        return path
-
-    path_name = ACTIVE_DATASET_DIR / p.name
-    if path_name.is_file():
-        return path_name
-
-    fallback = PROJECT_ROOT / "test image" / p.name
-    if fallback.is_file():
-        return fallback
-
     try:
-        idx = get_dataset_index()
-        rec = idx.find_by_name(p.name) or idx.get_image(p)
-        if rec and Path(rec["path"]).is_file():
-            return Path(rec["path"])
-    except Exception as err:
-        LOGGER.debug("DatasetIndex lookup failed in get_image_path: %s", err)
-
-    LOGGER.warning("Image not found: '%s' (searched in %s and test image/)", image_name, ACTIVE_DATASET_DIR)
-    raise HTTPException(status_code=404, detail=f"Image not found: {image_name}")
+        return AnnotationRepository(ACTIVE_DATASET_DIR).image_path(image_name)
+    except FileNotFoundError as err:
+        raise HTTPException(404, "Image not found") from err
+    except RepositoryError as err:
+        raise HTTPException(422, str(err)) from err
 
 
 def get_annotation_file(image_name: str, img_path: Optional[Path] = None) -> Path:
-    """Get annotation file path corresponding to an image."""
-    if img_path is not None:
-        ann_file, _ = resolve_annotation_path(img_path)
-        if ann_file:
-            return ann_file
-    stem = Path(image_name).stem
-    labels_dir = ACTIVE_DATASET_DIR / "labels"
-    labels_dir.mkdir(exist_ok=True)
-    return labels_dir / f"{stem}.json"
+    repo = AnnotationRepository(ACTIVE_DATASET_DIR)
+    return repo.canonical_path(img_path or get_image_path(image_name))
 
+
+def check_dataset(dataset_id: str | None) -> None:
+    if dataset_id is not None and dataset_id != str(ACTIVE_DATASET_DIR.resolve()):
+        raise HTTPException(409, "Dataset changed; reload before continuing")
+
+
+def all_records(index_db: DatasetIndex):
+    offset = 0
+    while True:
+        page = index_db.list_records(limit=1000, offset=offset)
+        if not page:
+            return
+        yield from page
+        offset += len(page)
 
 def calculate_image_difficulty(image_path: Path, boxes: List[BoundingBox]) -> float:
     """Compute active learning difficulty score from detection features."""
@@ -493,6 +437,7 @@ def calculate_image_difficulty(image_path: Path, boxes: List[BoundingBox]) -> fl
 # ------------------------------------------------------------------------------
 
 @app.get("/api/health")
+@dataset_operation
 def health():
     """Check backend health, GPU availability, and model status."""
     gpu_info = {"available": False, "device": "CPU", "vram_free": "0GB"}
@@ -506,7 +451,6 @@ def health():
                 "available": True,
                 "device": props.name,
                 "vram_free": f"{free_vram:.1f}GB / {total_vram:.1f}GB",
-                "temperature": "41°C",
             }
     except Exception:
         pass
@@ -522,15 +466,16 @@ def health():
         "gpu": gpu_info,
         "classes": get_dataset_class_names(str(ACTIVE_DATASET_DIR)),
         "models": {
-            "yolo11": YOLO_MODEL is not None or (PROJECT_ROOT / "yolo11n.pt").is_file(),
-            "sam2": True,
-            "grounding_dino": True,
-            "florence2": True,
+            "yolo11": YOLO_MODEL is not None or bool(AUTOLABEL_ENGINE._yolo_detectors) or AUTOLABEL_ENGINE._yolo_detector is not None,
+            "sam2": AUTOLABEL_ENGINE._sam_segmenter is not None,
+            "grounding_dino": AUTOLABEL_ENGINE._grounding_detector is not None,
+            "florence2": AUTOLABEL_ENGINE._vlm_helper is not None,
         },
     }
 
 
 @app.get("/api/images")
+@dataset_operation
 def list_images(
     status: Optional[str] = Query(None, description="Filter by status: unreviewed, reviewed, ai_labeled"),
     order_by: str = Query("path", description="Order by: path, difficulty, modified"),
@@ -545,7 +490,7 @@ def list_images(
     index_db = get_dataset_index()
     records = index_db.list_records(status=status, order_by=order_by, limit=limit, offset=offset)
     images = []
-    needs_cache_update: list[tuple[Path, int]] = []
+    repo = AnnotationRepository(ACTIVE_DATASET_DIR)
 
     for r in records:
         path_val = r.get("path") if r else None
@@ -571,31 +516,22 @@ def list_images(
             except Exception:
                 w, h = 640, 640
 
-        # Use SQLite-cached annotation count (-1 means "not yet probed")
         cached_count = r.get("annotation_count", -1)
         if cached_count == -1:
-            # First time: probe filesystem, then cache in SQLite
-            ann_count = 0
-            ann_file, kind = resolve_annotation_path(img_path)
-            if ann_file and ann_file.is_file():
-                try:
-                    if kind == "json":
-                        with open(ann_file, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                            ann_count = len(data.get("boxes", []))
-                    elif kind == "yolo":
-                        ann_count = len([l for l in ann_file.read_text(encoding="utf-8").splitlines() if l.strip()])
-                except Exception:
-                    pass
-            # Update status from annotation file presence
-            if ann_count > 0 and current_status == "unreviewed":
-                current_status = "reviewed"
-            needs_cache_update.append((img_path, ann_count))
+            try:
+                data = repo.read(img_path)
+                ann_count = len(data["boxes"])
+                current_status = data["status"]
+                index_db.set_status_and_count(img_path, current_status, ann_count, r.get("difficulty") or 0)
+            except Exception as err:
+                raise HTTPException(422, f"Cannot load labels for {img_path.name}: {err}") from err
         else:
             ann_count = cached_count
 
         images.append({
             "filename": img_path.name,
+            "image_id": str(img_path.relative_to(ACTIVE_DATASET_DIR.resolve())),
+            "dataset_id": str(ACTIVE_DATASET_DIR.resolve()),
             "path": str(img_path),
             "width": w,
             "height": h,
@@ -604,13 +540,6 @@ def list_images(
             "difficulty": r.get("difficulty", 0.0),
             "status": current_status,
         })
-
-    # Batch-write annotation count cache back to SQLite (thread-safe)
-    if needs_cache_update:
-        try:
-            index_db.set_annotation_counts_batch(needs_cache_update)
-        except Exception as e:
-            LOGGER.debug("Failed to batch-update annotation_count cache: %s", e)
 
     return {
         "images": images,
@@ -622,6 +551,7 @@ def list_images(
 
 
 @app.get("/api/image/{image_name:path}")
+@dataset_operation
 def serve_image(image_name: str):
     """Serve image file content."""
     img_path = get_image_path(image_name)
@@ -630,115 +560,43 @@ def serve_image(image_name: str):
 
 
 @app.get("/api/annotations/{image_name:path}")
-def get_annotations(image_name: str):
-    """Retrieve saved bounding boxes and metadata for an image from SQLite & JSON."""
-    img_path = get_image_path(image_name)
-    index_db = get_dataset_index()
-    w, h, status = sync_image_dimensions_and_status(index_db, img_path)
-
-    ann_file, kind = resolve_annotation_path(img_path)
-    if ann_file and ann_file.is_file():
-        if kind == "json":
-            try:
-                with open(ann_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    data["status"] = status
-                    return data
-            except Exception as err:
-                LOGGER.warning("Error reading JSON annotations: %s", err)
-        elif kind == "yolo":
-            try:
-                boxes = []
-                dataset_classes = get_dataset_class_names(str(ACTIVE_DATASET_DIR))
-                lines = [l.strip() for l in ann_file.read_text(encoding="utf-8").splitlines() if l.strip()]
-                for idx, line in enumerate(lines):
-                    parts = line.split()
-                    if len(parts) >= 5:
-                        cls_id = int(parts[0])
-                        xc, yc, nw, nh = float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
-                        nl = max(0.0, xc - nw / 2)
-                        nt = max(0.0, yc - nh / 2)
-                        nr = min(1.0, xc + nw / 2)
-                        nb = min(1.0, yc + nh / 2)
-                        c_name = dataset_classes[cls_id] if 0 <= cls_id < len(dataset_classes) else (
-                            CLASS_NAMES[cls_id] if 0 <= cls_id < len(CLASS_NAMES) else "object"
-                        )
-                        boxes.append({
-                            "id": f"box-{idx+1}",
-                            "class_name": c_name,
-                            "class_id": cls_id,
-                            "confidence": 1.0,
-                            "x": round(nl * w, 1),
-                            "y": round(nt * h, 1),
-                            "width": round(nw * w, 1),
-                            "height": round(nh * h, 1),
-                            "norm_left": round(nl, 4),
-                            "norm_top": round(nt, 4),
-                            "norm_right": round(nr, 4),
-                            "norm_bottom": round(nb, 4),
-                            "source": "human",
-                        })
-                return {"image_name": image_name, "boxes": boxes, "status": status}
-            except Exception as err:
-                LOGGER.warning("Error reading YOLO txt annotations: %s", err)
-
-    return {"image_name": image_name, "boxes": [], "status": status}
+@dataset_operation
+def get_annotations(image_name: str, dataset_id: Optional[str] = None):
+    check_dataset(dataset_id or None)
+    image = get_image_path(image_name)
+    try:
+        data = AnnotationRepository(ACTIVE_DATASET_DIR).read(image)
+        index = get_dataset_index()
+        index.set_metadata(image, data["width"], data["height"])
+        record = index.get_image(image) or {}
+        index.set_status_and_count(image, data["status"], len(data["boxes"]), record.get("difficulty") or 0)
+        return data
+    except Exception as err:
+        raise HTTPException(422, f"Cannot load annotations: {err}") from err
 
 
 @app.post("/api/annotations/{image_name:path}")
+@dataset_operation
 def save_annotations(image_name: str, payload: SaveAnnotationRequest):
-    """Save annotations and update SQLite DatasetIndex with review status and difficulty."""
-    img_path = get_image_path(image_name)
-    ann_file = get_annotation_file(image_name, img_path)
-
-    # 1. Save detailed JSON annotation record
-    data = {
-        "image_name": image_name,
-        "boxes": [box.model_dump() for box in payload.boxes],
-        "updated_at": datetime.now().isoformat(),
-    }
-    with open(ann_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-
-    # 2. Save standard YOLO .txt format
-    yolo_file = ann_file.with_suffix(".txt")
-    with open(yolo_file, "w", encoding="utf-8") as f:
-        for b in payload.boxes:
-            x_center = (b.norm_left + b.norm_right) / 2.0
-            y_center = (b.norm_top + b.norm_bottom) / 2.0
-            norm_w = max(0.0, b.norm_right - b.norm_left)
-            norm_h = max(0.0, b.norm_bottom - b.norm_top)
-            f.write(f"{b.class_id} {x_center:.6f} {y_center:.6f} {norm_w:.6f} {norm_h:.6f}\n")
-
-    # Mirror to YOLO dataset labels directory if image was inside images/{split}/
-    mirrored_yolo = Path(str(img_path).replace("/images/", "/labels/")).with_suffix(".txt")
-    if mirrored_yolo.parent.is_dir() and mirrored_yolo != yolo_file:
-        try:
-            with open(mirrored_yolo, "w", encoding="utf-8") as f:
-                for b in payload.boxes:
-                    x_center = (b.norm_left + b.norm_right) / 2.0
-                    y_center = (b.norm_top + b.norm_bottom) / 2.0
-                    norm_w = max(0.0, b.norm_right - b.norm_left)
-                    norm_h = max(0.0, b.norm_bottom - b.norm_top)
-                    f.write(f"{b.class_id} {x_center:.6f} {y_center:.6f} {norm_w:.6f} {norm_h:.6f}\n")
-        except Exception as e:
-            LOGGER.debug("Could not mirror YOLO txt: %s", e)
-
-    # 3. Update SQLite DatasetIndex & Active Learning Difficulty + annotation count cache
-    index_db = get_dataset_index()
-    diff = calculate_image_difficulty(img_path, payload.boxes)
-    status = "reviewed" if payload.boxes else "unreviewed"
-    index_db.set_status_and_count(img_path, status, len(payload.boxes), diff)
-
-    return {
-        "status": "saved",
-        "image_name": image_name,
-        "count": len(payload.boxes),
-        "box_count": len(payload.boxes),
-        "difficulty": diff,
-        "review_status": status,
-        "file": str(ann_file),
-    }
+    check_dataset(payload.dataset_id)
+    if image_name != payload.image_name:
+        raise HTTPException(422, "Path and payload image identities differ")
+    image = get_image_path(image_name)
+    try:
+        repo = AnnotationRepository(ACTIVE_DATASET_DIR)
+        data = repo.save(image, [b.model_dump() for b in payload.boxes],
+                         expected_revision=payload.expected_revision)
+    except RevisionConflict as err:
+        raise HTTPException(409, str(err)) from err
+    except Exception as err:
+        raise HTTPException(422, f"Cannot save annotations: {err}") from err
+    index = get_dataset_index()
+    difficulty = calculate_image_difficulty(image, payload.boxes)
+    index.set_status_and_count(image, "reviewed", len(data["boxes"]), difficulty)
+    return {"status": "saved", "image_name": image_name, "count": len(data["boxes"]),
+            "box_count": len(data["boxes"]), "difficulty": difficulty,
+            "review_status": "reviewed", "revision": data["revision"], "boxes": data["boxes"],
+            "file": str(repo.canonical_path(image)), "projection_warning": data.get("projection_warning")}
 
 def _resolve_pipeline_mode(
     pipeline_mode_str: str | None,
@@ -810,8 +668,11 @@ def _resolve_pipeline_mode(
 
 
 @app.post("/api/detect/yolo")
+@dataset_operation
+@inference_operation
 def detect_yolo(req: DetectionRequest):
     """Run YOLO object detection on an image (supports multi-model ensemble)."""
+    check_dataset(req.dataset_id)
     img_path = get_image_path(req.image_name)
 
     active_models = req.models if req.models else [
@@ -846,13 +707,13 @@ def detect_yolo(req: DetectionRequest):
                 raw_lower = raw_name.lower().strip()
                 class_name = raw_name
                 if raw_lower in {"car", "mobil", "sedan", "suv", "vehicle", "automobile"}:
-                    class_name = "Car"
+                    class_name = "car"
                 elif raw_lower in {"motorcycle", "motor", "bike", "motorbike", "scooter", "moped"}:
-                    class_name = "Motorcycle"
+                    class_name = "motorcycle"
                 elif raw_lower in {"bus", "bis", "minibus", "angkot"}:
-                    class_name = "Bus"
+                    class_name = "bus"
                 elif raw_lower in {"truck", "truk", "pickup"}:
-                    class_name = "Truck"
+                    class_name = "truck"
                 elif raw_lower in {"person", "pedestrian", "orang"}:
                     class_name = "person"
 
@@ -879,7 +740,7 @@ def detect_yolo(req: DetectionRequest):
         else:
             fused_px, fused_cls, fused_scores = raw_candidates_px, raw_candidate_classes, raw_candidate_scores
 
-        dataset_classes = get_dataset_class_names(str(ACTIVE_DATASET_DIR))
+        dataset_classes = AnnotationRepository(ACTIVE_DATASET_DIR).register_classes([c.name for c in fused_cls])
         for i, (b_px, c_obj, sc) in enumerate(zip(fused_px, fused_cls, fused_scores)):
             x1, y1, x2, y2 = b_px
             w = max(0.0, x2 - x1)
@@ -889,23 +750,14 @@ def detect_yolo(req: DetectionRequest):
             norm_right = max(0.0, min(1.0, x2 / img_w))
             norm_bottom = max(0.0, min(1.0, y2 / img_h))
 
-            c_name_lower = c_obj.name.lower().strip()
-            target_cls_id = 0
-            found_id = False
-            for idx, c in enumerate(dataset_classes):
-                if c.lower().strip() == c_name_lower:
-                    target_cls_id = idx
-                    found_id = True
-                    break
-            if not found_id:
-                for idx, c in enumerate(CLASS_NAMES):
-                    if c.lower().strip() == c_name_lower:
-                        target_cls_id = idx
-                        break
+            canonical_name = next(c for c in dataset_classes if c.casefold() == c_obj.name.casefold())
+            target_cls_id = dataset_classes.index(canonical_name)
+            if norm_left >= norm_right or norm_top >= norm_bottom:
+                continue
 
             boxes.append(BoundingBox(
                 id=f"yolo-{i+1}",
-                class_name=c_obj.name,
+                class_name=canonical_name,
                 class_id=target_cls_id,
                 confidence=round(sc, 3),
                 x=round(x1, 1),
@@ -930,15 +782,19 @@ def detect_yolo(req: DetectionRequest):
 
 
 @app.post("/api/autolabel/preview")
+@dataset_operation
+@inference_operation
 def autolabel_preview(req: AutoLabelPreviewRequest):
     """Run Auto Label on a single image and return real preview detections."""
+    check_dataset(req.dataset_id)
+    started_at = time.perf_counter()
     target_img_name = req.image_name
     if not target_img_name:
         # Pick the first available image in active dataset
         index_db = get_dataset_index()
         records = index_db.list_records(limit=1)
         if records:
-            target_img_name = Path(records[0]["path"]).name
+            target_img_name = records[0]["path"]
         else:
             raise HTTPException(status_code=400, detail="No images available in active dataset.")
 
@@ -991,8 +847,8 @@ def autolabel_preview(req: AutoLabelPreviewRequest):
             "detections": yolo_res["boxes"],
             "count": yolo_res["count"],
             "mean_confidence": round(sum(b["confidence"] for b in yolo_res["boxes"]) / max(1, len(yolo_res["boxes"])), 3),
-            "iou": 0.94,
-            "elapsed_seconds": 0.035,
+            "iou": None,
+            "elapsed_seconds": round(time.perf_counter() - started_at, 3),
             "fallback": True,
         }
 
@@ -1053,8 +909,8 @@ def autolabel_preview(req: AutoLabelPreviewRequest):
                     "detections": detections_json,
                     "count": len(detections_json),
                     "mean_confidence": mean_conf,
-                    "iou": 0.94,
-                    "elapsed_seconds": 0.035,
+                    "iou": None,
+                    "elapsed_seconds": round(time.perf_counter() - started_at, 3),
                     "fallback": True,
                 }
 
@@ -1084,22 +940,27 @@ def autolabel_preview(req: AutoLabelPreviewRequest):
         "detections": detections_json,
         "count": len(detections_json),
         "mean_confidence": mean_conf,
-        "iou": 0.95,
+        "iou": None,
         "elapsed_seconds": round(result.elapsed_seconds, 3),
         "fallback": False,
     }
 
 
-def _run_batch_autolabel_worker(
+def _execute_batch_autolabel_worker(
     req: AutoLabelBatchRequest,
     target_paths: List[Path],
     classes: List[AutoLabelClass],
+    dataset_root: Optional[Path] = None,
+    job_status: Optional[dict] = None,
 ):
     """Background worker executing batch AutoLabel across selected images."""
-    global AUTOLABEL_BATCH_STATUS
-    total = len(target_paths)
+    if job_status is None:
+        job_status = AUTOLABEL_BATCH_STATUS
+    root = (dataset_root or ACTIVE_DATASET_DIR).resolve()
+    repo = AnnotationRepository(root)
     processed = 0
-
+    failures = []
+    warnings = []
     mode = _resolve_pipeline_mode(
         pipeline_mode_str=req.pipeline_mode,
         enable_sam2_masks=req.enable_sam2_masks,
@@ -1126,31 +987,21 @@ def _run_batch_autolabel_worker(
     if yolo is not None and AUTOLABEL_ENGINE._yolo_detector is None:
         AUTOLABEL_ENGINE._yolo_detector = yolo
 
-    index_db = get_dataset_index()
-
+    index_db = DatasetIndex(root / ".dataset_index.sqlite")
     for p in target_paths:
         with AUTOLABEL_BATCH_LOCK:
-            AUTOLABEL_BATCH_STATUS["current"] = processed + 1
-            AUTOLABEL_BATCH_STATUS["current_image"] = p.name
+            job_status["current"] = processed + 1
+            job_status["current_image"] = p.name
 
         try:
-            res = AUTOLABEL_ENGINE.run_preview(p, config)
-            dataset_classes = get_dataset_class_names(str(ACTIVE_DATASET_DIR))
+            existing_data = repo.read(p)
+            with INFERENCE_LOCK:
+                res = AUTOLABEL_ENGINE.run_preview(p, config)
+            dataset_classes = repo.register_classes([d.class_name for d in res.detections])
             new_boxes: list[BoundingBox] = []
             for i, det in enumerate(res.detections):
-                d_name_lower = det.class_name.lower().strip()
-                target_cls_id = 0
-                found_id = False
-                for idx, c in enumerate(dataset_classes):
-                    if c.lower().strip() == d_name_lower:
-                        target_cls_id = idx
-                        found_id = True
-                        break
-                if not found_id:
-                    for idx, c in enumerate(CLASS_NAMES):
-                        if c.lower().strip() == d_name_lower:
-                            target_cls_id = idx
-                            break
+                canonical_name = next(c for c in dataset_classes if c.casefold() == det.class_name.casefold())
+                target_cls_id = dataset_classes.index(canonical_name)
 
                 x1 = det.box.left * res.image_width
                 y1 = det.box.top * res.image_height
@@ -1158,8 +1009,8 @@ def _run_batch_autolabel_worker(
                 h = det.box.height * res.image_height
 
                 new_boxes.append(BoundingBox(
-                    id=f"auto-{i+1}",
-                    class_name=det.class_name,
+                    id=secrets.token_hex(16),
+                    class_name=canonical_name,
                     class_id=target_cls_id,
                     confidence=round(det.confidence, 3),
                     x=round(x1, 1),
@@ -1171,17 +1022,18 @@ def _run_batch_autolabel_worker(
                     norm_right=round(det.box.right, 4),
                     norm_bottom=round(det.box.bottom, 4),
                     source="sam2" if mode.produces_masks else "yolo",
+                    polygon_normalized=det.polygon_normalized,
+                    polygon_pixels=det.polygon_pixels,
                 ))
 
             # Preserve existing human or prior annotations if present
-            existing_data = get_annotations(p.name)
             preserved_boxes: list[BoundingBox] = []
             if existing_data and existing_data.get("boxes"):
                 for eb in existing_data["boxes"]:
                     try:
                         preserved_boxes.append(BoundingBox(**eb))
-                    except Exception:
-                        pass
+                    except Exception as err:
+                        raise RepositoryError("Cannot preserve an existing annotation") from err
 
             # Merge new AI detections avoiding duplicate overlap with preserved boxes of the same class
             final_boxes: list[BoundingBox] = list(preserved_boxes)
@@ -1205,100 +1057,97 @@ def _run_batch_autolabel_worker(
                 if not is_dup:
                     final_boxes.append(nb)
 
-            # Re-index ids
-            for idx, b in enumerate(final_boxes):
-                b.id = f"box-{idx+1}"
-
-            # Save annotations
-            ann_file = get_annotation_file(p.name)
-            with open(ann_file, "w") as f:
-                json.dump({
-                    "image_name": p.name,
-                    "boxes": [b.model_dump() for b in final_boxes],
-                    "auto_labeled": True,
-                    "updated_at": datetime.now().isoformat(),
-                }, f, indent=2)
-
-            yolo_file = ann_file.with_suffix(".txt")
-            with open(yolo_file, "w") as f:
-                for b in final_boxes:
-                    xc = (b.norm_left + b.norm_right) / 2.0
-                    yc = (b.norm_top + b.norm_bottom) / 2.0
-                    nw = b.norm_right - b.norm_left
-                    nh = b.norm_bottom - b.norm_top
-                    f.write(f"{b.class_id} {xc:.6f} {yc:.6f} {nw:.6f} {nh:.6f}\n")
-
-            # Update SQLite state to ai_labeled
-            diff = calculate_image_difficulty(p, boxes)
-            index_db.set_difficulty(p, diff, status="ai_labeled")
-
+            saved = repo.save(p, [b.model_dump() for b in final_boxes], status="ai_labeled",
+                              expected_revision=existing_data["revision"])
+            if saved.get("projection_warning"):
+                warnings.append(saved["projection_warning"])
+            diff = calculate_image_difficulty(p, final_boxes)
+            index_db.set_status_and_count(p, "ai_labeled", len(final_boxes), diff)
         except Exception as err:
             LOGGER.error("Failed to auto-label image %s: %s", p, err)
+            failures.append({"image": str(p.relative_to(root)), "error": str(err)})
 
         processed += 1
         with AUTOLABEL_BATCH_LOCK:
-            AUTOLABEL_BATCH_STATUS["processed_count"] = processed
+            job_status["processed_count"] = processed
 
+    index_db.close()
     with AUTOLABEL_BATCH_LOCK:
-        AUTOLABEL_BATCH_STATUS["running"] = False
-        AUTOLABEL_BATCH_STATUS["completed"] = True
+        job_status["failures"] = failures
+        job_status["warnings"] = warnings
+        job_status["succeeded_count"] = processed - len(failures)
+        job_status["failed_count"] = len(failures)
+        job_status["error"] = f"{len(failures)} images failed" if failures else None
+        job_status["running"] = False
+        job_status["completed"] = True
         LOGGER.info("Batch auto-label complete: %d images processed", processed)
 
 
-@app.post("/api/autolabel/batch")
-def start_autolabel_batch(req: AutoLabelBatchRequest, background_tasks: BackgroundTasks):
-    """Launch background batch auto-labeling pipeline across images."""
-    global AUTOLABEL_BATCH_STATUS
+def _run_batch_autolabel_worker(req, target_paths, classes, dataset_root=None, job_status=None):
+    if job_status is None:
+        job_status = AUTOLABEL_BATCH_STATUS
+    root = (dataset_root or ACTIVE_DATASET_DIR).resolve()
+    try:
+        _execute_batch_autolabel_worker(req, target_paths, classes, root, job_status)
+    except Exception as err:
+        LOGGER.exception("Batch setup failed")
+        with AUTOLABEL_BATCH_LOCK:
+            job_status.update(running=False, completed=True, error=str(err))
+    finally:
+        with AUTOLABEL_BATCH_LOCK:
+            snapshot = dict(job_status)
+        from app.services.dataset.repository import atomic_text
+        job_id = snapshot.get("job_id", "last")
+        try:
+            atomic_text(root / ".visionlab" / "jobs" / (job_id + ".json"), json.dumps(snapshot, indent=2))
+        except OSError as err:
+            LOGGER.error("Cannot persist batch outcome: %s", err)
+            with AUTOLABEL_BATCH_LOCK:
+                job_status["error"] = f"{job_status.get('error') or ''} Cannot persist batch outcome: {err}".strip()
 
+
+@app.post("/api/autolabel/batch")
+@dataset_operation
+def start_autolabel_batch(req: AutoLabelBatchRequest, background_tasks: BackgroundTasks):
+    global AUTOLABEL_BATCH_STATUS
+    check_dataset(req.dataset_id)
     with AUTOLABEL_BATCH_LOCK:
         if AUTOLABEL_BATCH_STATUS["running"]:
-            raise HTTPException(status_code=409, detail="Batch auto-labeling is already in progress.")
-
-    index_db = get_dataset_index()
-    records = index_db.list_records(limit=10000)
-
-    target_paths = []
-    for r in records:
-        p = Path(r["path"])
-        if not p.is_file():
-            continue
-        if req.only_unannotated and r.get("status") in {"reviewed", "ai_labeled"}:
-            continue
-        target_paths.append(p)
-
-    if not target_paths:
-        # If all images already have labels, process all images
-        target_paths = [Path(r["path"]) for r in records if Path(r["path"]).is_file()]
-
-    if not target_paths:
-        raise HTTPException(status_code=400, detail="No images found to auto-label.")
-
-    classes = _parse_input_classes(req.classes)
-
-    with AUTOLABEL_BATCH_LOCK:
-        AUTOLABEL_BATCH_STATUS = {
-            "running": True,
-            "current": 0,
-            "total": len(target_paths),
-            "current_image": target_paths[0].name,
-            "completed": False,
-            "error": None,
-            "processed_count": 0,
-        }
-
-    thread = threading.Thread(
-        target=_run_batch_autolabel_worker,
-        args=(req, target_paths, classes),
-        daemon=True,
-    )
-    thread.start()
-
-    return {
-        "status": "started",
-        "total": len(target_paths),
-        "classes": [c.name for c in classes],
-    }
-
+            raise HTTPException(409, "Batch auto-labeling is already in progress")
+        AUTOLABEL_BATCH_STATUS = {"running": True, "current": 0, "total": 0,
+            "current_image": "", "completed": False, "error": None, "processed_count": 0,
+            "job_id": secrets.token_hex(12), "dataset_id": str(ACTIVE_DATASET_DIR.resolve())}
+        job_status = AUTOLABEL_BATCH_STATUS
+    try:
+        root = ACTIVE_DATASET_DIR.resolve()
+        repo = AnnotationRepository(root)
+        classes = _parse_input_classes(req.classes)
+        repo.register_classes([c.name for c in classes])
+        records = list(all_records(get_dataset_index()))
+        target_paths = []
+        for record in records:
+            path = Path(record["path"])
+            if not path.is_file():
+                continue
+            if req.only_unannotated and (record.get("status") in {"reviewed", "ai_labeled"}
+                                       or repo.read(path)["status"] in {"reviewed", "ai_labeled"}):
+                continue
+            target_paths.append(path)
+        with AUTOLABEL_BATCH_LOCK:
+            AUTOLABEL_BATCH_STATUS["total"] = len(target_paths)
+            AUTOLABEL_BATCH_STATUS["current_image"] = target_paths[0].name if target_paths else ""
+            if not target_paths:
+                AUTOLABEL_BATCH_STATUS.update(running=False, completed=True)
+        if target_paths:
+            thread = threading.Thread(target=_run_batch_autolabel_worker,
+                args=(req, target_paths, classes, root, job_status), daemon=True)
+            thread.start()
+        return {"status": "started" if target_paths else "completed", "total": len(target_paths),
+                "classes": [c.name for c in classes]}
+    except Exception:
+        with AUTOLABEL_BATCH_LOCK:
+            AUTOLABEL_BATCH_STATUS["running"] = False
+        raise
 
 @app.get("/api/autolabel/status")
 def get_autolabel_status():
@@ -1348,6 +1197,7 @@ def auto_refine_prompt(req: PromptRefineRequest):
 
 
 @app.post("/api/dataset/select-folder")
+@dataset_operation
 def select_folder(path: str = Query(..., description="Absolute path to image directory")):
     """Switch active dataset folder and open SQLite database."""
     global ACTIVE_DATASET_DIR, DATASET_INDEX
@@ -1357,7 +1207,6 @@ def select_folder(path: str = Query(..., description="Absolute path to image dir
 
     ACTIVE_DATASET_DIR = p
     persist_active_dataset_dir(p)
-    get_dataset_class_names.cache_clear()  # invalidate YAML class name cache
     if DATASET_INDEX is not None:
         try:
             DATASET_INDEX.close()
@@ -1391,6 +1240,7 @@ def _get_x11_env() -> dict:
 
 
 @app.post("/api/dataset/browse-folder")
+@dataset_operation
 def browse_dataset_folder():
     """Open a native folder selection dialog (Zenity/GTK) on the user display."""
     import subprocess
@@ -1426,6 +1276,7 @@ def browse_dataset_folder():
 
 
 @app.get("/api/dataset/search-directories")
+@dataset_operation
 def search_dataset_directories(query: str = ""):
     """Search for matching directories on the system for instant autocomplete."""
     results: list[str] = []
@@ -1491,20 +1342,51 @@ def search_dataset_directories(query: str = ""):
 @app.post("/api/dataset/upload")
 async def upload_images(files: List[UploadFile] = File(...)):
     """Upload one or more image files into active dataset directory and index them."""
+    root = ACTIVE_DATASET_DIR.resolve()
+    staged = []
+    names = set()
+    for upload in files:
+        name = Path(upload.filename or "").name
+        if not name or Path(name).suffix.lower() not in IMAGE_SUFFIXES:
+            raise HTTPException(422, "Upload must be a supported image")
+        if name.casefold() in names or (root / name).exists():
+            raise HTTPException(409, f"Image already exists: {name}")
+        names.add(name.casefold())
+        content = await upload.read()
+        try:
+            with Image.open(io.BytesIO(content)) as image:
+                image.verify()
+        except Exception as err:
+            raise HTTPException(422, f"Invalid image: {name}") from err
+        staged.append((name, content))
     saved = []
-    for f in files:
-        if not f.filename:
-            continue
-        dest = ACTIVE_DATASET_DIR / Path(f.filename).name
-        content = await f.read()
-        dest.write_bytes(content)
-        saved.append(dest.name)
-    index_db = get_dataset_index()
-    count = index_db.scan(ACTIVE_DATASET_DIR)
+    try:
+        for name, content in staged:
+            # Exclusive creation prevents a collision between simultaneous uploads.
+            with (root / name).open("xb") as stream:
+                saved.append(name)
+                stream.write(content)
+    except Exception as err:
+        for name in saved:
+            (root / name).unlink(missing_ok=True)
+        raise HTTPException(409, "Upload could not be committed") from err
+    with DatasetIndex(root / ".dataset_index.sqlite") as index:
+        count = index.scan(root)
     return {"saved": saved, "count": len(saved), "total_indexed": count}
 
 
+@app.post("/api/dataset/classes")
+@dataset_operation
+def register_class(payload: Dict[str, str]):
+    check_dataset(payload.get("dataset_id"))
+    name = payload.get("name", "").strip()
+    if not name:
+        raise HTTPException(422, "Class name is required")
+    return {"classes": AnnotationRepository(ACTIVE_DATASET_DIR).register_classes([name])}
+
+
 @app.post("/api/dataset/rescan")
+@dataset_operation
 def rescan_dataset():
     """Rescan the active dataset directory and reindex all images."""
     index_db = get_dataset_index()
@@ -1513,25 +1395,23 @@ def rescan_dataset():
 
 
 @app.get("/api/dataset/stats")
+@dataset_operation
 def get_dataset_stats():
     """Retrieve comprehensive dataset statistics from SQLite DatasetIndex."""
     index_db = get_dataset_index()
     stats = index_db.stats()
 
-    # Tally class distributions from label files
     class_counts: Dict[str, int] = {c: 0 for c in get_dataset_class_names(str(ACTIVE_DATASET_DIR))}
-    labels_dir = ACTIVE_DATASET_DIR / "labels"
-    if labels_dir.is_dir():
-        for f in labels_dir.glob("*.json"):
-            try:
-                with open(f, "r") as jf:
-                    data = json.load(jf)
-                    for b in data.get("boxes", []):
-                        cn = b.get("class_name")
-                        if cn:
-                            class_counts[cn] = class_counts.get(cn, 0) + 1
-            except Exception:
-                pass
+    repo = AnnotationRepository(ACTIVE_DATASET_DIR)
+    for record in all_records(index_db):
+        image = Path(record["path"])
+        if image.is_file():
+            data = repo.read(image)
+            index_db.set_status_and_count(image, data["status"], len(data["boxes"]), record.get("difficulty") or 0)
+            for box in data["boxes"]:
+                name = box["class_name"]
+                class_counts[name] = class_counts.get(name, 0) + 1
+    stats = index_db.stats()
 
     return {
         "directory": str(ACTIVE_DATASET_DIR),
@@ -1545,51 +1425,21 @@ def get_dataset_stats():
 
 
 @app.post("/api/dataset/export")
+@dataset_operation
 def export_dataset(req: ExportRequest):
     """Export annotated dataset into standard YOLO or COCO formats with train/val/test splits."""
     index_db = get_dataset_index()
-    records = index_db.list_records(limit=10000)
+    records = all_records(index_db)
     documents: List[AnnotationDocument] = []
-
-    # Map all dataset images into AnnotationDocument domain entities
-    for r in records:
-        img_path = Path(r["path"])
-        if not img_path.is_file():
-            continue
-
-        w = r.get("width") or 640
-        h = r.get("height") or 640
-        ann_file = get_annotation_file(img_path.name)
-        annotations = []
-
-        if ann_file.is_file():
-            try:
-                with open(ann_file, "r") as f:
-                    data = json.load(f)
-                    for b in data.get("boxes", []):
-                        cls_name = str(b.get("class_name", "object")).strip() or "object"
-
-                        nl = max(0.0, min(1.0, float(b.get("norm_left", 0.0))))
-                        nt = max(0.0, min(1.0, float(b.get("norm_top", 0.0))))
-                        nr = max(nl + 0.001, min(1.0, float(b.get("norm_right", 1.0))))
-                        nb = max(nt + 0.001, min(1.0, float(b.get("norm_bottom", 1.0))))
-
-                        annotations.append(Annotation(
-                            class_name=cls_name,
-                            box=DomainBoundingBox(nl, nt, nr, nb),
-                            confidence=float(b.get("confidence", 1.0)),
-                            source=AnnotationSource.HUMAN if b.get("source") == "human" else AnnotationSource.SAM2,
-                            review_status=ReviewStatus.ACCEPTED,
-                        ))
-            except Exception as err:
-                LOGGER.warning("Skipping error parsing annotation %s: %s", ann_file, err)
-
-        documents.append(AnnotationDocument(
-            image_path=img_path,
-            image_width=w,
-            image_height=h,
-            annotations=tuple(annotations),
-        ))
+    repo = AnnotationRepository(ACTIVE_DATASET_DIR)
+    for record in records:
+        image = Path(record["path"])
+        if not image.is_file():
+            raise HTTPException(422, "An indexed source image is missing; rescan before exporting")
+        try:
+            documents.append(repo.document(image))
+        except Exception as err:
+            raise HTTPException(422, f"Cannot export {image.name}: {err}") from err
 
     if not documents:
         raise HTTPException(status_code=400, detail="No valid images to export.")
@@ -1613,10 +1463,10 @@ def export_dataset(req: ExportRequest):
     # 3. Execute exporter
     try:
         if req.format.lower() == "coco":
-            exporter = CocoExporter(splits=splits)
+            exporter = CocoExporter(splits=splits, class_order=repo.classes())
             artifact = exporter.export(documents, out_dir)
         else:
-            exporter = YoloExporter(splits=splits)
+            exporter = YoloExporter(splits=splits, class_order=repo.classes())
             artifact = exporter.export(documents, out_dir)
     except Exception as err:
         LOGGER.exception("Export failed")
@@ -1637,6 +1487,7 @@ def export_dataset(req: ExportRequest):
 
 
 @app.get("/api/active-learning/queue")
+@dataset_operation
 def active_learning_queue(limit: int = Query(20, ge=1, le=200)):
     """Retrieve the highest-difficulty images prioritized for human review."""
     index_db = get_dataset_index()
@@ -1657,6 +1508,7 @@ def active_learning_queue(limit: int = Query(20, ge=1, le=200)):
 
 
 @app.get("/api/models/presets")
+@dataset_operation
 def get_model_presets():
     """Retrieve standard built-in YOLO presets."""
     return {
@@ -1672,6 +1524,7 @@ def get_model_presets():
 
 
 @app.post("/api/models/browse-weights")
+@dataset_operation
 def browse_custom_weights():
     """Open native GTK/Zenity file picker dialog for custom model weights (*.pt, *.onnx, *.engine)."""
     import subprocess
@@ -1704,6 +1557,7 @@ def browse_custom_weights():
 
 
 @app.post("/api/models/validate")
+@dataset_operation
 def validate_custom_model(req: ValidateModelRequest):
     """Validate that custom model weights exist and can be initialized with Ultralytics."""
     p = Path(req.path).expanduser()

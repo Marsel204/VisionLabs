@@ -49,7 +49,7 @@ export const StudioHeader: React.FC<Props> = ({
           <span className="material-symbols-outlined text-[14px] text-[#7dd3fc]">memory</span>
           <span className="text-[#e0e8f0]">{health?.gpu?.device || 'RTX 4090'}</span>
           <span className="text-[#4a6070]">•</span>
-          <span className="text-[#10b981] font-semibold">{health?.gpu?.temperature || '41°C'}</span>
+          <span className="text-[#10b981] font-semibold">{health?.gpu?.temperature || 'Not measured'}</span>
           <span className="text-[#4a6070]">•</span>
           <span className="text-[#7dd3fc]">Ready</span>
         </div>

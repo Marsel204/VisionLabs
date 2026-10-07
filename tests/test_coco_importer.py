@@ -80,7 +80,7 @@ def test_coco_import_resilience_edge_cases(tmp_path: Path) -> None:
                 "images": [
                     {
                         "id": 10,
-                        "file_name": "/subfolder/sample.jpg",  # Leading slash and subfolder
+                        "file_name": "subfolder/sample.jpg",  # Confined relative fallback
                         "width": 0,  # Missing/zero width -> should fall back to PIL dimensions
                         "height": None,
                     }
@@ -118,4 +118,3 @@ def test_coco_import_resilience_edge_cases(tmp_path: Path) -> None:
     assert len(doc.annotations) == 2
     classes = {ann.class_name for ann in doc.annotations}
     assert classes == {"motorcycle", "truck"}
-

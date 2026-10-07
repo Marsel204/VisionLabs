@@ -190,7 +190,7 @@ VisionLab provides a single polyglot launcher ([`run.bat`](file:///home/marsel/W
 #### How the Launcher Works (Zero-Friction Setup)
 1. **Self-Bootstrapping**: If `uv` is not installed, it automatically installs `uv`. If `.venv` does not exist, it runs `uv sync` to install all locked dependencies automatically on first run.
 2. **GPU & Display Telemetry**: On Linux, it automatically configures NVIDIA WebKitGTK and X11 display parameters.
-3. **Background AI Engine**: Starts the local FastAPI engine (`app.api.server`) on `http://127.0.0.1:8765`, polls its `/api/health` endpoint until online, and cleans up the background server upon exit.
+3. **Background AI Engine**: Starts the local FastAPI engine (`app.api.server`) on `http://127.0.0.1:8765`, polls its `/api/session` endpoint until online, and cleans up the background server upon exit.
 4. **Desktop Studio Interface**: Installs npm dependencies in `desktop/` if missing and opens the high-performance Tauri v2 + React 19 studio window.
 5. **Persistent Error Reporting**: If a dependency or hardware issue occurs, the command prompt window stays open (`pause` on Windows / `read -p` on Linux) with error diagnostics instead of closing abruptly.
 
@@ -221,9 +221,64 @@ uv run pytest
 cd desktop
 npm install
 npm run dev
+
+# Frontend regression checks and production build
+npm test
+npm run build
+npm run lint
 ```
 
 The web studio is accessible at `http://localhost:1420`, connecting to the Python engine on `http://127.0.0.1:8765`.
+
+### Annotation storage and compatibility
+
+Both the Qt and web studios use `AnnotationRepository`. Its authoritative files live at
+`<dataset>/.visionlab/annotations/<relative image path including extension>.json`.
+For example, `images/train/sample.jpg` becomes
+`.visionlab/annotations/images/train/sample.jpg.json`. Documents retain object IDs,
+confidence, provenance, review status, occlusion/truncation flags, and polygons.
+SQLite stores a rebuildable image/review cache. Class IDs are the zero-based positions
+in the dataset's `data.yaml` names list; adding a class preserves existing IDs.
+
+Existing sibling, mirrored, nested, and flat YOLO/JSON labels are read on demand.
+The first save creates a canonical document and refreshes derived YOLO detection
+labels. Source images are preserved. Legacy labels shared by multiple image stems
+are rejected because their owner cannot be determined reliably; separate them by
+image before migrating. Back up the dataset before performing that reconciliation.
+For colliding image names, exports allocate deterministic unique output names.
+Polygons are retained in canonical JSON, YOLO export metadata, and COCO segmentation;
+the YOLO `.txt` projection contains detection boxes.
+
+Saves use atomic file replacement, a per-dataset process lock, and optimistic
+revision checks. Both studios reject stale edits rather than overwrite a newer
+revision. Web saves are queued per image, failed edits remain available when
+navigating, and closing the page with unsaved drafts triggers a browser warning.
+A failure to refresh a derived label is reported separately from a successful
+canonical save; exporting always reads the canonical annotation document.
+
+Batch jobs capture their dataset root and use their own index connection. They
+preserve existing annotations, report per-image failures, and write completed
+outcomes under `.visionlab/jobs/`. An empty "only unannotated" selection does no
+work. Interrupted jobs are not automatically resumed; documents committed before
+an interruption remain saved.
+
+### Local API session
+
+Keep the engine bound to `127.0.0.1`. The studio obtains a session token from
+`GET /api/session`; API requests require the `X-VisionLab-Token` header. Image URLs
+also accept the token query parameter. Tokens change when the backend restarts,
+and the web client renews its session after a 401 response. CORS allows the local
+studio development and Tauri origins. Image paths must resolve inside the active
+dataset, including after symlink resolution.
+
+Annotation clients should send `dataset_id` and `expected_revision` from their
+last annotation read. A changed dataset or stale revision returns 409; reload and
+reconcile the newer document before resubmitting. Geometry, confidence, and class
+mapping errors return 422. Uploads validate image content and reject existing names.
+
+Regression tests use temporary datasets and deterministic inference doubles for
+HTTP contracts. Native Windows launcher execution, native browser pointer behavior,
+and real GPU model accuracy still require validation on their target platforms.
 
 ---
 

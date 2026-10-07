@@ -7,6 +7,8 @@ import {
   fetchAnnotations,
   saveAnnotations,
   detectYolo,
+  imageIdentity,
+  registerDatasetClass,
 } from './services/api';
 import { StudioHeader } from './components/studio/StudioHeader';
 import { ActivityRail } from './components/studio/ActivityRail';
@@ -45,7 +47,17 @@ export const App: React.FC = () => {
     }, 1800);
   }, []);
 
+  const [loadedImageKey, setLoadedImageKey] = useState('');
+  const [annotationReload, setAnnotationReload] = useState(0);
+  const [saveError, setSaveError] = useState<{ image: ImageMeta; message: string } | null>(null);
+  const draftsRef = useRef(new Map<string, BoundingBox[]>());
+  const revisionsRef = useRef(new Map<string, number>());
+  const writesRef = useRef(new Map<string, Promise<void>>());
+  const refreshGeneration = useRef(0);
   const currentImage = images[currentImageIndex] || null;
+  const currentImageKey = currentImage ? imageIdentity(currentImage) : '';
+  const loadedImageKeyRef = useRef(loadedImageKey);
+  loadedImageKeyRef.current = loadedImageKey;
   const selectedBox = boxes.find((b) => b.id === selectedBoxId) || null;
 
   const healthRef = useRef<SystemHealth | null>(health);
@@ -69,96 +81,85 @@ export const App: React.FC = () => {
   const isShortcutsOpenRef = useRef<boolean>(isShortcutsOpen);
   isShortcutsOpenRef.current = isShortcutsOpen;
 
-  /** Progressive refresh: show first 200 instantly, then load all in background */
   const refreshImages = useCallback(async () => {
+    const generation = ++refreshGeneration.current;
     try {
+      const h = await fetchHealth();
       const first = await fetchImages(200, 0);
+      if (generation !== refreshGeneration.current || h.dataset_dir !== first.directory) return;
+      setHealth(h);
+      setActiveClassName(previous => h.classes.includes(previous) ? previous : h.classes[0] || '');
       setImages(first.images);
-      // If there are more, load them all in background
+      setCurrentImageIndex(previous => Math.max(0, Math.min(previous, first.images.length - 1)));
       if (first.total > 200) {
-        fetchAllImages()
-          .then((all) => setImages(all.images))
-          .catch((err) => console.error('Background image load failed:', err));
+        const all = await fetchAllImages();
+        if (generation === refreshGeneration.current && all.directory === first.directory) setImages(all.images);
       }
-    } catch (err) {
-      console.error('Error refreshing images:', err);
-    }
-  }, []);
+    } catch (err) { showToast(`Cannot load dataset: ${String(err)}`, 'error'); }
+  }, [showToast]);
 
-  // Initialize data from API — progressive load for instant first paint
+  useEffect(() => { void refreshImages(); }, [refreshImages]);
+
   useEffect(() => {
-    const init = async () => {
-      try {
-        const h = await fetchHealth();
-        setHealth(h);
-        if (h.classes && h.classes.length > 0) {
-          setActiveClassName(h.classes[0]);
-        }
-      } catch (err) {
-        console.error('API health check error:', err);
-      }
-
-      try {
-        // Phase 1: First 200 images → visible immediately (~140ms)
-        const first = await fetchImages(200, 0);
-        setImages(first.images);
-        // Phase 2: Load all remaining images in background
-        if (first.total > 200) {
-          fetchAllImages()
-            .then((all) => setImages(all.images))
-            .catch((err) => console.error('Background image load failed:', err));
-        }
-      } catch (err) {
-        console.error('Error fetching images:', err);
-      }
-    };
-    init();
-  }, []);
-
-
-  // Load annotations when current image changes (do NOT auto-run YOLO — explicit user action only)
-  useEffect(() => {
+    let active = true;
+    setBoxes([]);
+    setSelectedBoxId(null);
+    setLoadedImageKey('');
     if (!currentImage) return;
-    const load = async () => {
-      try {
-        const data = await fetchAnnotations(currentImage.filename);
-        if (data.boxes && data.boxes.length > 0) {
-          setBoxes(data.boxes);
-          setSelectedBoxId(data.boxes[0].id);
-        } else {
-          setBoxes([]);
-          setSelectedBoxId(null);
-        }
-      } catch (err) {
-        console.error('Error loading annotations:', err);
-        setBoxes([]);
-        setSelectedBoxId(null);
-      }
-    };
-    load();
-  }, [currentImage?.filename]);
+    const image = currentImage;
+    const key = imageIdentity(image);
+    const draft = draftsRef.current.get(key);
+    if (draft) {
+      setBoxes(draft);
+      setLoadedImageKey(key);
+      return;
+    }
+    fetchAnnotations(key, image.dataset_id).then(data => {
+      if (!active) return;
+      revisionsRef.current.set(key, data.revision);
+      setBoxes(data.boxes || []);
+      setSelectedBoxId(data.boxes?.[0]?.id || null);
+      setLoadedImageKey(key);
+    }).catch(err => { if (active) showToast(`Cannot load annotations: ${String(err)}`, 'error'); });
+    return () => { active = false; };
+  }, [currentImageKey, currentImage?.dataset_id, annotationReload, showToast]);
 
-  // Save annotations helper
-  const persistBoxes = useCallback(
-    async (updatedBoxes: BoundingBox[]) => {
+  const persistBoxes = useCallback(async (updatedBoxes: BoundingBox[], target?: ImageMeta) => {
+    const image = target || currentImageRef.current;
+    if (!image) return;
+    const key = imageIdentity(image);
+    if (!target && loadedImageKeyRef.current !== key) return;
+    draftsRef.current.set(key, updatedBoxes);
+    if (currentImageRef.current && imageIdentity(currentImageRef.current) === key) {
+      boxesRef.current = updatedBoxes;
       setBoxes(updatedBoxes);
-      if (currentImageRef.current) {
-        try {
-          await saveAnnotations(currentImageRef.current.filename, updatedBoxes);
-          setImages((prev) =>
-            prev.map((img, idx) =>
-              idx === currentImageIndex
-                ? { ...img, annotation_count: updatedBoxes.length, status: 'reviewed' }
-                : img
-            )
-          );
-        } catch (err) {
-          console.error('Failed to save annotations:', err);
-        }
+    }
+    const previous = writesRef.current.get(key) || Promise.resolve();
+    const write = previous.then(async () => {
+      try {
+        const result = await saveAnnotations(key, updatedBoxes, revisionsRef.current.get(key), image.dataset_id);
+        revisionsRef.current.set(key, result.revision);
+        if (result.projection_warning) showToast(result.projection_warning, 'error');
+        if (draftsRef.current.get(key) === updatedBoxes) draftsRef.current.delete(key);
+        setImages(prev => prev.map(img => imageIdentity(img) === key
+          ? { ...img, annotation_count: updatedBoxes.length, status: 'reviewed' } : img));
+        setSaveError(previousError => previousError && imageIdentity(previousError.image) === key ? null : previousError);
+      } catch (err) {
+        setSaveError({ image, message: `Edits for ${image.filename} are unsaved: ${String(err)}` });
       }
-    },
-    [currentImageIndex]
-  );
+    });
+    writesRef.current.set(key, write);
+    await write;
+    if (writesRef.current.get(key) === write) writesRef.current.delete(key);
+  }, [showToast]);
+
+  useEffect(() => {
+    const warnUnsaved = (event: BeforeUnloadEvent) => {
+      if (draftsRef.current.size) { event.preventDefault(); event.returnValue = ''; }
+    };
+    window.addEventListener('beforeunload', warnUnsaved);
+    return () => window.removeEventListener('beforeunload', warnUnsaved);
+  }, []);
 
   const handleAddBox = (newBox: BoundingBox) => {
     const updated = [...boxesRef.current, newBox];
@@ -187,14 +188,25 @@ export const App: React.FC = () => {
 
   const handleRunYoloDetect = async () => {
     const activeImg = currentImageRef.current;
-    if (!activeImg) return;
+    if (!activeImg || loadedImageKeyRef.current !== imageIdentity(activeImg) || isDetectingRef.current) return;
+    const startingBoxes = boxesRef.current;
     setIsDetecting(true);
     try {
-      const res = await detectYolo(activeImg.filename, 0.25);
-      persistBoxes(res.boxes);
+      const res = await detectYolo(imageIdentity(activeImg), 0.25, undefined, activeImg.dataset_id);
+      if (!currentImageRef.current || imageIdentity(currentImageRef.current) !== imageIdentity(activeImg)) {
+        showToast('Detection finished for a different image. Run it again on that image to apply.', 'info');
+        return;
+      }
+      if (boxesRef.current !== startingBoxes) {
+        showToast('Annotations changed during detection. Run detection again to apply.', 'info');
+        return;
+      }
+      await persistBoxes(res.boxes, activeImg);
       setSelectedBoxId(res.boxes[0]?.id || null);
+      const h = await fetchHealth();
+      if (h.dataset_dir === currentImageRef.current?.dataset_id) setHealth(h);
     } catch (err) {
-      console.error('YOLO detection failed:', err);
+      showToast(`Detection failed: ${String(err)}`, 'error');
     } finally {
       setIsDetecting(false);
     }
@@ -389,6 +401,8 @@ export const App: React.FC = () => {
           imageIndex={currentImageIndex}
           totalImages={images.length}
           activeClassName={activeClassName}
+          availableClasses={health?.classes || []}
+          readOnly={loadedImageKey !== currentImageKey}
           onSelectBox={setSelectedBoxId}
           onAddBox={handleAddBox}
           onUpdateBox={handleUpdateBox}
@@ -402,12 +416,29 @@ export const App: React.FC = () => {
         <ObjectInspector
           selectedBox={selectedBox}
           availableClasses={health?.classes}
+          onRegisterClass={async name => {
+            const image = currentImageRef.current;
+            const selected = selectedBoxRef.current;
+            if (!image || !selected) throw new Error('Select an annotation first');
+            const classes = await registerDatasetClass(name, image.dataset_id);
+            if (imageIdentity(currentImageRef.current || image) !== imageIdentity(image)
+                || selectedBoxRef.current !== selected) throw new Error('Selection changed; apply the class again');
+            setHealth(previous => previous && previous.dataset_dir === image.dataset_id ? { ...previous, classes } : previous);
+            return classes.findIndex(c => c.toLowerCase() === name.toLowerCase());
+          }}
           onUpdateBox={handleUpdateBox}
           onDeleteBox={handleDeleteBox}
           onAcceptBox={handleAcceptBox}
         />
       </div>
 
+      {saveError && <div role="alert" className="fixed top-12 left-1/2 -translate-x-1/2 z-50 bg-red-950 text-white p-3 rounded">
+        {saveError.message}
+        <button className="ml-3 underline" onClick={() => {
+          const draft = draftsRef.current.get(imageIdentity(saveError.image));
+          if (draft) void persistBoxes(draft, saveError.image);
+        }}>Retry save</button>
+      </div>}
       {/* Dynamic HUD Toast Notification */}
       {hudToast && (
         <div className="fixed bottom-14 left-1/2 -translate-x-1/2 z-50 pointer-events-none transition-all animate-fadeIn">
@@ -433,11 +464,8 @@ export const App: React.FC = () => {
         health={health}
         totalImages={images.length}
         images={images}
-        onStartBatch={(_classes, _conf) => {
-          refreshImages();
-          handleRunYoloDetect();
-        }}
-        onBatchComplete={refreshImages}
+        onStartBatch={() => { void refreshImages(); setAnnotationReload(value => value + 1); }}
+        onBatchComplete={() => { void refreshImages(); setAnnotationReload(value => value + 1); }}
       />
 
       {/* Dataset Hub Modal (Screen 3) */}
@@ -446,7 +474,10 @@ export const App: React.FC = () => {
         onClose={() => setIsDatasetHubOpen(false)}
         totalImages={images.length}
         initialTab={datasetHubTab}
-        onDatasetChanged={refreshImages}
+        onDatasetChanged={() => {
+          setImages([]); setCurrentImageIndex(0); setBoxes([]); setLoadedImageKey('');
+          void refreshImages();
+        }}
       />
     </div>
   );

@@ -2418,6 +2418,7 @@ class AutoLabelDialog(QDialog):
                     new_anns.append(
                         Annotation(
                             class_name=det.class_name,
+                            polygon_normalized=tuple(tuple(p) for p in det.polygon_normalized) if det.polygon_normalized else None,
                             box=safe_box,
                             confidence=conf,
                             source=source,

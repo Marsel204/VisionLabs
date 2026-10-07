@@ -172,6 +172,11 @@ def test_auto_label_dialog_single_preview(sample_images: list[Path], qapp: QAppl
 
     # Trigger preview
     dialog._run_single_preview()
+    from PySide6.QtCore import QElapsedTimer, QEventLoop
+    timer = QElapsedTimer()
+    timer.start()
+    while "Found" not in dialog.result_stats_label.text() and timer.elapsed() < 5000:
+        qapp.processEvents(QEventLoop.AllEvents, 20)
     assert mock_engine.run_preview.call_count == len(sample_images)
     assert "Found" in dialog.result_stats_label.text()
 

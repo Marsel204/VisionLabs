@@ -5,21 +5,30 @@ import { getClassColor } from '../../types';
 interface Props {
   selectedBox: BoundingBox | null;
   availableClasses?: string[];
+  onRegisterClass?: (name: string) => Promise<number>;
   onUpdateBox: (updated: BoundingBox) => void;
   onDeleteBox: (id: string) => void;
   onAcceptBox: (id: string) => void;
 }
 
-const DEFAULT_CLASSES = ['object', 'person', 'car', 'bus', 'truck', 'motorcycle'];
+const DEFAULT_CLASSES: string[] = [];
 
 export const ObjectInspector: React.FC<Props> = ({
   selectedBox,
   availableClasses,
+  onRegisterClass,
   onUpdateBox,
   onDeleteBox,
   onAcceptBox,
 }) => {
   const [customClassName, setCustomClassName] = useState('');
+  const [classError, setClassError] = useState('');
+  const applyCustomClass = async () => {
+    if (!selectedBox || !onRegisterClass || !customClassName.trim()) return;
+    const box = selectedBox; const name = customClassName.trim();
+    try { const id = await onRegisterClass(name); onUpdateBox({ ...box, class_name: availableClasses?.[id] || name, class_id: id }); setCustomClassName(''); setClassError(''); }
+    catch (err) { setClassError(String(err)); }
+  };
 
   if (!selectedBox) {
     return (
@@ -37,11 +46,7 @@ export const ObjectInspector: React.FC<Props> = ({
 
   const colorConfig = getClassColor(selectedBox.class_name);
 
-  // Combine available classes with the active box class if not present
-  const baseClasses = availableClasses && availableClasses.length > 0 ? availableClasses : DEFAULT_CLASSES;
-  const classList = baseClasses.includes(selectedBox.class_name.toLowerCase())
-    ? baseClasses
-    : [selectedBox.class_name.toLowerCase(), ...baseClasses];
+  const classList = availableClasses || DEFAULT_CLASSES;
 
   return (
     <aside className="w-[245px] flex-shrink-0 bg-[#0f1524]/85 backdrop-blur-2xl border-l border-[#2a3a48]/40 flex flex-col z-20 shadow-2xl overflow-y-auto select-none">
@@ -110,7 +115,7 @@ export const ObjectInspector: React.FC<Props> = ({
           {/* Styled Dark Select Dropdown with Zero GTK Interference */}
           <div className="relative">
             <select
-              value={selectedBox.class_name.toLowerCase()}
+              value={selectedBox.class_name}
               onChange={(e) => {
                 const val = e.target.value;
                 const idx = classList.indexOf(val);
@@ -144,6 +149,7 @@ export const ObjectInspector: React.FC<Props> = ({
             </span>
           </div>
 
+          {classError && <p role="alert" className="text-red-400 text-xs">{classError}</p>}
           {/* Custom Class Input */}
           <div className="flex gap-1 pt-1">
             <input
@@ -152,32 +158,13 @@ export const ObjectInspector: React.FC<Props> = ({
               value={customClassName}
               onChange={(e) => setCustomClassName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && customClassName.trim()) {
-                  const val = customClassName.trim().toLowerCase();
-                  const idx = classList.indexOf(val);
-                  onUpdateBox({
-                    ...selectedBox,
-                    class_name: val,
-                    class_id: idx >= 0 ? idx : classList.length,
-                  });
-                  setCustomClassName('');
-                }
+                if (e.key === 'Enter') void applyCustomClass();
               }}
               className="flex-1 bg-[#111827] text-white text-[11px] px-2 py-1 rounded border border-[#334155] focus:outline-none focus:border-[#06b6d4]"
             />
             <button
               type="button"
-              onClick={() => {
-                if (customClassName.trim()) {
-                  const val = customClassName.trim().toLowerCase();
-                  const idx = classList.indexOf(val);
-                  onUpdateBox({
-                    ...selectedBox,
-                    class_name: val,
-                    class_id: idx >= 0 ? idx : classList.length,
-                  });
-                  setCustomClassName('');
-                }
+              onClick={() => { void applyCustomClass();
               }}
               className="px-2 py-1 bg-[#141c2e] hover:bg-[#1a2438] text-[11px] font-semibold text-[#06b6d4] rounded border border-[#334155] cursor-pointer"
             >
