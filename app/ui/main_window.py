@@ -53,6 +53,7 @@ from app.export.exporters import CocoExporter, RoboflowExporter, YoloExporter, s
 from app.models.contracts import Detection as ModelDetection
 from app.services.active_learning import ActiveLearningConfig, ActiveLearningEngine, ImageAnalysis
 from app.services.active_learning.active_learning_models import DifficultyResult
+from app.services.dataset.repository import AnnotationRepository
 from app.services.annotation.domain import (
     Annotation,
     AnnotationDocument,
@@ -580,6 +581,8 @@ class MainWindow(QMainWindow):
         self._dataset_progress: _DatasetProgressDialog | None = None
         self._project_documents: dict[Path, AnnotationDocument] = {}
         self._project_root: Path | None = None
+        self._annotation_roots: dict[Path, Path] = {}
+        self._annotation_revisions: dict[Path, int] = {}
         self._crop_session: CropSession | None = None
         self._crop_original_document: AnnotationDocument | None = None
         self._crop_original_history: AnnotationHistory | None = None
@@ -1325,19 +1328,21 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("No supported images found in selected folder")
             return
 
-        from PIL import Image
-
+        root = Path(folder).resolve()
         is_initial = not self._project_documents
         added_count = 0
+        repo = AnnotationRepository(root)
         for path in paths:
             if path not in self._project_documents:
-                w, h = 1920, 1080
                 try:
-                    with Image.open(path) as im:
-                        w, h = im.size
-                except Exception:
-                    pass
-                self._project_documents[path] = AnnotationDocument(path, w, h)
+                    data = repo.read(path)
+                    document = repo.document(path, data=data)
+                except Exception as err:
+                    QMessageBox.critical(self, "Cannot open annotations", f"{path.name}: {err}")
+                    return
+                self._annotation_roots[path] = root
+                self._annotation_revisions[path] = data["revision"]
+                self._project_documents[path] = document
                 added_count += 1
 
         self._refresh_image_browser_order(preserve_current=True)
@@ -1549,6 +1554,8 @@ class MainWindow(QMainWindow):
         is_initial = not self._project_documents
         added_count = 0
         for document in result.documents:
+            self._annotation_roots[document.image_path] = result.project_root.resolve()
+            self._annotation_revisions[document.image_path] = AnnotationRepository(result.project_root).read(document.image_path)["revision"]
             if document.image_path not in self._project_documents:
                 self._project_documents[document.image_path] = document
                 added_count += 1
@@ -1702,10 +1709,18 @@ class MainWindow(QMainWindow):
         if image.isNull():
             self.statusBar().showMessage(f"Could not load {path.name}")
             return
-        self._document = self._project_documents.get(
-            path,
-            AnnotationDocument(path, image.width(), image.height()),
-        )
+        if path in self._project_documents:
+            self._document = self._project_documents[path]
+        else:
+            root = self._annotation_roots.get(path, self._project_root or path.parent)
+            try:
+                repo = AnnotationRepository(root)
+                data = repo.read(path)
+                self._document = repo.document(path, data=data)
+                self._annotation_revisions[path] = data["revision"]
+            except Exception as err:
+                QMessageBox.critical(self, "Cannot open annotations", str(err))
+                return
         self._project_documents[path] = self._document
         self._history = AnnotationHistory(self._document)
         self._grounding_detections = []
@@ -1783,15 +1798,17 @@ class MainWindow(QMainWindow):
         if self._document is None:
             self.statusBar().showMessage("Import a folder and select an image first")
             return
-        class_order = ("motorcycle", "car", "bus", "truck")
-        lines = []
-        for annotation in self._document.annotations:
-            center_x, center_y, width, height = annotation.box.to_yolo()
-            class_id = class_order.index(annotation.class_name)
-            lines.append(f"{class_id} {center_x:.6f} {center_y:.6f} {width:.6f} {height:.6f}")
-        label_path = self._document.image_path.with_suffix(".txt")
-        label_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-        self.statusBar().showMessage(f"Saved {len(lines)} annotations to {label_path.name}")
+        document = self._document
+        root = getattr(self, "_annotation_roots", {}).get(document.image_path,
+            getattr(self, "_project_root", None) or document.image_path.parent)
+        try:
+            repo = AnnotationRepository(root)
+            saved = repo.save_document(document, expected_revision=self._annotation_revisions.get(document.image_path, 0))
+            self._annotation_revisions[document.image_path] = saved["revision"]
+        except Exception as err:
+            QMessageBox.critical(self, "Save failed", str(err))
+            return
+        self.statusBar().showMessage(saved.get("projection_warning") or f"Saved {len(document.annotations)} annotations")
 
     def _remember_current_document(self) -> None:
         """Persist the active document in the current imported project session."""

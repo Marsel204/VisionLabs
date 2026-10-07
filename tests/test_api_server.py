@@ -2,8 +2,40 @@
 
 from fastapi.testclient import TestClient
 from app.api.server import app
+from app.api import server
+import pytest
+from PIL import Image
+from pathlib import Path
+from types import SimpleNamespace
+from app.services.dataset.index import DatasetIndex
+from app.services.auto_label.models import AutoLabelResult, AutoLabelDetection
+from app.services.annotation.domain import BoundingBox
 
-client = TestClient(app)
+client = TestClient(app, headers={"X-VisionLab-Token": server.SESSION_TOKEN})
+
+
+@pytest.fixture(autouse=True)
+def isolated_api_dataset(tmp_path, monkeypatch):
+    """Exercise HTTP contracts with synthetic inputs and deterministic inference."""
+    image = tmp_path / "sample.jpg"
+    Image.new("RGB", (100, 80)).save(image)
+    index = DatasetIndex(tmp_path / ".dataset_index.sqlite")
+    index.scan(tmp_path)
+    monkeypatch.setattr(server, "ACTIVE_DATASET_DIR", tmp_path)
+    monkeypatch.setattr(server, "DATASET_INDEX", index)
+    class Detector:
+        names = {0: "car"}
+        def __call__(self, *args, **kwargs):
+            pixel_box = SimpleNamespace(cls=[0], conf=[.9],
+                xyxy=[SimpleNamespace(tolist=lambda: [10, 8, 30, 24])])
+            return [SimpleNamespace(boxes=[pixel_box])]
+    monkeypatch.setattr(server.AUTOLABEL_ENGINE, "_get_yolo_detector", lambda *args: Detector())
+    monkeypatch.setattr(server, "get_yolo_model", lambda: None)
+    monkeypatch.setattr(server.AUTOLABEL_ENGINE, "run_preview", lambda path, config:
+        AutoLabelResult(Path(path), 100, 80, [AutoLabelDetection("car", .9, BoundingBox(.1, .1, .3, .3))]))
+    monkeypatch.setattr("shutil.which", lambda name: None)  # No native dialogs in contract tests.
+    yield
+    index.close()
 
 
 def test_health():
@@ -188,4 +220,3 @@ def test_autolabel_preview_with_florence_and_yolo_ensemble():
     data = res.json()
     assert "image_name" in data
     assert "detections" in data
-

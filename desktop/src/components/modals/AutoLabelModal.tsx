@@ -180,6 +180,7 @@ export const AutoLabelModal: React.FC<Props> = ({
             const target = img.path || img.filename;
             const res = await runAutoLabelPreview({
               image_name: target,
+              dataset_id: img.dataset_id,
               classes,
               confidence_threshold: confidence,
               iou_threshold: iouThreshold,
@@ -407,6 +408,7 @@ export const AutoLabelModal: React.FC<Props> = ({
     setIsBatchRunning(true);
     try {
       await startAutoLabelBatch({
+        dataset_id: health?.dataset_dir,
         classes,
         confidence_threshold: confidence,
         iou_threshold: iouThreshold,
@@ -429,18 +431,21 @@ export const AutoLabelModal: React.FC<Props> = ({
             clearInterval(interval);
             setIsBatchRunning(false);
             const activeClassNames = classes.filter((c) => c.enabled).map((c) => c.name);
+            if (status.error || status.warnings?.length) {
+              setModelActionMessage(status.error || status.warnings!.join('; ')); onBatchComplete?.(); return;
+            }
             onStartBatch(activeClassNames, confidence);
             onBatchComplete?.();
             onClose();
           }
         } catch (pollErr) {
-          console.error('Batch polling error:', pollErr);
+          setModelActionMessage(`Batch status unavailable: ${String(pollErr)}`);
           clearInterval(interval);
           setIsBatchRunning(false);
         }
       }, 500);
     } catch (err) {
-      console.error('Batch start error:', err);
+      setModelActionMessage(`Batch could not start: ${String(err)}`);
       setIsBatchRunning(false);
     }
   };
@@ -1237,7 +1242,7 @@ export const AutoLabelModal: React.FC<Props> = ({
                           <img
                             className="w-auto h-auto max-w-full max-h-[280px] object-contain block select-none rounded shadow-md pointer-events-none"
                             alt={img.filename}
-                            src={getImageUrl(img.filename)}
+                            src={getImageUrl(img.path || img.image_id || img.filename)}
                           />
 
                           {/* Loading / Scanning HUD indicator */}
@@ -1352,7 +1357,7 @@ export const AutoLabelModal: React.FC<Props> = ({
                           <span className="mx-1 text-[#869397]">|</span>
                           <span>IoU:</span>
                           <span className="text-[#4cd7f6] font-bold">
-                            {result?.iou ? result.iou.toFixed(2) : '0.95'}
+                            {result?.iou != null ? result.iou.toFixed(2) : 'Not measured'}
                           </span>
                           <span className="mx-1 text-[#869397]">|</span>
                           <span>Latency:</span>

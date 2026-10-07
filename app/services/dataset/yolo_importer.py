@@ -1,6 +1,7 @@
 """YOLO detection dataset import for annotation cleanup projects."""
 
 from __future__ import annotations
+from collections.abc import Sequence
 
 import logging
 import shutil

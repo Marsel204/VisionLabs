@@ -106,12 +106,19 @@ class Annotation:
     occluded: bool = False
     truncated: bool = False
     annotation_id: UUID = field(default_factory=uuid4)
+    polygon_normalized: tuple[tuple[float, float], ...] | None = None
 
     def __post_init__(self) -> None:
         if not self.class_name or not str(self.class_name).strip():
             raise AnnotationValidationError("class name cannot be empty")
         if self.confidence is not None and not 0.0 <= self.confidence <= 1.0:
             raise AnnotationValidationError("confidence must be between 0 and 1")
+        if self.polygon_normalized is not None:
+            if len(self.polygon_normalized) < 3 or any(
+                len(point) != 2 or any(not 0 <= value <= 1 for value in point)
+                for point in self.polygon_normalized
+            ):
+                raise AnnotationValidationError("polygon must contain at least three normalized points")
 
     def accept(self) -> Annotation:
         """Return a copy marked as accepted by human review."""

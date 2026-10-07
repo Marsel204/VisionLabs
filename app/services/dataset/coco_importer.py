@@ -8,6 +8,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from collections.abc import Sequence
 
 from PIL import Image
 
@@ -19,6 +20,7 @@ from app.services.annotation.domain import (
     BoundingBox,
 )
 from app.services.fusion.overlap import remove_overlapping_annotations
+from app.export.exporters import unique_image_names
 
 LOGGER = logging.getLogger(__name__)
 
@@ -125,6 +127,8 @@ class CocoImporter:
             "annotations_imported": 0,
             "overlapping_removed": 0,
         }
+        source_paths = [self._safe_source_path(image_root, Path(str(record["file_name"]))) for record in images]
+        target_names = unique_image_names(source_paths)
         def _process_coco_record(
             image_record: dict[str, Any],
         ) -> tuple[AnnotationDocument | None, dict[str, int], list[str]]:
@@ -144,7 +148,7 @@ class CocoImporter:
                     sub_counts["missing_images"] += 1
                     sub_warnings.append(f"missing image: {relative_name}")
                     return None, sub_counts, sub_warnings
-                target_path = project_images / relative_name.name
+                target_path = project_images / target_names[source_path]
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     if source_path.resolve() != target_path.resolve():
@@ -264,7 +268,14 @@ class CocoImporter:
     @staticmethod
     def _safe_source_path(image_root: Path, relative_name: Path | str) -> Path:
         root = image_root.resolve()
-        clean_rel_str = str(relative_name).replace("\\", "/").lstrip("/")
+        clean_rel_str = str(relative_name).replace("\\", "/")
+        supplied = Path(clean_rel_str)
+        if ".." in supplied.parts:
+            raise CocoImportError("COCO image path escapes the source root")
+        if supplied.is_absolute():
+            if not supplied.resolve().is_relative_to(root):
+                raise CocoImportError("COCO absolute image path escapes the source root")
+            return supplied.resolve()
         clean_rel = Path(clean_rel_str)
 
         # 1. Direct relative candidate
@@ -290,6 +301,8 @@ class CocoImporter:
         except Exception:
             pass
 
+        if not candidate.is_relative_to(root):
+            raise CocoImportError("COCO image path escapes the source root")
         return candidate
 
     @staticmethod

@@ -174,7 +174,7 @@ export const ImageQueueDrawer: React.FC<Props> = ({
                     {/* Thumbnail */}
                     <div className="relative w-11 h-11 flex-shrink-0 rounded overflow-hidden bg-[#0a0e1a] border border-[#2a3a48]/30">
                       <img
-                        src={getImageUrl(img.filename)}
+                        src={getImageUrl(img.path || img.image_id || img.filename)}
                         alt={img.filename}
                         className="w-full h-full object-cover"
                         loading="lazy"

@@ -14,18 +14,22 @@ export interface BoundingBox {
   occluded?: boolean;
   truncated?: boolean;
   difficult_lighting?: boolean;
+  polygon_normalized?: number[][] | null;
+  polygon_pixels?: number[][] | null;
   source?: string;
 }
 
 export interface ImageMeta {
   filename: string;
   path?: string;
+  image_id?: string;
+  dataset_id?: string;
   width: number;
   height: number;
   size_bytes: number;
   annotation_count: number;
   difficulty?: number;
-  status: 'pending' | 'reviewed' | 'ai_labeled';
+  status: 'pending' | 'unreviewed' | 'reviewed' | 'ai_labeled';
 }
 
 export interface DatasetStats {
@@ -52,6 +56,12 @@ export interface ExportResult {
 }
 
 export interface AutoLabelStatus {
+  warnings?: string[];
+  job_id?: string;
+  dataset_id?: string;
+  succeeded_count?: number;
+  failed_count?: number;
+  failures?: Array<{image: string; error: string}>;
   running: boolean;
   current: number;
   total: number;

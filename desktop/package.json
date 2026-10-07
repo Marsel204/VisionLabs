@@ -4,6 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "tauri": "tauri",
+    "test": "node --test tests/*.cjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
