@@ -49,6 +49,99 @@ def test_health():
     assert data["database_connected"] is True
 
 
+def test_locate_anything_preview_and_batch_forward_selection(monkeypatch):
+    from unittest.mock import Mock
+
+    thread_factory = Mock()
+    monkeypatch.setattr(server, "threading", SimpleNamespace(Thread=thread_factory))
+    monkeypatch.setattr(server, "get_yolo_model", lambda: pytest.fail("Unselected YOLO loaded"))
+    configs = []
+    def preview(path, config):
+        configs.append(config)
+        return AutoLabelResult(Path(path), 100, 80, [
+            AutoLabelDetection("car", 1.0, BoundingBox(.1, .2, .7, .8))])
+    monkeypatch.setattr(server.AUTOLABEL_ENGINE, "run_preview", preview)
+    options = {"classes": ["car"], "pipeline_mode": "locate_anything_boxes",
+               "enable_locate_anything": True, "enable_grounding_dino": False,
+               "enable_yolo": False, "enable_sam2_masks": False}
+    response = client.post("/api/autolabel/preview", json={"image_name": "sample.jpg", **options})
+    assert response.status_code == 200, response.text
+    assert configs[-1].enable_locate_anything is True
+    assert configs[-1].mode.value == "locate_anything_boxes"
+    response = client.post("/api/autolabel/batch", json={"only_unannotated": False, **options})
+    assert response.status_code == 200, response.text
+    work = thread_factory.call_args.kwargs
+    work["target"](*work["args"])
+    assert len(configs) == 2 and configs[-1].enable_locate_anything is True
+    annotations = client.get("/api/annotations/sample.jpg").json()
+    assert annotations["boxes"][0]["source"] == "locate_anything"
+
+
+def test_locate_anything_preview_reports_failure_without_yolo_fallback(monkeypatch):
+    from app.models.contracts import ModelRuntimeError
+
+    def fail(*args):
+        raise ModelRuntimeError("Locate Anything could not load; install its dependencies")
+    monkeypatch.setattr(server.AUTOLABEL_ENGINE, "run_preview", fail)
+    monkeypatch.setattr(server, "detect_yolo", lambda *args: pytest.fail("Unexpected YOLO fallback"))
+    response = client.post("/api/autolabel/preview", json={
+        "image_name": "sample.jpg", "classes": ["car"], "enable_locate_anything": True,
+        "enable_grounding_dino": False, "enable_yolo": False,
+    })
+    assert response.status_code == 503
+    assert "Locate Anything" in response.json()["detail"]
+
+
+def test_locate_anything_empty_preview_does_not_run_yolo(monkeypatch):
+    monkeypatch.setattr(server.AUTOLABEL_ENGINE, "run_preview", lambda path, config:
+                        AutoLabelResult(Path(path), 100, 80, []))
+    monkeypatch.setattr(server, "get_yolo_model", lambda: object())
+    monkeypatch.setattr(server, "detect_yolo", lambda *args: pytest.fail("Unexpected YOLO fallback"))
+    response = client.post("/api/autolabel/preview", json={
+        "image_name": "sample.jpg", "classes": ["car"], "enable_locate_anything": True,
+        "enable_grounding_dino": False, "enable_yolo": False,
+    })
+    assert response.status_code == 200 and response.json()["count"] == 0
+
+
+def test_colab_endpoints_require_local_session():
+    unauthenticated = TestClient(app)
+    assert unauthenticated.get("/api/colab/status").status_code == 401
+    assert unauthenticated.post("/api/colab/connect").status_code == 401
+    assert unauthenticated.post("/api/colab/switch-account").status_code == 401
+    assert unauthenticated.post("/api/colab/account").status_code == 401
+
+
+def test_colab_account_controls_use_the_local_connection(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server.COLAB_CONNECTION, "switch_account", lambda: calls.append("switch"))
+    monkeypatch.setattr(server.COLAB_CONNECTION, "refresh_account", lambda: calls.append("refresh"))
+    assert client.post("/api/colab/account").status_code == 200
+    assert client.post("/api/colab/switch-account").status_code == 200
+    assert calls == ["refresh", "switch"]
+
+
+def test_colab_job_selects_three_images_and_skips_existing_labels(tmp_path, monkeypatch):
+    for index in range(5):
+        Image.new("RGB", (100, 80)).save(tmp_path / f"image-{index}.jpg")
+    server.DATASET_INDEX.scan(tmp_path)
+    repo = server.AnnotationRepository(tmp_path)
+    repo.save(tmp_path / "image-0.jpg", [], status="reviewed", expected_revision=0)
+    selected = []
+    monkeypatch.setattr(server.COLAB_CONNECTION, "start_job",
+                        lambda root, images, *args, **kwargs: selected.extend(images))
+    response = client.post("/api/colab/jobs", json={"dataset_id": str(tmp_path), "classes": ["car"]})
+    assert response.status_code == 200
+    assert len(selected) == 3
+    assert tmp_path / "image-0.jpg" not in selected
+    assert client.post("/api/colab/jobs", json={
+        "dataset_id": "/another-dataset", "classes": ["car"],
+    }).status_code == 409
+    assert client.post("/api/colab/jobs", json={
+        "dataset_id": str(tmp_path), "classes": ["car"], "limit": 101,
+    }).status_code == 422
+
+
 def test_images_list():
     res = client.get("/api/images")
     assert res.status_code == 200
@@ -60,6 +153,18 @@ def test_images_list():
     assert "width" in first
     assert "height" in first
     assert "status" in first
+
+
+@pytest.mark.parametrize("gpu", ["T4", "L4", "A100", "H100", "G4"])
+def test_colab_api_accepts_supported_gpu_names(tmp_path, monkeypatch, gpu):
+    selected = []
+    monkeypatch.setattr(server.COLAB_CONNECTION, "start_job",
+                        lambda *args, **kwargs: selected.append(kwargs["gpu"]))
+    response = client.post("/api/colab/jobs", json={
+        "dataset_id": str(tmp_path), "classes": ["car"], "gpu": gpu,
+    })
+    assert response.status_code == 200, response.text
+    assert selected == [gpu]
 
 
 def test_prompt_auto_refine():

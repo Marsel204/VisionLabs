@@ -1,0 +1,10 @@
+# Lightweight laptop/backend install. Local AI weights and runtimes live on the worker.
+# Launch directly with this environment's Python; uv sync installs the full local AI stack.
+fastapi>=0.115
+pydantic>=2.7,<3
+uvicorn>=0.30
+python-multipart>=0.0.18
+python-dotenv>=1.0
+numpy>=2.0
+Pillow>=10.0
+PyYAML>=6.0

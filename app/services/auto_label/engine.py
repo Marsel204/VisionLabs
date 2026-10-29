@@ -25,6 +25,7 @@ from app.services.auto_label.models import (
     AutoLabelPipelineMode,
     AutoLabelResult,
 )
+from app.services.inference.cloud import CloudInferenceClient, CloudInferenceSettings
 
 LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class AutoLabelEngine:
     """Orchestrates zero-shot prompt grounded detection, VLM verification, and SAM 2 mask segmentation."""
 
     _grounding_detector: Any | None = None
+    _locate_anything_detector: Any | None = None
     _sam_segmenter: Any | None = None
     _vlm_helper: Any | None = None
     _polygon_processor: Any | None = None
@@ -67,8 +69,13 @@ class AutoLabelEngine:
         yolo_detector: Any | None = None,
         yolo_model_name: str = "yolo11n.pt",
         device: str = "auto",
+        cloud_settings: CloudInferenceSettings | None = None,
+        allow_cloud: bool = True,
+        fail_on_model_error: bool = False,
+        locate_anything_detector: Any | None = None,
     ) -> None:
         self._grounding_detector = grounding_detector
+        self._locate_anything_detector = locate_anything_detector
         self._sam_segmenter = sam_segmenter
         self._vlm_helper = vlm_helper
         self._polygon_processor = polygon_processor
@@ -79,6 +86,13 @@ class AutoLabelEngine:
         self._yolo_model_name = yolo_model_name
         self._device = device
         self._model_lock = threading.Lock()
+        settings = (cloud_settings or CloudInferenceSettings.from_env()) if allow_cloud else None
+        self._cloud_client = CloudInferenceClient(settings) if settings else None
+        self._fail_on_model_error = fail_on_model_error
+
+    @property
+    def uses_cloud(self) -> bool:
+        return self._cloud_client is not None
 
     def _get_grounding_detector(self) -> Any:
         with self._model_lock:
@@ -95,6 +109,14 @@ class AutoLabelEngine:
 
                 self._sam_segmenter = SamSegmenter(device=self._device)
             return self._sam_segmenter
+
+    def _get_locate_anything_detector(self) -> Any:
+        with self._model_lock:
+            if self._locate_anything_detector is None:
+                from app.services.inference.locate_anything import LocateAnythingDetector
+
+                self._locate_anything_detector = LocateAnythingDetector(device=self._device)
+            return self._locate_anything_detector
 
     def _get_vlm_helper(self) -> Any:
         with self._model_lock:
@@ -288,6 +310,9 @@ class AutoLabelEngine:
                 elapsed_seconds=time.perf_counter() - start_time,
             )
 
+        if self._cloud_client is not None:
+            return self._cloud_client.predict(path, config)
+
         color_map = {c.name: c.color for c in active_classes}
 
         candidate_boxes_px: list[list[float]] = []
@@ -300,13 +325,20 @@ class AutoLabelEngine:
         run_dino = False
         run_yolo = False
         run_florence2 = False
+        run_locate_anything = config.enable_locate_anything
 
         active_detector_count = (
             (1 if config.enable_grounding_dino else 0)
             + (1 if config.enable_yolo else 0)
             + (1 if config.enable_florence2 else 0)
+            + (1 if run_locate_anything else 0)
         )
-        if config.mode.is_ensemble or active_detector_count > 1 or (config.enable_yolo and len(config.yolo_models or []) > 1):
+        if (
+            config.mode.is_ensemble
+            or active_detector_count > 1
+            or run_locate_anything
+            or (config.enable_yolo and len(config.yolo_models or []) > 1)
+        ):
             run_dino = config.enable_grounding_dino
             run_yolo = config.enable_yolo
             run_florence2 = config.enable_florence2
@@ -355,6 +387,8 @@ class AutoLabelEngine:
                     candidate_classes.append(matched_cls)
                     candidate_scores.append(score)
             except Exception as err:
+                if self._fail_on_model_error:
+                    raise
                 LOGGER.warning("Grounding DINO detector error: %s", err)
                 try:
                     import torch
@@ -441,6 +475,8 @@ class AutoLabelEngine:
                                     candidate_classes.append(matched_cls)
                                     candidate_scores.append(score)
                 except Exception as err:
+                    if self._fail_on_model_error:
+                        raise
                     LOGGER.warning("Failed running YOLO model '%s': %s", model_name, err)
 
         # 3. Florence-2 VLM
@@ -479,7 +515,22 @@ class AutoLabelEngine:
             (1 if run_dino else 0)
             + (len(active_models) if run_yolo else 0)
             + (1 if run_florence2 else 0)
+            + (1 if run_locate_anything else 0)
         )
+
+        if run_locate_anything:
+            detector = self._get_locate_anything_detector()
+            located_boxes = detector.detect(
+                image=image, prompts=[c.effective_prompt for c in active_classes]
+            )
+            for class_index, box in located_boxes:
+                candidate_boxes_px.append([
+                    box.left * width, box.top * height, box.right * width, box.bottom * height
+                ])
+                candidate_classes.append(active_classes[class_index])
+                # Structured generation has no per-object probability. This placeholder
+                # keeps valid boxes in the existing fusion/annotation score contract.
+                candidate_scores.append(1.0)
 
         # Apply Anti-Duplication Suppression (NMS / Fusion across multiple models only)
         if candidate_boxes_px and total_model_count > 1:
@@ -530,6 +581,8 @@ class AutoLabelEngine:
                 candidate_classes = verified_classes
                 candidate_scores = verified_scores
             except Exception as err:
+                if self._fail_on_model_error:
+                    raise
                 LOGGER.warning("Florence-2 VLM verification failed: %s", err)
 
         # Early exit if no candidates survived
@@ -701,20 +754,7 @@ class AutoLabelEngine:
         updated: dict[Path, AnnotationDocument] = {}
         total = len(documents)
 
-        if config.mode.is_ensemble:
-            ann_source = (
-                AnnotationSource.SAM2
-                if config.mode.produces_masks
-                else AnnotationSource.FUSED
-            )
-        elif config.mode.produces_masks:
-            ann_source = AnnotationSource.SAM2
-        elif config.mode in (AutoLabelPipelineMode.YOLO_BOXES,):
-            ann_source = AnnotationSource.YOLO
-        elif config.mode in (AutoLabelPipelineMode.VLM_BOXES,):
-            ann_source = AnnotationSource.FLORENCE2
-        else:
-            ann_source = AnnotationSource.GROUNDING_DINO
+        ann_source = config.mode.annotation_source
 
         for index, doc in enumerate(documents, start=1):
             if is_cancelled is not None and is_cancelled():

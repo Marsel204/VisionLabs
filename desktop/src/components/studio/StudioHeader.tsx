@@ -8,6 +8,7 @@ interface Props {
   onOpenExport: () => void;
   onOpenImport: () => void;
   onOpenShortcuts?: () => void;
+  onOpenColab?: () => void;
 }
 
 export const StudioHeader: React.FC<Props> = ({
@@ -17,7 +18,9 @@ export const StudioHeader: React.FC<Props> = ({
   onOpenExport,
   onOpenImport,
   onOpenShortcuts,
+  onOpenColab,
 }) => {
+  const usesCloud = health?.inference?.backend === 'cloud';
   return (
     <header className="h-12 bg-[#0f1524]/90 backdrop-blur-xl border-b border-[#2a3a48]/40 flex items-center justify-between px-3.5 z-40 select-none shadow-sm">
       {/* Left: Brand & Dataset Dropdown */}
@@ -38,7 +41,7 @@ export const StudioHeader: React.FC<Props> = ({
 
         <div className="hidden xl:flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#111828] text-[11px] text-[#a0b4c4] font-mono border border-[#2a3a48]/20">
           <span className="w-1.5 h-1.5 rounded-full bg-[#06b6d4] animate-pulse"></span>
-          <span>Model: YOLO11</span>
+          <span>{usesCloud ? 'Inference: Cloud' : 'Model: YOLO11'}</span>
         </div>
       </div>
 
@@ -47,14 +50,22 @@ export const StudioHeader: React.FC<Props> = ({
         {/* GPU Status */}
         <div className="hidden md:flex items-center gap-2 px-2.5 py-1 rounded-full bg-[#111828] text-[11px] font-mono text-[#a0b4c4] border border-[#2a3a48]/30">
           <span className="material-symbols-outlined text-[14px] text-[#7dd3fc]">memory</span>
-          <span className="text-[#e0e8f0]">{health?.gpu?.device || 'RTX 4090'}</span>
+          <span className="text-[#e0e8f0]">{usesCloud ? 'Cloud inference' : health?.gpu?.device || 'Connecting…'}</span>
+          {!usesCloud && <>
+            <span className="text-[#4a6070]">•</span>
+            <span className="text-[#10b981] font-semibold">{health?.gpu?.temperature || 'Not measured'}</span>
+          </>}
           <span className="text-[#4a6070]">•</span>
-          <span className="text-[#10b981] font-semibold">{health?.gpu?.temperature || 'Not measured'}</span>
-          <span className="text-[#4a6070]">•</span>
-          <span className="text-[#7dd3fc]">Ready</span>
+          <span className="text-[#7dd3fc]">{health ? (usesCloud ? 'Configured' : 'Ready') : 'Connecting'}</span>
         </div>
 
         {/* Auto-Label AI Trigger */}
+        <button type="button" onClick={onOpenColab}
+          className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#141c2e] hover:bg-[#1a2438] text-xs font-medium text-[#e0e8f0] border border-[#2a3a48]/40 cursor-pointer min-h-8"
+          title="Connect Google Colab for annotation without a local GPU">
+          <span className="material-symbols-outlined text-[15px] text-[#7dd3fc]" aria-hidden="true">cloud</span>
+          <span>Colab</span>
+        </button>
         <button
           onClick={onOpenAutoLabel}
           type="button"

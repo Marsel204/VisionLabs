@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from app.services.annotation.domain import BoundingBox
+from app.services.annotation.domain import AnnotationSource, BoundingBox
 
 
 class AutoLabelPipelineMode(StrEnum):
@@ -20,6 +20,8 @@ class AutoLabelPipelineMode(StrEnum):
     YOLO_BOXES = "yolo_boxes"
     VLM_SAM2_MASKS = "vlm_sam2_masks"
     VLM_BOXES = "vlm_boxes"
+    LOCATE_ANYTHING_SAM2_MASKS = "locate_anything_sam2_masks"
+    LOCATE_ANYTHING_BOXES = "locate_anything_boxes"
     ENSEMBLE_FUSION_SAM2_MASKS = "ensemble_fusion_sam2_masks"
     ENSEMBLE_FUSION_BOXES = "ensemble_fusion_boxes"
 
@@ -39,6 +41,10 @@ class AutoLabelPipelineMode(StrEnum):
                 return "Florence-2 VLM + SAM 2 (Masks)"
             case AutoLabelPipelineMode.VLM_BOXES:
                 return "Florence-2 VLM (Bounding Boxes)"
+            case AutoLabelPipelineMode.LOCATE_ANYTHING_SAM2_MASKS:
+                return "Locate Anything 3B + SAM 2 (Masks)"
+            case AutoLabelPipelineMode.LOCATE_ANYTHING_BOXES:
+                return "Locate Anything 3B (Bounding Boxes)"
             case AutoLabelPipelineMode.ENSEMBLE_FUSION_SAM2_MASKS:
                 return "Multi-Model Ensemble + SAM 2 (Masks)"
             case AutoLabelPipelineMode.ENSEMBLE_FUSION_BOXES:
@@ -52,6 +58,7 @@ class AutoLabelPipelineMode(StrEnum):
                 AutoLabelPipelineMode.DINO_SAM2_MASKS
                 | AutoLabelPipelineMode.YOLO_SAM2_MASKS
                 | AutoLabelPipelineMode.VLM_SAM2_MASKS
+                | AutoLabelPipelineMode.LOCATE_ANYTHING_SAM2_MASKS
                 | AutoLabelPipelineMode.ENSEMBLE_FUSION_SAM2_MASKS
             ):
                 return "Mask labels"
@@ -59,6 +66,7 @@ class AutoLabelPipelineMode(StrEnum):
                 AutoLabelPipelineMode.DINO_BOXES
                 | AutoLabelPipelineMode.YOLO_BOXES
                 | AutoLabelPipelineMode.VLM_BOXES
+                | AutoLabelPipelineMode.LOCATE_ANYTHING_BOXES
                 | AutoLabelPipelineMode.ENSEMBLE_FUSION_BOXES
             ):
                 return "Box labels"
@@ -70,6 +78,7 @@ class AutoLabelPipelineMode(StrEnum):
             AutoLabelPipelineMode.DINO_SAM2_MASKS,
             AutoLabelPipelineMode.YOLO_SAM2_MASKS,
             AutoLabelPipelineMode.VLM_SAM2_MASKS,
+            AutoLabelPipelineMode.LOCATE_ANYTHING_SAM2_MASKS,
             AutoLabelPipelineMode.ENSEMBLE_FUSION_SAM2_MASKS,
         )
 
@@ -110,6 +119,30 @@ class AutoLabelPipelineMode(StrEnum):
             AutoLabelPipelineMode.ENSEMBLE_FUSION_SAM2_MASKS,
             AutoLabelPipelineMode.ENSEMBLE_FUSION_BOXES,
         )
+
+    @property
+    def uses_locate_anything(self) -> bool:
+        return self in (
+            AutoLabelPipelineMode.LOCATE_ANYTHING_SAM2_MASKS,
+            AutoLabelPipelineMode.LOCATE_ANYTHING_BOXES,
+            AutoLabelPipelineMode.ENSEMBLE_FUSION_SAM2_MASKS,
+            AutoLabelPipelineMode.ENSEMBLE_FUSION_BOXES,
+        )
+
+    @property
+    def annotation_source(self) -> AnnotationSource:
+        """Origin stored on annotations created by this pipeline."""
+        if self.produces_masks:
+            return AnnotationSource.SAM2
+        if self.is_ensemble:
+            return AnnotationSource.FUSED
+        if self.uses_locate_anything:
+            return AnnotationSource.LOCATE_ANYTHING
+        if self.uses_yolo:
+            return AnnotationSource.YOLO
+        if self.uses_vlm:
+            return AnnotationSource.FLORENCE2
+        return AnnotationSource.GROUNDING_DINO
 
 
 @dataclass
@@ -153,6 +186,7 @@ class AutoLabelConfig:
     enable_grounding_dino: bool = True
     enable_yolo: bool = True
     enable_florence2: bool = False
+    enable_locate_anything: bool = False
     enable_florence2_verifier: bool = False
     enable_sam2_masks: bool = True
 
