@@ -75,6 +75,7 @@ export interface AutoLabelStatus {
 export interface SystemHealth {
   status: string;
   dataset_dir: string;
+  inference?: { backend: 'local' | 'cloud' };
   gpu: {
     available: boolean;
     device: string;
@@ -87,6 +88,7 @@ export interface SystemHealth {
     sam2: boolean;
     grounding_dino: boolean;
     florence2: boolean;
+    locate_anything?: boolean;
   };
 }
 

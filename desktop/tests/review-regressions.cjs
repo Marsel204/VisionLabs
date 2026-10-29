@@ -18,6 +18,7 @@ function harness(file, supplied = {}) {
       return [state[i], v=>{state[i]=typeof v==='function'?v(state[i]):v;}]; },
     useRef(initial) { const i=cursor++; return refs[i] || (refs[i]={current:initial}); },
     useCallback(fn,deps) { const i=cursor++; if (!callbacks[i] || !same(deps,callbacks[i].deps)) callbacks[i]={fn,deps}; return callbacks[i].fn; },
+    useMemo(fn,deps) { const i=cursor++; if (!callbacks[i] || !same(deps,callbacks[i].deps)) callbacks[i]={value:fn(),deps}; return callbacks[i].value; },
     useEffect(fn,deps) { const i=cursor++; if (!effects[i] || !same(deps,effects[i].deps)) {
       const old=effects[i]; effects[i]={deps,cleanup:null}; pending.push(()=>{old?.cleanup?.(); effects[i].cleanup=fn();}); } },
   };
@@ -31,7 +32,7 @@ function harness(file, supplied = {}) {
   const code=ts.transpileModule(fs.readFileSync(path.join(root,file),'utf8'), {
     compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022},
   }).outputText;
-  const exports={}; let nextTimer=0;
+  const exports={}; let nextTimer=0; const intervals=new Map();
   vm.runInNewContext(code, {exports, require(name) {
     if (name==='react') return {...React,default:React};
     if (name==='react/jsx-runtime') return {jsx,jsxs:jsx};
@@ -39,9 +40,12 @@ function harness(file, supplied = {}) {
     if (name.endsWith('/types')) return {getClassColor:()=>({stroke:'blue',text:'blue',bg:'black'})};
     return new Proxy({}, {get:(_t,key)=>String(key)});
   }, window:{location:{search:''},addEventListener(){},removeEventListener(){}}, URLSearchParams,console,
-  crypto:webcrypto,setTimeout:()=>++nextTimer,clearTimeout(){} });
+  document:{activeElement:null},
+  crypto:webcrypto,setTimeout:()=>++nextTimer,clearTimeout(){},
+  setInterval(fn){const id=++nextTimer;intervals.set(id,fn);return id;},
+  clearInterval(id){intervals.delete(id);} });
   const component=exports.default || exports[Object.keys(exports)[0]];
-  return {state,refs,render(props) {cursor=0;pending=[];const tree=component(props);
+  return {state,refs,intervals,render(props) {cursor=0;pending=[];const tree=component(props);
     return {tree,runEffects(){pending.slice().forEach(fn=>fn());}};}};
 }
 function find(tree,type) {
@@ -145,4 +149,192 @@ test('detection cannot replace edits made while inference was running',async()=>
   canvas.props.onAddBox(boxed('human'));await tick();h.render();
   result.resolve({boxes:[boxed('detection')]});await work;
   assert.equal(saved.length,1);assert.equal(saved[0].b[0].id,'human');
+});
+
+const colabStatus={supported:true,auth_state:'disconnected',auth_url:null,error:null,busy:false,job:null};
+const colabProps={isOpen:true,onClose(){},health:{dataset_dir:'/dataset',classes:['car','person']},onComplete(){}};
+function content(node) {
+  if (node===null || node===undefined || typeof node==='boolean') return '';
+  if (typeof node!=='object') return String(node);
+  return [].concat(Array.isArray(node)?node:node.props?.children||[]).map(content).join('');
+}
+function match(tree, predicate) {
+  if (!tree || typeof tree!=='object') return null;
+  if (predicate(tree)) return tree;
+  for (const child of [].concat(Array.isArray(tree)?tree:tree.props?.children||[])) {
+    const found=match(child,predicate);if(found)return found;
+  }
+  return null;
+}
+const colabButton=(tree,label)=>match(tree,n=>n.type==='button' && content(n)===label);
+
+test('Colab login passes a transient code and never starts annotation',async()=>{
+  const calls=[];
+  const h=harness('components/modals/ColabModal.tsx',{
+    fetchColabStatus:async()=>colabStatus,
+    connectColab:async()=>{calls.push('connect');return {...colabStatus,busy:true,auth_state:'awaiting_code',auth_url:'https://accounts.google.com/test'};},
+    authorizeColab:async code=>{calls.push(code);return {...colabStatus,auth_state:'connected'};},
+    startColabJob:async()=>{throw Error('Sign-in must not allocate a GPU');},
+  });
+  h.render(colabProps).runEffects();await tick();
+  colabButton(h.render(colabProps).tree,'Sign in with Google').props.onClick();await tick();
+  let r=h.render(colabProps);
+  const input=match(r.tree,n=>n.props?.id==='colab-code');
+  assert.equal(input.props.type,'password');
+  input.props.onChange({target:{value:'test-one-time-code'}});
+  find(h.render(colabProps).tree,'form').props.onSubmit({preventDefault(){}});await tick();
+  r=h.render(colabProps);assert.deepEqual(calls,['connect','test-one-time-code']);
+  assert.equal(colabButton(r.tree,'Start annotation').props.disabled,false);
+  assert.ok(!h.state.includes('test-one-time-code'));
+});
+
+test('Colab starts a bounded three-image mask job from the active dataset',async()=>{
+  const jobs=[];
+  const h=harness('components/modals/ColabModal.tsx',{
+    fetchColabStatus:async()=>({...colabStatus,auth_state:'connected'}),
+    startColabJob:async payload=>{jobs.push(payload);return {...colabStatus,auth_state:'connected',busy:true};},
+  });
+  h.render(colabProps).runEffects();await tick();
+  find(h.render(colabProps).tree,'form').props.onSubmit({preventDefault(){}});await tick();
+  assert.equal(jobs.length,1);
+  assert.deepEqual(JSON.parse(JSON.stringify(jobs[0])),{dataset_id:'/dataset',classes:['car','person'],pipeline:'dino-masks',limit:3,gpu:'T4',confidence:.35,only_unannotated:true});
+});
+
+test('Colab exposes backend GPU choices and forwards the selected A100',async()=>{
+  const jobs=[];
+  const gpus=['T4','L4','A100','H100','G4'];
+  const h=harness('components/modals/ColabModal.tsx',{
+    fetchColabStatus:async()=>({...colabStatus,auth_state:'connected',supported_gpus:gpus}),
+    startColabJob:async payload=>{jobs.push(payload);return {...colabStatus,auth_state:'connected',busy:true};},
+  });
+  h.render(colabProps).runEffects();await tick();
+  let r=h.render(colabProps);
+  const label=match(r.tree,n=>n.type==='label' && content(n).startsWith('Colab GPU'));
+  const select=find(label,'select');
+  assert.deepEqual(JSON.parse(JSON.stringify(select.props.children.map(option=>option.props.value || content(option)))),gpus);
+  select.props.onChange({target:{value:'A100'}});
+  r=h.render(colabProps);find(r.tree,'form').props.onSubmit({preventDefault(){}});await tick();
+  assert.equal(jobs[0].gpu,'A100');
+});
+
+test('Colab forwards the selected Locate Anything pipeline',async()=>{
+  const jobs=[];
+  const h=harness('components/modals/ColabModal.tsx',{
+    fetchColabStatus:async()=>({...colabStatus,auth_state:'connected'}),
+    startColabJob:async payload=>{jobs.push(payload);return {...colabStatus,auth_state:'connected',busy:true};},
+  });
+  h.render(colabProps).runEffects();await tick();
+  const select=match(h.render(colabProps).tree,n=>n.type==='select' &&
+    match(n,option=>option.type==='option' && option.props.value==='locate-boxes'));
+  assert.ok(select);
+  select.props.onChange({target:{value:'locate-boxes'}});
+  find(h.render(colabProps).tree,'form').props.onSubmit({preventDefault(){}});await tick();
+  assert.equal(jobs[0].pipeline,'locate-boxes');
+});
+
+test('stale Colab status cannot undo a completed connection action',async()=>{
+  const stale=deferred();let polls=0;
+  const h=harness('components/modals/ColabModal.tsx',{
+    fetchColabStatus:()=>++polls===1?Promise.resolve(colabStatus):stale.promise,
+    connectColab:async()=>({...colabStatus,auth_state:'connected'}),
+  });
+  h.render(colabProps).runEffects();await tick();
+  [...h.intervals.values()][0]();
+  colabButton(h.render(colabProps).tree,'Sign in with Google').props.onClick();await tick();
+  stale.resolve(colabStatus);await tick();
+  assert.ok(colabButton(h.render(colabProps).tree,'Disconnect'));
+});
+
+test('a Colab job continues polling after closing and refreshes labels once',async()=>{
+  let completed=0;
+  const job={id:'owned-job',state:'running',stage:'Running',total:3,cleanup_required:false};
+  let response={...colabStatus,auth_state:'connected',busy:true,job};
+  const props={...colabProps,onComplete(){completed++;}};
+  const h=harness('components/modals/ColabModal.tsx',{fetchColabStatus:async()=>response});
+  h.render(props).runEffects();await tick();
+  const closed={...props,isOpen:false};
+  const r=h.render(closed);r.runEffects();await tick();assert.equal(r.tree,null);
+  response={...response,busy:false,job:{...job,state:'completed',stage:'GPU released',saved:3}};
+  [...h.intervals.values()][0]();await tick();
+  h.render(closed).runEffects();assert.equal(h.intervals.size,0);assert.equal(completed,1);
+  h.render(props).runEffects();await tick();assert.equal(completed,1);
+});
+
+test('Colab release failures block new work until retry or explicit manual confirmation',async()=>{
+  let confirmations=0;
+  const h=harness('components/modals/ColabModal.tsx',{
+    fetchColabStatus:async()=>({...colabStatus,auth_state:'connected',job:{state:'cleanup_required',stage:'Release required',cleanup_required:true}}),
+    acknowledgeColabRelease:async()=>{confirmations++;return {...colabStatus,auth_state:'connected'};},
+  });
+  h.render(colabProps).runEffects();await tick();
+  const r=h.render(colabProps);
+  assert.equal(find(r.tree,'fieldset').props.disabled,true);
+  assert.equal(colabButton(r.tree,'Disconnect').props.disabled,true);
+  assert.equal(confirmations,0);
+  colabButton(r.tree,"I've stopped it in Colab").props.onClick();await tick();
+  assert.equal(confirmations,1);
+});
+
+test('Colab shows the connected account and allows switching without starting a GPU',async()=>{
+  let switches=0;
+  const h=harness('components/modals/ColabModal.tsx',{
+    fetchColabStatus:async()=>({...colabStatus,auth_state:'connected',account:{email:'free@example.com',compute_units:0,usage_rate_hourly:1.07,active_runtimes:1}}),
+    switchColabAccount:async()=>{switches++;return {...colabStatus,auth_state:'connecting',busy:true};},
+    startColabJob:async()=>{throw Error('Account switching must not allocate a GPU');},
+  });
+  h.render(colabProps).runEffects();await tick();
+  const r=h.render(colabProps);
+  assert.ok(content(r.tree).includes('free@example.com'));
+  assert.ok(content(r.tree).includes('0.00 compute units'));
+  assert.ok(content(r.tree).includes('1 active runtime'));
+  colabButton(r.tree,'Switch account').props.onClick();await tick();
+  assert.equal(switches,1);
+});
+
+test('unsupported Colab installations offer notebook downloads without Google sign-in',async()=>{
+  const downloads=[];
+  const h=harness('components/modals/ColabModal.tsx',{
+    fetchColabStatus:async()=>({...colabStatus,supported:false}),
+    downloadColabFile:async kind=>{downloads.push(kind);},
+  });
+  h.render(colabProps).runEffects();await tick();
+  const r=h.render(colabProps);
+  assert.equal(colabButton(r.tree,'Sign in with Google'),null);
+  colabButton(r.tree,'Download notebook').props.onClick();await tick();
+  colabButton(h.render(colabProps).tree,'Download source bundle').props.onClick();await tick();
+  assert.deepEqual(downloads,['notebook','source']);
+});
+
+test('Locate Anything selection reaches preview, batch, and ensemble mode',async()=>{
+  const previews=[],batches=[];
+  const h=harness('components/modals/AutoLabelModal.tsx',{
+    runAutoLabelPreview:async payload=>{previews.push(payload);return {detections:[],count:0};},
+    startAutoLabelBatch:async payload=>{batches.push(payload);return {status:'started'};},
+  });
+  const props={isOpen:true,onClose(){},onStartBatch(){},health:{dataset_dir:'/dataset',classes:['car']},images,totalImages:2};
+  let r=h.render(props);
+  const checkbox=match(r.tree,n=>n.type==='input' && n.props.id==='locate-anything-detector');
+  assert.equal(checkbox.props.checked,false);
+  assert.ok(match(r.tree,n=>n.type==='label' && n.props.htmlFor===checkbox.props.id));
+  checkbox.props.onChange({target:{checked:true}});
+  r=h.render(props);
+  match(r.tree,n=>n.type==='button' && content(n).includes('Run Test Preview')).props.onClick();
+  await tick();
+  assert.equal(previews[0].enable_locate_anything,true);
+  assert.equal(previews[0].pipeline_mode,'ensemble_fusion_sam2_masks');
+  // Disable the incumbent detector cards through their actual click handlers.
+  for (const title of ['Grounding DINO 1.5 Pro','YOLO & Custom Weights Ensemble']) {
+    const node=match(h.render(props).tree,n=>n.type==='div' && n.props.onClick && content(n).includes(title));
+    node.props.onClick();
+  }
+  r=h.render(props);
+  match(r.tree,n=>n.type==='button' && content(n).includes('Run Test Preview')).props.onClick();
+  await tick();
+  assert.equal(previews.at(-1).pipeline_mode,'locate_anything_sam2_masks');
+  match(h.render(props).tree,n=>n.type==='button' && content(n).includes('Start Batch Auto-Labeling')).props.onClick();
+  await tick();
+  assert.equal(batches[0].enable_locate_anything,true);
+  assert.equal(batches[0].enable_yolo,false);
+  assert.equal(batches[0].enable_grounding_dino,false);
+  assert.equal(batches[0].pipeline_mode,'locate_anything_sam2_masks');
 });

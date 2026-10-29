@@ -37,12 +37,16 @@ from app.services.annotation.domain import (
     BoundingBox as DomainBoundingBox,
 )
 from app.services.auto_label.engine import AutoLabelEngine
+from app.configs.settings import PathSettings
+from app.api.colab_routes import ColabJobRequest, create_router as create_colab_router
+from app.services.colab_connection import ColabConnection
 from app.services.auto_label.models import (
     AutoLabelClass,
     AutoLabelConfig,
     AutoLabelPipelineMode,
     DEFAULT_AUTO_LABEL_CLASSES,
 )
+from app.services.inference.cloud import CloudInferenceError
 from app.export.exporters import (
     CocoExporter,
     YoloExporter,
@@ -107,10 +111,16 @@ CLASS_NAMES = ["motorcycle", "car", "bus", "truck", "minivan", "person"]
 DATASET_INDEX: Optional[DatasetIndex] = None
 ACTIVE_LEARNING_ENGINE = ActiveLearningEngine()
 AUTOLABEL_ENGINE = AutoLabelEngine()
+COLAB_CONNECTION = ColabConnection(PathSettings().cache_root / "colab")
 DATASET_STATE_LOCK = threading.RLock()
 INFERENCE_LOCK = threading.RLock()
 SESSION_TOKEN = secrets.token_urlsafe(32)
 ALLOWED_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:1420", "http://127.0.0.1:1420", "http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"}
+
+
+@app.exception_handler(CloudInferenceError)
+async def cloud_inference_error(request: Request, error: CloudInferenceError):
+    return JSONResponse({"detail": str(error)}, status_code=503)
 
 
 @app.middleware("http")
@@ -274,6 +284,7 @@ class AutoLabelPreviewRequest(BaseModel):
     enable_grounding_dino: bool = True
     enable_sam2_masks: bool = True
     enable_florence2: bool = False
+    enable_locate_anything: bool = False
     enable_florence2_verifier: bool = False
     enable_yolo: bool = True
     yolo_models: List[str] = ["yolo11n.pt"]
@@ -289,6 +300,7 @@ class AutoLabelBatchRequest(BaseModel):
     enable_grounding_dino: bool = True
     enable_sam2_masks: bool = True
     enable_florence2: bool = False
+    enable_locate_anything: bool = False
     enable_florence2_verifier: bool = False
     enable_yolo: bool = True
     yolo_models: List[str] = ["yolo11n.pt"]
@@ -322,6 +334,8 @@ def _parse_input_classes(raw_classes: List[Union[AutoLabelClassInput, str]]) -> 
 
 def get_yolo_model():
     """Lazily load the default YOLO model into memory, prioritizing custom trained Final.pt if present."""
+    if AUTOLABEL_ENGINE.uses_cloud:
+        return None
     global YOLO_MODEL
     if YOLO_MODEL is None:
         try:
@@ -348,6 +362,8 @@ def get_dataset_class_names(dataset_dir: str | None = None) -> list[str]:
 
 def _prewarm_yolo_model() -> None:
     """Pre-warm the default YOLO model at startup in a background thread."""
+    if AUTOLABEL_ENGINE.uses_cloud:
+        return
     try:
         LOGGER.info("Pre-warming YOLO model in background…")
         custom_path = Path("/home/marsel/Work/Models/Final.pt")
@@ -368,8 +384,9 @@ def on_startup() -> None:
     except Exception as err:
         LOGGER.warning("Could not initialize dataset index on startup: %s", err)
     # Pre-warm YOLO in background so first user request is instant
-    t = threading.Thread(target=_prewarm_yolo_model, daemon=True)
-    t.start()
+    if not AUTOLABEL_ENGINE.uses_cloud:
+        t = threading.Thread(target=_prewarm_yolo_model, daemon=True)
+        t.start()
 
 
 def resolve_annotation_path(img_path: Path) -> tuple[Optional[Path], str]:
@@ -403,6 +420,39 @@ def all_records(index_db: DatasetIndex):
             return
         yield from page
         offset += len(page)
+
+
+def select_colab_images(request: ColabJobRequest):
+    with DATASET_STATE_LOCK:
+        check_dataset(request.dataset_id)
+        root = ACTIVE_DATASET_DIR.resolve()
+        repository = AnnotationRepository(root)
+        images = []
+        for record in all_records(get_dataset_index()):
+            image = Path(record["path"])
+            if not image.is_file():
+                continue
+            if request.only_unannotated:
+                data = repository.read(image)
+                if data["boxes"] or data["status"] in {"reviewed", "ai_labeled"}:
+                    continue
+            images.append(image)
+            if len(images) >= request.limit:
+                break
+        if not images:
+            raise HTTPException(422, "No matching images. Choose another dataset or include labeled images.")
+        return root, images
+
+
+app.include_router(create_colab_router(COLAB_CONNECTION, select_colab_images))
+
+
+@app.on_event("shutdown")
+def stop_owned_colab_job():
+    COLAB_CONNECTION.cancel()
+    worker = COLAB_CONNECTION._thread
+    if worker is not None and worker.is_alive():
+        worker.join(timeout=65)
 
 def calculate_image_difficulty(image_path: Path, boxes: List[BoundingBox]) -> float:
     """Compute active learning difficulty score from detection features."""
@@ -441,19 +491,20 @@ def calculate_image_difficulty(image_path: Path, boxes: List[BoundingBox]) -> fl
 def health():
     """Check backend health, GPU availability, and model status."""
     gpu_info = {"available": False, "device": "CPU", "vram_free": "0GB"}
-    try:
-        import torch
-        if torch.cuda.is_available():
-            props = torch.cuda.get_device_properties(0)
-            free_vram = torch.cuda.mem_get_info()[0] / (1024**3)
-            total_vram = props.total_memory / (1024**3)
-            gpu_info = {
-                "available": True,
-                "device": props.name,
-                "vram_free": f"{free_vram:.1f}GB / {total_vram:.1f}GB",
-            }
-    except Exception:
-        pass
+    if not AUTOLABEL_ENGINE.uses_cloud:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                props = torch.cuda.get_device_properties(0)
+                free_vram = torch.cuda.mem_get_info()[0] / (1024**3)
+                total_vram = props.total_memory / (1024**3)
+                gpu_info = {
+                    "available": True,
+                    "device": props.name,
+                    "vram_free": f"{free_vram:.1f}GB / {total_vram:.1f}GB",
+                }
+        except Exception:
+            pass
 
     index_db = get_dataset_index()
     db_stats = index_db.stats()
@@ -464,12 +515,14 @@ def health():
         "database_connected": True,
         "database_stats": db_stats,
         "gpu": gpu_info,
+        "inference": {"backend": "cloud" if AUTOLABEL_ENGINE.uses_cloud else "local"},
         "classes": get_dataset_class_names(str(ACTIVE_DATASET_DIR)),
         "models": {
             "yolo11": YOLO_MODEL is not None or bool(AUTOLABEL_ENGINE._yolo_detectors) or AUTOLABEL_ENGINE._yolo_detector is not None,
             "sam2": AUTOLABEL_ENGINE._sam_segmenter is not None,
             "grounding_dino": AUTOLABEL_ENGINE._grounding_detector is not None,
             "florence2": AUTOLABEL_ENGINE._vlm_helper is not None,
+            "locate_anything": AUTOLABEL_ENGINE._locate_anything_detector is not None,
         },
     }
 
@@ -605,6 +658,7 @@ def _resolve_pipeline_mode(
     enable_grounding_dino: bool,
     enable_florence2: bool,
     yolo_models: list[str] | None = None,
+    enable_locate_anything: bool = False,
 ) -> AutoLabelPipelineMode:
     """Consistently resolve the exact AutoLabelPipelineMode given toggles and settings."""
     mode = None
@@ -614,14 +668,21 @@ def _resolve_pipeline_mode(
         except Exception:
             mode = None
 
-    if mode is None:
-        active_count = (1 if enable_grounding_dino else 0) + (1 if enable_yolo else 0) + (1 if enable_florence2 else 0)
+    if mode is None or enable_locate_anything:
+        active_count = sum((enable_grounding_dino, enable_yolo, enable_florence2,
+                            enable_locate_anything))
         yolo_count = len(yolo_models or [])
         if active_count > 1 or (enable_yolo and yolo_count > 1):
             mode = (
                 AutoLabelPipelineMode.ENSEMBLE_FUSION_SAM2_MASKS
                 if enable_sam2_masks
                 else AutoLabelPipelineMode.ENSEMBLE_FUSION_BOXES
+            )
+        elif enable_locate_anything:
+            mode = (
+                AutoLabelPipelineMode.LOCATE_ANYTHING_SAM2_MASKS
+                if enable_sam2_masks
+                else AutoLabelPipelineMode.LOCATE_ANYTHING_BOXES
             )
         elif enable_yolo:
             mode = (
@@ -651,6 +712,8 @@ def _resolve_pipeline_mode(
                 mode = AutoLabelPipelineMode.YOLO_BOXES
             case AutoLabelPipelineMode.VLM_SAM2_MASKS:
                 mode = AutoLabelPipelineMode.VLM_BOXES
+            case AutoLabelPipelineMode.LOCATE_ANYTHING_SAM2_MASKS:
+                mode = AutoLabelPipelineMode.LOCATE_ANYTHING_BOXES
             case AutoLabelPipelineMode.ENSEMBLE_FUSION_SAM2_MASKS:
                 mode = AutoLabelPipelineMode.ENSEMBLE_FUSION_BOXES
     elif enable_sam2_masks and not mode.produces_masks:
@@ -661,6 +724,8 @@ def _resolve_pipeline_mode(
                 mode = AutoLabelPipelineMode.YOLO_SAM2_MASKS
             case AutoLabelPipelineMode.VLM_BOXES:
                 mode = AutoLabelPipelineMode.VLM_SAM2_MASKS
+            case AutoLabelPipelineMode.LOCATE_ANYTHING_BOXES:
+                mode = AutoLabelPipelineMode.LOCATE_ANYTHING_SAM2_MASKS
             case AutoLabelPipelineMode.ENSEMBLE_FUSION_BOXES:
                 mode = AutoLabelPipelineMode.ENSEMBLE_FUSION_SAM2_MASKS
 
@@ -674,6 +739,37 @@ def detect_yolo(req: DetectionRequest):
     """Run YOLO object detection on an image (supports multi-model ensemble)."""
     check_dataset(req.dataset_id)
     img_path = get_image_path(req.image_name)
+
+    if AUTOLABEL_ENGINE.uses_cloud:
+        classes = req.classes or get_dataset_class_names(str(ACTIVE_DATASET_DIR))
+        config = AutoLabelConfig(
+            mode=AutoLabelPipelineMode.YOLO_BOXES,
+            classes=[AutoLabelClass(name=name) for name in classes],
+            confidence_threshold=req.conf_threshold,
+            yolo_models=(req.models or [AUTOLABEL_ENGINE.yolo_model_name])[:3],
+            enable_grounding_dino=False, enable_florence2=False,
+            enable_florence2_verifier=False, enable_sam2_masks=False, enable_yolo=True,
+        )
+        result = AUTOLABEL_ENGINE.run_preview(img_path, config)
+        dataset_classes = AnnotationRepository(ACTIVE_DATASET_DIR).register_classes(
+            [d.class_name for d in result.detections],
+        )
+        boxes = []
+        for det in result.detections:
+            name = next(c for c in dataset_classes if c.casefold() == det.class_name.casefold())
+            boxes.append(BoundingBox(
+                id=secrets.token_hex(16), class_name=name, class_id=dataset_classes.index(name),
+                confidence=det.confidence,
+                x=det.box.left * result.image_width, y=det.box.top * result.image_height,
+                width=det.box.width * result.image_width, height=det.box.height * result.image_height,
+                norm_left=det.box.left, norm_top=det.box.top,
+                norm_right=det.box.right, norm_bottom=det.box.bottom, source="yolo",
+            ))
+        return {
+            "image_name": req.image_name, "width": result.image_width,
+            "height": result.image_height, "boxes": [b.model_dump() for b in boxes],
+            "count": len(boxes), "models_used": config.yolo_models, "inference_backend": "cloud",
+        }
 
     active_models = req.models if req.models else [
         AUTOLABEL_ENGINE.yolo_model_name if AUTOLABEL_ENGINE.yolo_model_name else "yolo11n.pt"
@@ -807,6 +903,7 @@ def autolabel_preview(req: AutoLabelPreviewRequest):
         enable_yolo=req.enable_yolo,
         enable_grounding_dino=req.enable_grounding_dino,
         enable_florence2=req.enable_florence2,
+        enable_locate_anything=req.enable_locate_anything,
         yolo_models=req.yolo_models,
     )
 
@@ -820,18 +917,25 @@ def autolabel_preview(req: AutoLabelPreviewRequest):
         enable_grounding_dino=req.enable_grounding_dino,
         enable_sam2_masks=req.enable_sam2_masks,
         enable_florence2=req.enable_florence2,
+        enable_locate_anything=req.enable_locate_anything,
         enable_florence2_verifier=req.enable_florence2_verifier,
         enable_yolo=req.enable_yolo,
         yolo_models=req.yolo_models or ["yolo11n.pt"],
     )
 
-    yolo = get_yolo_model()
-    if yolo is not None and AUTOLABEL_ENGINE._yolo_detector is None:
-        AUTOLABEL_ENGINE._yolo_detector = yolo
+    if req.enable_yolo:
+        yolo = get_yolo_model()
+        if yolo is not None and AUTOLABEL_ENGINE._yolo_detector is None:
+            AUTOLABEL_ENGINE._yolo_detector = yolo
 
     try:
         result = AUTOLABEL_ENGINE.run_preview(img_path, config)
     except Exception as err:
+        if AUTOLABEL_ENGINE.uses_cloud:
+            detail = str(err) if isinstance(err, CloudInferenceError) else "Cloud inference failed"
+            raise HTTPException(503, detail) from None
+        if req.enable_locate_anything:
+            raise HTTPException(503, f"Locate Anything 3B annotation failed: {err}") from None
         LOGGER.warning("AutoLabelEngine error: %s. Falling back to YOLO preview.", err)
         # Fallback to YOLO detection if foundation models are uninstalled or downloading
         yolo_res = detect_yolo(DetectionRequest(
@@ -852,7 +956,7 @@ def autolabel_preview(req: AutoLabelPreviewRequest):
             "fallback": True,
         }
 
-    if not result.detections:
+    if not result.detections and not req.enable_locate_anything:
         yolo = get_yolo_model()
         if yolo is not None:
             active_names = [c.name for c in active_classes]
@@ -967,6 +1071,7 @@ def _execute_batch_autolabel_worker(
         enable_yolo=req.enable_yolo,
         enable_grounding_dino=req.enable_grounding_dino,
         enable_florence2=req.enable_florence2,
+        enable_locate_anything=req.enable_locate_anything,
         yolo_models=req.yolo_models,
     )
 
@@ -978,14 +1083,16 @@ def _execute_batch_autolabel_worker(
         enable_grounding_dino=req.enable_grounding_dino,
         enable_sam2_masks=req.enable_sam2_masks,
         enable_florence2=req.enable_florence2,
+        enable_locate_anything=req.enable_locate_anything,
         enable_florence2_verifier=req.enable_florence2_verifier,
         enable_yolo=req.enable_yolo,
         yolo_models=req.yolo_models or ["yolo11n.pt"],
     )
 
-    yolo = get_yolo_model()
-    if yolo is not None and AUTOLABEL_ENGINE._yolo_detector is None:
-        AUTOLABEL_ENGINE._yolo_detector = yolo
+    if req.enable_yolo:
+        yolo = get_yolo_model()
+        if yolo is not None and AUTOLABEL_ENGINE._yolo_detector is None:
+            AUTOLABEL_ENGINE._yolo_detector = yolo
 
     index_db = DatasetIndex(root / ".dataset_index.sqlite")
     for p in target_paths:
@@ -1021,9 +1128,9 @@ def _execute_batch_autolabel_worker(
                     norm_top=round(det.box.top, 4),
                     norm_right=round(det.box.right, 4),
                     norm_bottom=round(det.box.bottom, 4),
-                    source="sam2" if mode.produces_masks else "yolo",
-                    polygon_normalized=det.polygon_normalized,
-                    polygon_pixels=det.polygon_pixels,
+                    source=str(mode.annotation_source),
+                    polygon_normalized=det.polygon_normalized or None,
+                    polygon_pixels=det.polygon_pixels or None,
                 ))
 
             # Preserve existing human or prior annotations if present
@@ -1560,6 +1667,8 @@ def browse_custom_weights():
 @dataset_operation
 def validate_custom_model(req: ValidateModelRequest):
     """Validate that custom model weights exist and can be initialized with Ultralytics."""
+    if AUTOLABEL_ENGINE.uses_cloud:
+        raise HTTPException(422, "Cloud mode uses worker model weights; laptop paths are not supported")
     p = Path(req.path).expanduser()
     if not p.is_file():
         raise HTTPException(status_code=400, detail=f"Weights file not found: {req.path}")

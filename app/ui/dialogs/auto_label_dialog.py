@@ -863,6 +863,15 @@ class AutoLabelDialog(QDialog):
         self.florence_chk.setChecked(False)
         self.florence_chk.toggled.connect(self._on_detector_toggled)
 
+        self.locate_anything_chk = QCheckBox("Locate Anything 3B")
+        self.locate_anything_chk.setObjectName("EnsembleCheck")
+        self.locate_anything_chk.setToolTip(
+            "NVIDIA prompt-based localization. Downloads on first use; "
+            "generated boxes have no confidence scores."
+        )
+        self.locate_anything_chk.setChecked(False)
+        self.locate_anything_chk.toggled.connect(self._on_detector_toggled)
+
         ensemble_sep = QFrame()
         ensemble_sep.setFrameShape(QFrame.Shape.VLine)
         ensemble_sep.setObjectName("EnsembleSep")
@@ -876,6 +885,7 @@ class AutoLabelDialog(QDialog):
         row2.addWidget(self.dino_chk, 0)
         row2.addWidget(self.yolo_chk, 0)
         row2.addWidget(self.florence_chk, 0)
+        row2.addWidget(self.locate_anything_chk, 0)
         row2.addWidget(ensemble_sep, 0)
         row2.addWidget(self.sam2_chk, 0)
         row2.addStretch(1)
@@ -1858,10 +1868,13 @@ class AutoLabelDialog(QDialog):
                     self.florence_chk.setChecked(
                         mode in (AutoLabelPipelineMode.VLM_SAM2_MASKS, AutoLabelPipelineMode.VLM_BOXES)
                     )
+                if hasattr(self, "locate_anything_chk"):
+                    self.locate_anything_chk.setChecked(mode.uses_locate_anything)
             else:
                 active_count = sum(
                     1
-                    for chk in (self.dino_chk, self.yolo_chk, self.florence_chk)
+                    for chk in (self.dino_chk, self.yolo_chk, self.florence_chk,
+                                self.locate_anything_chk)
                     if hasattr(self, "dino_chk") and chk.isChecked()
                 )
                 if active_count < 2 and hasattr(self, "dino_chk") and hasattr(self, "yolo_chk"):
@@ -1886,7 +1899,8 @@ class AutoLabelDialog(QDialog):
         try:
             enabled_detectors = sum(
                 1
-                for chk in (self.dino_chk, self.yolo_chk, self.florence_chk)
+                for chk in (self.dino_chk, self.yolo_chk, self.florence_chk,
+                            self.locate_anything_chk)
                 if chk.isChecked()
             )
             if enabled_detectors == 0:
@@ -1917,6 +1931,12 @@ class AutoLabelDialog(QDialog):
                         AutoLabelPipelineMode.YOLO_SAM2_MASKS
                         if sam2_enabled
                         else AutoLabelPipelineMode.YOLO_BOXES
+                    )
+                elif self.locate_anything_chk.isChecked():
+                    target_mode = (
+                        AutoLabelPipelineMode.LOCATE_ANYTHING_SAM2_MASKS
+                        if sam2_enabled
+                        else AutoLabelPipelineMode.LOCATE_ANYTHING_BOXES
                     )
                 else:
                     target_mode = (
@@ -2175,6 +2195,7 @@ class AutoLabelDialog(QDialog):
             enable_grounding_dino=dino_enabled,
             enable_yolo=yolo_enabled,
             enable_florence2=florence_enabled,
+            enable_locate_anything=self.locate_anything_chk.isChecked(),
             enable_sam2_masks=sam2_enabled,
         )
 

@@ -7,6 +7,7 @@ the executable, PySide6 GUI libraries, PyTorch runtime, model assets, and config
 import os
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 # Increase recursion depth for deep PyTorch / Transformers AST traversal
@@ -28,6 +29,19 @@ datas = [
     (str(PROJECT_ROOT / "fusion.yaml"), "."),
     (str(PROJECT_ROOT / "app" / "ui" / "assets"), "app/ui/assets"),
 ]
+
+# Frozen backends offer the notebook fallback without needing unpacked Python source.
+sys.path.insert(0, str(PROJECT_ROOT))
+from app.services.colab_bundle import build_source_bundle
+
+colab_resources = TemporaryDirectory(prefix="visionlab-colab-build-")
+colab_bundle = build_source_bundle(
+    Path(colab_resources.name) / "visionlab-colab-source.zip", root=PROJECT_ROOT
+)
+datas.extend([
+    (str(colab_bundle), "."),
+    (str(PROJECT_ROOT / "notebooks" / "visionlab_colab_batch.ipynb"), "."),
+])
 
 if (PROJECT_ROOT / ".env.example").is_file():
     datas.append((str(PROJECT_ROOT / ".env.example"), "."))
@@ -82,6 +96,7 @@ hidden_imports = [
     "app.services.fusion",
     "app.services.fusion.fusion_models",
     "app.services.inference",
+    "app.services.inference.locate_anything",
     "app.services.integrations",
     "app.services.integrations.roboflow_client",
     "app.ui",

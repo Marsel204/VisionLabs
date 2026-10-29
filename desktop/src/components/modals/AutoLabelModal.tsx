@@ -43,6 +43,7 @@ export const AutoLabelModal: React.FC<Props> = ({
   const [enableGroundingDino, setEnableGroundingDino] = useState(true);
   const [enableYolo, setEnableYolo] = useState(true);
   const [enableFlorenceDetector, setEnableFlorenceDetector] = useState(false);
+  const [enableLocateAnything, setEnableLocateAnything] = useState(false);
   const [enableFlorenceVerifier, setEnableFlorenceVerifier] = useState(true);
   const [enableSam2Masks, setEnableSam2Masks] = useState(true);
 
@@ -150,7 +151,8 @@ export const AutoLabelModal: React.FC<Props> = ({
     const activeDetectorsCount =
       (enableGroundingDino ? 1 : 0) +
       (enableYolo ? 1 : 0) +
-      (enableFlorenceDetector ? 1 : 0);
+      (enableFlorenceDetector ? 1 : 0) +
+      (enableLocateAnything ? 1 : 0);
 
     if (activeDetectorsCount > 1 || (enableYolo && activeYoloModels.length > 1)) {
       return enableSam2Masks ? 'ensemble_fusion_sam2_masks' : 'ensemble_fusion_boxes';
@@ -161,11 +163,15 @@ export const AutoLabelModal: React.FC<Props> = ({
     if (enableFlorenceDetector) {
       return enableSam2Masks ? 'vlm_sam2_masks' : 'vlm_boxes';
     }
+    if (enableLocateAnything) {
+      return enableSam2Masks ? 'locate_anything_sam2_masks' : 'locate_anything_boxes';
+    }
     return enableSam2Masks ? 'sam2_dino_masks' : 'dino_boxes';
   }, [
     enableGroundingDino,
     enableYolo,
     enableFlorenceDetector,
+    enableLocateAnything,
     activeYoloModels.length,
     enableSam2Masks,
   ]);
@@ -190,6 +196,7 @@ export const AutoLabelModal: React.FC<Props> = ({
               enable_grounding_dino: enableGroundingDino,
               enable_sam2_masks: enableSam2Masks,
               enable_florence2: enableFlorenceDetector,
+              enable_locate_anything: enableLocateAnything,
               enable_florence2_verifier: enableFlorenceVerifier,
               enable_yolo: enableYolo,
               yolo_models: activeYoloModels,
@@ -252,9 +259,11 @@ export const AutoLabelModal: React.FC<Props> = ({
       enableGroundingDino,
       enableSam2Masks,
       enableFlorenceDetector,
+      enableLocateAnything,
       enableFlorenceVerifier,
       enableYolo,
       activeYoloModels,
+      computePipelineMode,
     ]
   );
 
@@ -417,6 +426,7 @@ export const AutoLabelModal: React.FC<Props> = ({
         enable_grounding_dino: enableGroundingDino,
         enable_sam2_masks: enableSam2Masks,
         enable_florence2: enableFlorenceDetector,
+        enable_locate_anything: enableLocateAnything,
         enable_florence2_verifier: enableFlorenceVerifier,
         enable_yolo: enableYolo,
         yolo_models: activeYoloModels,
@@ -590,6 +600,33 @@ export const AutoLabelModal: React.FC<Props> = ({
                     <span className="text-[10px] font-mono text-[#4cd7f6]">~18ms</span>
                   </div>
                 </div>
+
+                <label
+                  htmlFor="locate-anything-detector"
+                  className={`block p-2.5 rounded-lg border transition-all cursor-pointer ${
+                    enableLocateAnything
+                      ? 'bg-[#1b253b] border-[#4cd7f6]/50'
+                      : 'bg-[#0b101e] border-[#2a3a48]/40 hover:border-[#4cd7f6]/50'
+                  }`}
+                >
+                  <span className="flex items-start gap-2.5">
+                    <input
+                      id="locate-anything-detector"
+                      type="checkbox"
+                      checked={enableLocateAnything}
+                      onChange={(event) => setEnableLocateAnything(event.target.checked)}
+                      aria-describedby="locate-anything-description"
+                      className="mt-0.5 w-3.5 h-3.5 rounded accent-[#4cd7f6] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4cd7f6]"
+                    />
+                    <span>
+                      <span className="block text-xs font-semibold text-[#dae2fd]">Locate Anything 3B</span>
+                      <span id="locate-anything-description" className="block text-[#bcc9d7] text-[11px] mt-0.5">
+                        NVIDIA prompt-based object localization. Downloads on first use.
+                        Generated boxes have no confidence scores.
+                      </span>
+                    </span>
+                  </span>
+                </label>
 
                 {/* YOLO & Custom Models Multi-Model Card */}
                 <div

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -185,6 +186,9 @@ class CocoImporter:
                                 box=box,
                                 confidence=None,
                                 source=AnnotationSource.HUMAN,
+                                polygon_normalized=self._polygon(
+                                    record.get("segmentation"), image_width, image_height,
+                                ),
                                 occluded=record.get("occluded", False)
                                 in (True, 1, "1", "true"),
                                 truncated=record.get("truncated", False)
@@ -304,6 +308,28 @@ class CocoImporter:
         if not candidate.is_relative_to(root):
             raise CocoImportError("COCO image path escapes the source root")
         return candidate
+
+    @staticmethod
+    def _polygon(value: object, width: int, height: int):
+        """Retain polygon masks; the editor represents one outer contour per object."""
+        if not isinstance(value, list) or not value:
+            return None  # COCO RLE masks do not have polygon vertices.
+        contours = []
+        for flattened in value:
+            if not isinstance(flattened, (list, tuple)) or len(flattened) < 6 or len(flattened) % 2:
+                raise ValueError("segmentation must contain polygon coordinate pairs")
+            points = tuple((float(x) / width, float(y) / height)
+                           for x, y in zip(flattened[::2], flattened[1::2], strict=True))
+            if any(not math.isfinite(c) or not 0 <= c <= 1 for point in points for c in point):
+                raise ValueError("segmentation coordinates must lie inside the image")
+            contours.append(points)
+
+        def area(points):
+            return abs(sum(x * points[(i + 1) % len(points)][1]
+                           - y * points[(i + 1) % len(points)][0]
+                           for i, (x, y) in enumerate(points)))
+
+        return max(contours, key=area)
 
     @staticmethod
     def _box(value: object, width: int, height: int) -> BoundingBox:

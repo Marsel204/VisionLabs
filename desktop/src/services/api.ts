@@ -1,6 +1,77 @@
 import type { BoundingBox, ImageMeta, SystemHealth } from '../types';
 
 const BASE_URL = 'http://127.0.0.1:8765';
+
+export interface ColabStatus {
+  supported: boolean;
+  supported_gpus?: string[];
+  auth_state: 'disconnected' | 'connecting' | 'awaiting_code' | 'connected' | 'error';
+  auth_url: string | null;
+  account?: {
+    email: string | null;
+    compute_units: number;
+    usage_rate_hourly: number;
+    active_runtimes: number;
+  } | null;
+  error: string | null;
+  busy: boolean;
+  job: {
+    id?: string;
+    dataset_id?: string;
+    state: 'running' | 'completed' | 'failed' | 'canceled' | 'cleanup_required';
+    stage: string;
+    total?: number;
+    processed?: number;
+    saved?: number;
+    failed?: number;
+    conflicts?: number;
+    cleanup_required: boolean;
+  } | null;
+}
+
+export async function fetchColabStatus(): Promise<ColabStatus> {
+  return (await apiFetch(`${BASE_URL}/api/colab/status`)).json();
+}
+export async function connectColab(): Promise<ColabStatus> {
+  return (await apiFetch(`${BASE_URL}/api/colab/connect`, { method: 'POST' })).json();
+}
+export async function authorizeColab(code: string): Promise<ColabStatus> {
+  return (await apiFetch(`${BASE_URL}/api/colab/authorize`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }),
+  })).json();
+}
+export async function disconnectColab(): Promise<ColabStatus> {
+  return (await apiFetch(`${BASE_URL}/api/colab/disconnect`, { method: 'POST' })).json();
+}
+export async function switchColabAccount(): Promise<ColabStatus> {
+  return (await apiFetch(`${BASE_URL}/api/colab/switch-account`, { method: 'POST' })).json();
+}
+export async function refreshColabAccount(): Promise<ColabStatus> {
+  return (await apiFetch(`${BASE_URL}/api/colab/account`, { method: 'POST' })).json();
+}
+export async function stopColab(): Promise<ColabStatus> {
+  return (await apiFetch(`${BASE_URL}/api/colab/stop`, { method: 'POST' })).json();
+}
+export async function acknowledgeColabRelease(): Promise<ColabStatus> {
+  return (await apiFetch(`${BASE_URL}/api/colab/acknowledge-release`, { method: 'POST' })).json();
+}
+export async function startColabJob(payload: {
+  dataset_id: string; classes: string[]; pipeline: string; limit: number;
+  confidence: number; gpu: string; only_unannotated: boolean;
+}): Promise<ColabStatus> {
+  return (await apiFetch(`${BASE_URL}/api/colab/jobs`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  })).json();
+}
+export async function downloadColabFile(kind: 'notebook' | 'source'): Promise<void> {
+  const response = await apiFetch(`${BASE_URL}/api/colab/files/${kind}`);
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = kind === 'notebook' ? 'visionlab_colab_batch.ipynb' : 'visionlab-colab-source.zip';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 let sessionToken = '';
 let sessionPromise: Promise<string> | null = null;
 async function token(): Promise<string> {
@@ -138,6 +209,7 @@ export async function runAutoLabelPreview(payload: {
   enable_grounding_dino?: boolean;
   enable_sam2_masks?: boolean;
   enable_florence2?: boolean;
+  enable_locate_anything?: boolean;
   enable_florence2_verifier?: boolean;
   enable_yolo?: boolean;
   yolo_models?: string[];
@@ -161,6 +233,7 @@ export async function startAutoLabelBatch(payload: {
   enable_grounding_dino?: boolean;
   enable_sam2_masks?: boolean;
   enable_florence2?: boolean;
+  enable_locate_anything?: boolean;
   enable_florence2_verifier?: boolean;
   enable_yolo?: boolean;
   yolo_models?: string[];

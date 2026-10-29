@@ -9,6 +9,7 @@ import {
   detectYolo,
   imageIdentity,
   registerDatasetClass,
+  refreshColabAccount,
 } from './services/api';
 import { StudioHeader } from './components/studio/StudioHeader';
 import { ActivityRail } from './components/studio/ActivityRail';
@@ -18,6 +19,7 @@ import { ObjectInspector } from './components/studio/ObjectInspector';
 import { AutoLabelModal } from './components/modals/AutoLabelModal';
 import { DatasetHubModal } from './components/modals/DatasetHubModal';
 import { KeyboardShortcutsModal } from './components/modals/KeyboardShortcutsModal';
+import { ColabModal } from './components/modals/ColabModal';
 
 export const App: React.FC = () => {
   const [health, setHealth] = useState<SystemHealth | null>(null);
@@ -362,6 +364,8 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showToast]);
 
+  const [isColabOpen, setIsColabOpen] = useState(false);
+
   return (
     <div className="flex flex-col w-screen h-screen overflow-hidden bg-[#0a0e1a] font-sans relative">
       {/* 1. Global Studio Header */}
@@ -378,6 +382,10 @@ export const App: React.FC = () => {
           setIsDatasetHubOpen(true);
         }}
         onOpenShortcuts={() => setIsShortcutsOpen(true)}
+        onOpenColab={() => {
+          setIsColabOpen(true);
+          void refreshColabAccount().catch(() => { /* The dialog reports connection errors. */ });
+        }}
       />
 
       {/* 2. Main Workstation Body */}
@@ -452,6 +460,8 @@ export const App: React.FC = () => {
       )}
 
       {/* Keyboard Shortcuts Reference Modal */}
+      <ColabModal isOpen={isColabOpen} onClose={() => setIsColabOpen(false)} health={health}
+        onComplete={() => { void refreshImages(); setAnnotationReload(value => value + 1); }} />
       <KeyboardShortcutsModal
         isOpen={isShortcutsOpen}
         onClose={() => setIsShortcutsOpen(false)}

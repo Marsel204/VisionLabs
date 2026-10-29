@@ -1,0 +1,14 @@
+# Colab supplies a matching CUDA-enabled torch/torchvision pair. Keep that runtime pair.
+# These are notebook inference dependencies; no Qt desktop or paid hosting SDK is needed.
+numpy>=2.0
+Pillow>=10.0
+PyYAML>=6.0
+pydantic>=2.7,<3
+transformers==4.57.6
+ultralytics>=8.3
+opencv-python>=4.10
+einops>=0.8
+timm>=1.0
+peft>=0.17
+decord>=0.6.0
+lmdb>=1.7.5

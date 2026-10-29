@@ -8,6 +8,17 @@ VisionLab is a general-purpose, high-performance visual annotation platform desi
 
 ## Quick Start (One-Click Launch)
 
+**Already have Colab credits?** Click **Colab → Sign in with Google** in the studio
+on Linux/macOS, paste Google's one-time code, then click **Start annotation**.
+VisionLab handles GPU setup, transfer, labeling, saving, and runtime release.
+The first run defaults to three images. See the [Colab guide](docs/colab-annotation.md)
+for details and the Windows notebook fallback.
+
+**No local GPU?** Use the [cloud inference setup](docs/cloud-inference.md) to run
+automatic annotation on a remote GPU with a lightweight local studio/backend.
+Review, saving, and exports remain local. Cloud deployment requires a separate
+provider account and configuration.
+
 VisionLab features a **zero-configuration, self-bootstrapping single launcher** that works out-of-the-box on both Windows and Linux without manual environment setup:
 
 | Platform | One-Click Launch | Run from Terminal | Force Standalone Qt GUI |
@@ -79,6 +90,7 @@ The **Auto-Label AI Modal** (`L` or `M`) enables zero-shot and few-shot automate
     - **Grounding DINO 1.5 Pro**: Open-vocabulary natural language prompt grounding for open-domain bounding box candidate generation.
     - **YOLO & Custom Weights Ensemble**: High-speed edge detection with NMS fusion across standard YOLO models (`yolo11n.pt`, `yolov8x.pt`) or user-provided custom weights (`.pt`/`.onnx`).
     - **Florence-2 VLM Detector**: Dense proposal generation via Florence-2 `<OD>` vision-language tasks.
+    - **Locate Anything 3B**: NVIDIA prompt-based localization, available alone or in the ensemble, with optional SAM 2 masks. See the [setup and model terms](docs/locate-anything.md).
   - **Semantic Verification & Hallucination Filter**:
     - **Florence-2 VLM Verification**: Crops proposed bounding boxes and verifies semantic content against prompts to eliminate false positives.
   - **Sub-Pixel Mask Segmentation**:

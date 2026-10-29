@@ -1,5 +1,6 @@
 """Exercise the spec with the globals PyInstaller supplies, outside the source cwd."""
 
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -32,6 +33,16 @@ def test_spec_uses_pyinstaller_directory_without_dunder_file(tmp_path, monkeypat
     assert args[0] == [str(root / "app/main.py")]
     assert options["pathex"] == [str(root)]
     assert all(Path(source).exists() for source, _ in options["datas"])
+    bundle = next(
+        Path(source)
+        for source, _ in options["datas"]
+        if Path(source).name == "visionlab-colab-source.zip"
+    )
+    with zipfile.ZipFile(bundle) as archive:
+        assert "requirements-colab.txt" in archive.namelist()
+        assert "pipeline_bridge.py" in archive.namelist()
+        assert ".env" not in archive.namelist()
+    assert any(Path(source).name == "visionlab_colab_batch.ipynb" for source, _ in options["datas"])
     assert "pipeline_bridge" in options["hiddenimports"]
     assert "src.vlm_helper" in options["hiddenimports"]
     assert collect.call_args.kwargs["name"] == "VisionLab"
