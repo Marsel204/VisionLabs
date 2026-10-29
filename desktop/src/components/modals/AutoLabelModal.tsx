@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import type { ImageMeta, SystemHealth } from '../../types';
+import type { ImageMeta, ModelPreparationStatus, SystemHealth } from '../../types';
 import { getClassColor } from '../../types';
 import {
   autoRefinePrompt,
@@ -7,6 +7,8 @@ import {
   startAutoLabelBatch,
   fetchAutoLabelStatus,
   fetchModelPresets,
+  prepareAutoLabelModels,
+  fetchModelPreparationStatus,
   browseCustomWeights,
   validateCustomModel,
   getImageUrl,
@@ -35,7 +37,7 @@ export const AutoLabelModal: React.FC<Props> = ({
   onClose,
   onStartBatch,
   health,
-  totalImages = 1420,
+  totalImages = 0,
   images,
   onBatchComplete,
 }) => {
@@ -140,6 +142,77 @@ export const AutoLabelModal: React.FC<Props> = ({
     >
   >({});
 
+  const [modelPreparation, setModelPreparation] = useState<ModelPreparationStatus | null>(null);
+  const [preparedSelection, setPreparedSelection] = useState('');
+  const [modelPreparationError, setModelPreparationError] = useState<string | null>(null);
+  const [preparationAttempt, setPreparationAttempt] = useState(0);
+  const modelOptions = useMemo(() => ({
+    enable_grounding_dino: enableGroundingDino,
+    enable_sam2_masks: enableSam2Masks,
+    enable_florence2: enableFlorenceDetector,
+    enable_locate_anything: enableLocateAnything,
+    enable_florence2_verifier: enableFlorenceVerifier,
+    enable_yolo: enableYolo,
+    yolo_models: activeYoloModels,
+  }), [enableGroundingDino, enableSam2Masks, enableFlorenceDetector, enableLocateAnything,
+    enableFlorenceVerifier, enableYolo, activeYoloModels]);
+  const selectionKey = JSON.stringify(modelOptions);
+  const selectedModels = [
+    ...(enableGroundingDino ? [{ id: 'grounding_dino', name: 'Grounding DINO' }] : []),
+    ...(enableYolo ? activeYoloModels.map(path => ({
+      id: `yolo:${path}`, name: path.replaceAll('\\', '/').split('/').pop() || path,
+    })) : []),
+    ...(enableFlorenceDetector || enableFlorenceVerifier ? [{ id: 'florence2', name: 'Florence-2' }] : []),
+    ...(enableLocateAnything ? [{ id: 'locate_anything', name: 'Locate Anything 3B' }] : []),
+    ...(enableSam2Masks ? [{ id: 'sam2', name: 'SAM 2' }] : []),
+  ].filter((model, index, models) => models.findIndex(candidate => candidate.id === model.id) === index);
+  const hasDetector = enableGroundingDino || enableYolo || enableFlorenceDetector || enableLocateAnything;
+  const isCloud = modelPreparation?.backend === 'cloud';
+  const readyModelCount = selectedModels.filter(model => modelPreparation?.models[model.id]?.state === 'ready').length;
+  const preparationFailed = !!modelPreparationError || selectedModels.some(model =>
+    modelPreparation?.models[model.id]?.state === 'error');
+  const modelsReady = hasDetector && !preparationFailed && preparedSelection === selectionKey &&
+    (isCloud || readyModelCount === selectedModels.length);
+  const modelStatusText = !hasDetector ? 'Select an object detector'
+    : preparationFailed ? 'Model preparation failed'
+    : modelsReady ? (isCloud ? 'Cloud inference ready' : 'Models ready for Auto Labeling')
+    : 'Downloading / loading models…';
+
+  useEffect(() => {
+    if (!isOpen || !hasDetector) return;
+    let active = true;
+    let polling = false;
+    let interval: ReturnType<typeof setInterval> | undefined;
+    const applyStatus = (status: ModelPreparationStatus) => {
+      if (!active) return;
+      setModelPreparation(status);
+      setPreparedSelection(selectionKey);
+      setModelPreparationError(null);
+    };
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        applyStatus(await fetchModelPreparationStatus());
+      } catch (error) {
+        if (active) setModelPreparationError(`Cannot check model downloads: ${String(error)}`);
+      } finally {
+        polling = false;
+      }
+    };
+    prepareAutoLabelModels(modelOptions).then(status => {
+      if (!active) return;
+      applyStatus(status);
+      interval = setInterval(poll, 750);
+    }).catch(error => {
+      if (active) setModelPreparationError(`Cannot prepare models: ${String(error)}`);
+    });
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [isOpen, hasDetector, modelOptions, selectionKey, preparationAttempt]);
+
   const sampleImages = useMemo(() => {
     if (!images || images.length === 0) return [];
     const slice = images.slice(sampleOffset, sampleOffset + 4);
@@ -178,7 +251,7 @@ export const AutoLabelModal: React.FC<Props> = ({
 
   const fetchPreviewForImages = useCallback(
     async (imgsToPreview: ImageMeta[]) => {
-      if (imgsToPreview.length === 0) return;
+      if (!modelsReady || imgsToPreview.length === 0 || isRescoring || isBatchRunning) return;
       setIsRescoring(true);
       try {
         const results = await Promise.allSettled(
@@ -264,6 +337,9 @@ export const AutoLabelModal: React.FC<Props> = ({
       enableYolo,
       activeYoloModels,
       computePipelineMode,
+      modelsReady,
+      isRescoring,
+      isBatchRunning,
     ]
   );
 
@@ -278,7 +354,7 @@ export const AutoLabelModal: React.FC<Props> = ({
   }, [isOpen]);
 
   useEffect(() => {
-    if (isOpen && sampleImages.length > 0) {
+    if (isOpen && modelsReady && !isBatchRunning && sampleImages.length > 0) {
       const timer = setTimeout(() => {
         fetchPreviewForImages(sampleImages);
       }, 350);
@@ -286,12 +362,15 @@ export const AutoLabelModal: React.FC<Props> = ({
     }
   }, [
     isOpen,
+    modelsReady,
+    isBatchRunning,
     sampleImages.map((s) => s.path || s.filename).join(','),
     confidence,
     iouThreshold,
     enableGroundingDino,
     enableSam2Masks,
     enableFlorenceDetector,
+    enableLocateAnything,
     enableFlorenceVerifier,
     enableYolo,
     activeYoloModels.join(','),
@@ -414,6 +493,7 @@ export const AutoLabelModal: React.FC<Props> = ({
   };
 
   const handleLaunchBatch = async () => {
+    if (!modelsReady || isRescoring || isBatchRunning) return;
     setIsBatchRunning(true);
     try {
       await startAutoLabelBatch({
@@ -468,6 +548,7 @@ export const AutoLabelModal: React.FC<Props> = ({
     );
   }
   if (enableFlorenceDetector) activePipelineSteps.push('Florence-2 <OD>');
+  if (enableLocateAnything) activePipelineSteps.push('Locate Anything 3B');
   if (enableFlorenceVerifier) activePipelineSteps.push('Florence-2 <VERIFY>');
   if (enableSam2Masks) activePipelineSteps.push('SAM-2 <MASKS>');
 
@@ -544,6 +625,65 @@ export const AutoLabelModal: React.FC<Props> = ({
             </button>
           </div>
         </div>
+
+        <section
+          aria-label="Model download status"
+          role="status"
+          aria-live="polite"
+          className={`shrink-0 max-h-48 overflow-y-auto px-4 py-3 border-b border-[#3d494c]/70 ${
+            preparationFailed ? 'bg-[#ffb4ab]/10' : 'bg-[#131b2e]'
+          }`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <span aria-hidden="true" className={`material-symbols-outlined text-[20px] ${
+                preparationFailed ? 'text-[#ffb4ab]' : modelsReady ? 'text-[#4edea3]' : hasDetector ? 'text-[#4cd7f6] motion-safe:animate-spin' : 'text-[#4cd7f6]'
+              }`}>
+                {preparationFailed ? 'error' : modelsReady ? 'check_circle' : hasDetector ? 'sync' : 'info'}
+              </span>
+              <span>{modelStatusText}</span>
+            </div>
+            {hasDetector && !isCloud && (
+              <span className="text-xs text-[#bcc9cd] tabular-nums">
+                {readyModelCount}/{selectedModels.length} models ready
+              </span>
+            )}
+          </div>
+          {!hasDetector ? (
+            <p className="mt-1 text-xs text-[#bcc9cd]">Enable an object detector in the AI Ensemble Pipeline to continue.</p>
+          ) : preparationFailed ? (
+            <div className="mt-2 flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0 flex-1 text-xs text-[#ffb4ab] break-words">
+                <p>{modelPreparationError || 'A selected model could not download or load. Check your connection and retry, or disable that model.'}</p>
+                {selectedModels.filter(model => modelPreparation?.models[model.id]?.state === 'error').map(model => (
+                  <p key={model.id} className="mt-1">{model.name}: {modelPreparation?.models[model.id]?.error}</p>
+                ))}
+              </div>
+              <button type="button" onClick={() => setPreparationAttempt(attempt => attempt + 1)}
+                className="shrink-0 rounded border border-[#ffb4ab]/60 px-3 py-1.5 text-xs text-[#ffb4ab] hover:bg-[#ffb4ab]/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#ffb4ab] cursor-pointer">
+                Retry model preparation
+              </button>
+            </div>
+          ) : !modelsReady ? (
+            <p className="mt-1 text-xs text-[#bcc9cd]">
+              Missing models download automatically. First use can take several minutes. Preview and Batch unlock when all selected models are ready.
+            </p>
+          ) : isCloud ? (
+            <p className="mt-1 text-xs text-[#bcc9cd]">Selected models run on your cloud worker. No local model downloads are needed.</p>
+          ) : null}
+          {hasDetector && !isCloud && (
+            <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[#bcc9cd]">
+              {selectedModels.map(model => {
+                const state = modelPreparation?.models[model.id]?.state;
+                return <li key={model.id} className="min-w-0 break-all">
+                  {model.name}: <span className={state === 'ready' ? 'text-[#4edea3]' : state === 'error' ? 'text-[#ffb4ab]' : 'text-[#4cd7f6]'}>
+                    {state === 'ready' ? 'Ready' : state === 'error' ? 'Failed' : state === 'preparing' ? 'Downloading / loading…' : state === 'queued' ? 'Waiting' : 'Checking…'}
+                  </span>
+                </li>;
+              })}
+            </ul>
+          )}
+        </section>
 
         {/* Main Workspace Split: Left Config Drawer (410px) + Right Interactive Preview Grid */}
         <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
@@ -692,7 +832,7 @@ export const AutoLabelModal: React.FC<Props> = ({
                             className="flex items-center justify-between p-1.5 px-2 rounded bg-[#0a0e1a] border border-[#2a3a48]/60 text-xs font-mono"
                           >
                             <div className="flex items-center gap-2 truncate flex-1 mr-2">
-                              <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]"></span>
+                              <span className={`w-1.5 h-1.5 rounded-full ${modelPreparation?.models[`yolo:${modelPath}`]?.state === 'ready' ? 'bg-[#4edea3]' : 'bg-[#bcc9cd]'}`}></span>
                               <span className="text-[#e0e8f0] truncate font-medium" title={modelPath}>
                                 {displayName}
                               </span>
@@ -1253,7 +1393,7 @@ export const AutoLabelModal: React.FC<Props> = ({
                         </div>
                         <div className="flex items-center space-x-2 shrink-0">
                           <span className="text-[#4edea3] font-bold">
-                            {isRescoring ? 'Reasoning...' : `${dets.length} Detections`}
+                            {!modelsReady ? 'Waiting for models' : isRescoring ? 'Reasoning...' : `${dets.length} Detections`}
                           </span>
                           <span className="text-[#869397]">|</span>
                           <label className="flex items-center space-x-1 cursor-pointer">
@@ -1433,7 +1573,7 @@ export const AutoLabelModal: React.FC<Props> = ({
               </span>
               <div>
                 <div className="text-xs font-semibold text-[#dae2fd] flex items-center space-x-2">
-                  <span>Target: {(totalImages > 1 ? totalImages : 1420).toLocaleString()} unannotated frames</span>
+                  <span>Target: {totalImages.toLocaleString()} unannotated frames</span>
                   <span className="text-[#869397]">•</span>
                   <span className="text-[#bcc9cd]">Active Dataset</span>
                 </div>
@@ -1450,15 +1590,15 @@ export const AutoLabelModal: React.FC<Props> = ({
           <div className="hidden lg:flex flex-col w-72 space-y-1">
             <div className="flex justify-between text-[11px] font-mono">
               <span className="text-[#bcc9cd] flex items-center space-x-1 truncate max-w-[200px]">
-                <span className={`w-1.5 h-1.5 rounded-full ${isBatchRunning ? 'bg-[#06b6d4] animate-ping' : 'bg-[#4edea3]'}`} />
+                <span className={`w-1.5 h-1.5 rounded-full ${modelsReady ? 'bg-[#4edea3]' : 'bg-[#bcc9cd]'}`} />
                 <span>
                   {isBatchRunning
                     ? `Processing ${batchProgress?.current || 1}/${batchProgress?.total || totalImages}`
-                    : 'Pipeline: Validated (4/4 passed)'}
+                    : modelStatusText}
                 </span>
               </span>
               <span className="text-[#4cd7f6] font-semibold">
-                {isBatchRunning ? `${Math.round(((batchProgress?.current || 0) / Math.max(1, batchProgress?.total || totalImages)) * 100)}%` : '~3m 42s'}
+                {isBatchRunning ? `${Math.round(((batchProgress?.current || 0) / Math.max(1, batchProgress?.total || totalImages)) * 100)}%` : isCloud ? 'Cloud' : `${readyModelCount}/${selectedModels.length}`}
               </span>
             </div>
             <div className="w-full h-1.5 bg-[#222a3d] rounded-full overflow-hidden border border-[#3d494c]/30">
@@ -1467,7 +1607,7 @@ export const AutoLabelModal: React.FC<Props> = ({
                 style={{
                   width: isBatchRunning
                     ? `${Math.max(5, Math.round(((batchProgress?.current || 0) / Math.max(1, batchProgress?.total || totalImages)) * 100))}%`
-                    : '100%',
+                    : `${hasDetector ? (modelsReady ? 100 : readyModelCount / Math.max(1, selectedModels.length) * 100) : 0}%`,
                 }}
               />
             </div>
@@ -1477,7 +1617,8 @@ export const AutoLabelModal: React.FC<Props> = ({
           <div className="flex items-center space-x-2.5 w-full md:w-auto justify-end">
             <button
               onClick={handleRescore}
-              disabled={isRescoring || isBatchRunning}
+              disabled={!modelsReady || isRescoring || isBatchRunning || sampleImages.length === 0}
+              title={!modelsReady ? modelStatusText : undefined}
               type="button"
               className="px-3 py-2 rounded bg-[#222a3d] hover:bg-[#2d3449] border border-[#3d494c] text-xs font-medium text-[#dae2fd] hover:text-[#4cd7f6] transition-all flex items-center space-x-1.5 active:scale-[0.98] cursor-pointer disabled:opacity-50"
             >
@@ -1492,7 +1633,8 @@ export const AutoLabelModal: React.FC<Props> = ({
             </button>
             <button
               onClick={handleLaunchBatch}
-              disabled={isBatchRunning}
+              disabled={!modelsReady || isRescoring || isBatchRunning || totalImages === 0}
+              title={!modelsReady ? modelStatusText : undefined}
               type="button"
               className="px-5 py-2 rounded bg-[#06b6d4] hover:bg-[#4cd7f6] text-[#003640] text-xs font-bold flex items-center space-x-2 shadow-[0_0_16px_rgba(6,182,212,0.45)] hover:shadow-[0_0_24px_rgba(6,182,212,0.65)] transition-all active:scale-[0.98] cursor-pointer disabled:opacity-75"
             >
@@ -1502,7 +1644,8 @@ export const AutoLabelModal: React.FC<Props> = ({
               <span>
                 {isBatchRunning
                   ? `Batch Processing (${batchProgress?.current || 1}/${batchProgress?.total || totalImages})...`
-                  : `Start Batch Auto-Labeling (${(totalImages > 1 ? totalImages : 1420).toLocaleString()} Frames)`}
+                  : !modelsReady ? (preparationFailed ? 'Models unavailable' : 'Waiting for models…')
+                  : `Start Batch Auto-Labeling (${totalImages.toLocaleString()} Frames)`}
               </span>
             </button>
           </div>

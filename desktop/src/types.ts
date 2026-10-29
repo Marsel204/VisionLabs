@@ -55,6 +55,15 @@ export interface ExportResult {
   total_documents: number;
 }
 
+export interface ModelPreparationStatus {
+  backend: 'local' | 'cloud';
+  models: Record<string, {
+    name: string;
+    state: 'queued' | 'preparing' | 'ready' | 'error';
+    error: string | null;
+  }>;
+}
+
 export interface AutoLabelStatus {
   warnings?: string[];
   job_id?: string;
