@@ -460,3 +460,82 @@ test('labeling requires an object detector even when verifier and masks are read
   assert.equal(batchButton(r.tree).props.disabled,true);
   assert.equal(h.intervals.size,0);
 });
+
+const classNameInput=(tree,id)=>match(tree,n=>n.type==='input' && n.props.id===`class-name-${id}`);
+
+test('class names are editable and renamed classes reach preview and batch',async()=>{
+  const previews=[],batches=[];
+  const h=harness('components/modals/AutoLabelModal.tsx',{
+    runAutoLabelPreview:async payload=>{previews.push(payload);return {detections:[]};},
+    startAutoLabelBatch:async payload=>{batches.push(payload);return {status:'started'};},
+  });
+  h.render(autoLabelProps).runEffects();await tick();
+  const input=classNameInput(h.render(autoLabelProps).tree,'01');
+  assert.ok(input,'Class names must be editable');
+  assert.equal(input.props.value,'Car');
+  input.props.onChange({target:{value:'Traffic sign'}});
+  let r=h.render(autoLabelProps);
+  assert.equal(classNameInput(r.tree,'01').props.value,'Traffic sign');
+  await previewButton(r.tree).props.onClick();await tick();
+  assert.equal(previews[0].classes[0].name,'Traffic sign');
+  assert.equal(previews[0].classes[0].prompt,'Traffic sign, visual entity');
+  r=h.render(autoLabelProps);await batchButton(r.tree).props.onClick();
+  assert.equal(batches[0].classes[0].name,'Traffic sign');
+});
+
+test('renaming a class preserves its custom detection prompt',()=>{
+  const h=harness('components/modals/AutoLabelModal.tsx');
+  let r=h.render(autoLabelProps);
+  const input=classNameInput(r.tree,'01');
+  assert.ok(input,'Class names must be editable');
+  match(r.tree,n=>n.type==='button' && n.props.title==='Edit prompt text').props.onClick();
+  r=h.render(autoLabelProps);
+  find(r.tree,'textarea').props.onChange({target:{value:'a red octagonal stop sign beside the road'}});
+  r=h.render(autoLabelProps);
+  classNameInput(r.tree,'01').props.onChange({target:{value:'Stop sign'}});
+  r=h.render(autoLabelProps);
+  assert.equal(find(r.tree,'textarea').props.value,'a red octagonal stop sign beside the road');
+});
+
+test('new classes focus the name field and keep distinct identities after deletion',()=>{
+  const h=harness('components/modals/AutoLabelModal.tsx');
+  let r=h.render(autoLabelProps);
+  match(r.tree,n=>n.type==='button' && content(n).includes('Add Class Prompt')).props.onClick();
+  r=h.render(autoLabelProps);
+  const added=classNameInput(r.tree,'02');
+  assert.ok(added,'New classes need an editable name field');
+  assert.equal(added.props.autoFocus,true);
+  added.props.onChange({target:{value:'Helmet'}});
+  r=h.render(autoLabelProps);
+  match(r.tree,n=>n.type==='button' && n.props['aria-label']==='Remove class Car').props.onClick();
+  r=h.render(autoLabelProps);
+  match(r.tree,n=>n.type==='button' && content(n).includes('Add Class Prompt')).props.onClick();
+  r=h.render(autoLabelProps);
+  assert.equal(classNameInput(r.tree,'02').props.value,'Helmet');
+  assert.ok(classNameInput(r.tree,'03'));
+});
+
+test('blank class names block labeling and surrounding whitespace is trimmed',async()=>{
+  let previews=0,batches=0;
+  const h=harness('components/modals/AutoLabelModal.tsx',{
+    runAutoLabelPreview:async()=>{previews++;return {detections:[]};},
+    startAutoLabelBatch:async()=>{batches++;return {status:'started'};},
+  });
+  h.render(autoLabelProps).runEffects();await tick();
+  let r=h.render(autoLabelProps);
+  const input=classNameInput(r.tree,'01');
+  assert.ok(input,'Class names must be editable');
+  input.props.onChange({target:{value:'   '}});
+  r=h.render(autoLabelProps);
+  assert.equal(classNameInput(r.tree,'01').props['aria-invalid'],true);
+  assert.equal(previewButton(r.tree).props.disabled,true);
+  assert.equal(batchButton(r.tree).props.disabled,true);
+  await previewButton(r.tree).props.onClick();await batchButton(r.tree).props.onClick();
+  assert.equal(previews,0);assert.equal(batches,0);
+  classNameInput(r.tree,'01').props.onChange({target:{value:'  Pedestrian  '}});
+  r=h.render(autoLabelProps);
+  classNameInput(r.tree,'01').props.onBlur({target:{value:'  Pedestrian  '}});
+  r=h.render(autoLabelProps);
+  assert.equal(classNameInput(r.tree,'01').props.value,'Pedestrian');
+  assert.equal(batchButton(r.tree).props.disabled,false);
+});

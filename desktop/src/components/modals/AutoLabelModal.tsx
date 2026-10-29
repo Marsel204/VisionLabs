@@ -102,6 +102,9 @@ export const AutoLabelModal: React.FC<Props> = ({
     }
   }, [health?.classes]);
 
+  const hasValidClasses = classes.some(cls => cls.enabled && cls.name.trim()) &&
+    classes.every(cls => !cls.enabled || cls.name.trim().length > 0);
+
   // Hyperparameters
   const [confidence, setConfidence] = useState<number>(0.25);
   const [iouThreshold, setIouThreshold] = useState<number>(0.45);
@@ -251,7 +254,7 @@ export const AutoLabelModal: React.FC<Props> = ({
 
   const fetchPreviewForImages = useCallback(
     async (imgsToPreview: ImageMeta[]) => {
-      if (!modelsReady || imgsToPreview.length === 0 || isRescoring || isBatchRunning) return;
+      if (!modelsReady || !hasValidClasses || imgsToPreview.length === 0 || isRescoring || isBatchRunning) return;
       setIsRescoring(true);
       try {
         const results = await Promise.allSettled(
@@ -338,6 +341,7 @@ export const AutoLabelModal: React.FC<Props> = ({
       activeYoloModels,
       computePipelineMode,
       modelsReady,
+      hasValidClasses,
       isRescoring,
       isBatchRunning,
     ]
@@ -354,7 +358,7 @@ export const AutoLabelModal: React.FC<Props> = ({
   }, [isOpen]);
 
   useEffect(() => {
-    if (isOpen && modelsReady && !isBatchRunning && sampleImages.length > 0) {
+    if (isOpen && modelsReady && hasValidClasses && !isBatchRunning && sampleImages.length > 0) {
       const timer = setTimeout(() => {
         fetchPreviewForImages(sampleImages);
       }, 350);
@@ -363,6 +367,7 @@ export const AutoLabelModal: React.FC<Props> = ({
   }, [
     isOpen,
     modelsReady,
+    hasValidClasses,
     isBatchRunning,
     sampleImages.map((s) => s.path || s.filename).join(','),
     confidence,
@@ -463,8 +468,20 @@ export const AutoLabelModal: React.FC<Props> = ({
     setClasses((prev) => prev.filter((c) => c.id !== id));
   };
 
+  const handleRenameClass = (id: string, name: string) => {
+    setClasses(prev => prev.map(cls => {
+      if (cls.id !== id) return cls;
+      const previousName = cls.name.trim();
+      const usesDefaultPrompt = cls.prompt === `${previousName}, visual entity` ||
+        cls.prompt === `${previousName.toLowerCase()}, visual entity` ||
+        cls.prompt === 'new custom visual object description' ||
+        (previousName === 'Object' && cls.prompt === 'object, visual entity, item');
+      return { ...cls, name, prompt: usesDefaultPrompt ? `${name.trim()}, visual entity` : cls.prompt };
+    }));
+  };
+
   const handleAddClass = () => {
-    const nextNum = classes.length + 1;
+    const nextNum = Math.max(0, ...classes.map(cls => Number(cls.id) || 0)) + 1;
     const newId = String(nextNum).padStart(2, '0');
     const colors = ['#ec4899', '#3b82f6', '#14b8a6', '#f97316', '#8b5cf6'];
     const chosenColor = colors[classes.length % colors.length];
@@ -473,11 +490,12 @@ export const AutoLabelModal: React.FC<Props> = ({
       {
         id: newId,
         name: `Class_${newId}`,
-        prompt: 'new custom visual object description',
+        prompt: `Class_${newId}, visual entity`,
         color: chosenColor,
         enabled: true,
       },
     ]);
+    setEditingId(newId);
   };
 
   const handleRescore = () => {
@@ -493,7 +511,7 @@ export const AutoLabelModal: React.FC<Props> = ({
   };
 
   const handleLaunchBatch = async () => {
-    if (!modelsReady || isRescoring || isBatchRunning) return;
+    if (!modelsReady || !hasValidClasses || isRescoring || isBatchRunning) return;
     setIsBatchRunning(true);
     try {
       await startAutoLabelBatch({
@@ -1094,20 +1112,20 @@ export const AutoLabelModal: React.FC<Props> = ({
                       key={c.id}
                       className="p-2 rounded bg-[#060e20] border border-[#3d494c]/80 hover:border-[#4cd7f6]/50 transition-colors"
                     >
-                      <div className="flex items-center justify-between">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center space-x-2">
                           <span
                             className="w-2.5 h-2.5 rounded-full"
                             style={{ backgroundColor: c.color }}
                           />
-                          <span className="text-xs font-bold text-[#dae2fd]">{c.name}</span>
+                          <span className="text-xs font-semibold text-[#dae2fd]">Class</span>
                           <span className="text-[10px] text-[#869397] font-mono">[ID: {c.id}]</span>
                         </div>
                         <div className="flex items-center space-x-1 text-[#bcc9cd]">
                           {/* Auto Refine Prompt Button */}
                           <button
                             onClick={() => handleAutoRefine(c)}
-                            disabled={isRefining}
+                            disabled={isRefining || !c.name.trim()}
                             title="Auto-refine prompt with Florence-2 VLM"
                             type="button"
                             className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#4cd7f6]/10 hover:bg-[#4cd7f6]/20 text-[#4cd7f6] text-[10px] font-mono border border-[#4cd7f6]/30 transition-all cursor-pointer disabled:opacity-50"
@@ -1132,6 +1150,7 @@ export const AutoLabelModal: React.FC<Props> = ({
                             onClick={() => handleDeleteClass(c.id)}
                             className="hover:text-[#ffb4ab] p-0.5 rounded cursor-pointer transition-colors"
                             title="Remove class"
+                            aria-label={`Remove class ${c.name || c.id}`}
                             type="button"
                           >
                             <span className="material-symbols-outlined text-[14px]">delete</span>
@@ -1139,11 +1158,29 @@ export const AutoLabelModal: React.FC<Props> = ({
                         </div>
                       </div>
 
+                      <label htmlFor={`class-name-${c.id}`} className="mt-2 block text-[11px] text-[#bcc9cd]">
+                        Class name
+                      </label>
+                      <input
+                        id={`class-name-${c.id}`}
+                        type="text"
+                        value={c.name}
+                        onChange={event => handleRenameClass(c.id, event.target.value)}
+                        onBlur={event => handleRenameClass(c.id, event.target.value.trim())}
+                        onFocus={event => event.currentTarget.select()}
+                        autoFocus={isEditing}
+                        aria-invalid={!c.name.trim()}
+                        aria-describedby={!c.name.trim() ? 'class-name-error' : undefined}
+                        placeholder="e.g. Traffic sign"
+                        className="mt-1 w-full min-w-0 rounded border border-[#3d494c] bg-[#060e20] px-2 py-1.5 text-xs font-semibold text-[#dae2fd] caret-[#4cd7f6] selection:bg-[#4cd7f6]/25 placeholder:text-[#bcc9cd] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4cd7f6]"
+                      />
+
                       <div className="mt-1.5 bg-[#222a3d]/70 px-2 py-1 rounded border border-[#3d494c]/40">
                         {isEditing ? (
                           <div className="flex flex-col gap-1">
                             <span className="text-[10px] font-mono text-[#4cd7f6]">prompt:</span>
                             <textarea
+                              aria-label={`Detection prompt for ${c.name || 'unnamed class'}`}
                               value={c.prompt}
                               onChange={(e) =>
                                 setClasses((prev) =>
@@ -1174,6 +1211,12 @@ export const AutoLabelModal: React.FC<Props> = ({
                   );
                 })}
               </div>
+
+              {!hasValidClasses && (
+                <p id="class-name-error" role="alert" className="text-xs text-[#ffb4ab]">
+                  {classes.length === 0 ? 'Add a class before labeling.' : 'Enter a name for each class before labeling.'}
+                </p>
+              )}
 
               <button
                 onClick={handleAddClass}
@@ -1617,7 +1660,7 @@ export const AutoLabelModal: React.FC<Props> = ({
           <div className="flex items-center space-x-2.5 w-full md:w-auto justify-end">
             <button
               onClick={handleRescore}
-              disabled={!modelsReady || isRescoring || isBatchRunning || sampleImages.length === 0}
+              disabled={!modelsReady || !hasValidClasses || isRescoring || isBatchRunning || sampleImages.length === 0}
               title={!modelsReady ? modelStatusText : undefined}
               type="button"
               className="px-3 py-2 rounded bg-[#222a3d] hover:bg-[#2d3449] border border-[#3d494c] text-xs font-medium text-[#dae2fd] hover:text-[#4cd7f6] transition-all flex items-center space-x-1.5 active:scale-[0.98] cursor-pointer disabled:opacity-50"
@@ -1633,7 +1676,7 @@ export const AutoLabelModal: React.FC<Props> = ({
             </button>
             <button
               onClick={handleLaunchBatch}
-              disabled={!modelsReady || isRescoring || isBatchRunning || totalImages === 0}
+              disabled={!modelsReady || !hasValidClasses || isRescoring || isBatchRunning || totalImages === 0}
               title={!modelsReady ? modelStatusText : undefined}
               type="button"
               className="px-5 py-2 rounded bg-[#06b6d4] hover:bg-[#4cd7f6] text-[#003640] text-xs font-bold flex items-center space-x-2 shadow-[0_0_16px_rgba(6,182,212,0.45)] hover:shadow-[0_0_24px_rgba(6,182,212,0.65)] transition-all active:scale-[0.98] cursor-pointer disabled:opacity-75"
