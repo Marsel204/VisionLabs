@@ -9,6 +9,9 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const root = path.resolve(__dirname, '../src');
 const deferred = () => { let resolve, reject; const promise = new Promise((a,b) => { resolve=a; reject=b; }); return {resolve,reject,promise}; };
+const readyModels={backend:'local',models:Object.fromEntries(
+  ['grounding_dino','sam2','florence2','locate_anything','yolo:yolo11n.pt']
+    .map(id=>[id,{name:id,state:'ready',error:null}]))};
 const jsx = (type, props) => ({type, props:props || {}});
 function harness(file, supplied = {}) {
   const state=[], refs=[], effects=[], callbacks=[]; let cursor=0, pending=[];
@@ -28,6 +31,9 @@ function harness(file, supplied = {}) {
     fetchAllImages:async()=>({images:[],total:0,directory:'/dataset'}),
     fetchAnnotations:async()=>({boxes:[],revision:0}),
     saveAnnotations:async(_n,boxes,revision)=>({boxes,revision:(revision||0)+1}),
+    fetchModelPresets:async()=>({presets:[]}),
+    prepareAutoLabelModels:async()=>readyModels,
+    fetchModelPreparationStatus:async()=>readyModels,
     getImageUrl:n=>n,...supplied};
   const code=ts.transpileModule(fs.readFileSync(path.join(root,file),'utf8'), {
     compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022},
@@ -317,6 +323,7 @@ test('Locate Anything selection reaches preview, batch, and ensemble mode',async
   assert.equal(checkbox.props.checked,false);
   assert.ok(match(r.tree,n=>n.type==='label' && n.props.htmlFor===checkbox.props.id));
   checkbox.props.onChange({target:{checked:true}});
+  h.render(props).runEffects();await tick();
   r=h.render(props);
   match(r.tree,n=>n.type==='button' && content(n).includes('Run Test Preview')).props.onClick();
   await tick();
@@ -326,7 +333,9 @@ test('Locate Anything selection reaches preview, batch, and ensemble mode',async
   for (const title of ['Grounding DINO 1.5 Pro','YOLO & Custom Weights Ensemble']) {
     const node=match(h.render(props).tree,n=>n.type==='div' && n.props.onClick && content(n).includes(title));
     node.props.onClick();
+    h.render(props).runEffects();await tick();
   }
+  h.render(props).runEffects();await tick();
   r=h.render(props);
   match(r.tree,n=>n.type==='button' && content(n).includes('Run Test Preview')).props.onClick();
   await tick();
@@ -337,4 +346,196 @@ test('Locate Anything selection reaches preview, batch, and ensemble mode',async
   assert.equal(batches[0].enable_yolo,false);
   assert.equal(batches[0].enable_grounding_dino,false);
   assert.equal(batches[0].pipeline_mode,'locate_anything_sam2_masks');
+});
+
+const autoLabelProps={isOpen:true,onClose(){},onStartBatch(){},
+  health:{dataset_dir:'/dataset',classes:['car']},images,totalImages:2};
+const previewButton=tree=>match(tree,n=>n.type==='button' && content(n).includes('Run Test Preview'));
+const batchButton=tree=>match(tree,n=>n.type==='button' &&
+  /Start Batch Auto-Labeling|Waiting for models|Models unavailable/.test(content(n)));
+
+test('model downloads show live status and block preview and batch until ready',async()=>{
+  let snapshot={...readyModels,models:{...readyModels.models,
+    grounding_dino:{name:'Grounding DINO',state:'preparing',error:null},
+    sam2:{name:'SAM 2',state:'queued',error:null}}};
+  let previews=0,batches=0;
+  const h=harness('components/modals/AutoLabelModal.tsx',{
+    prepareAutoLabelModels:async()=>snapshot,
+    fetchModelPreparationStatus:async()=>snapshot,
+    runAutoLabelPreview:async()=>{previews++;return {detections:[]};},
+    startAutoLabelBatch:async()=>{batches++;return {status:'started'};},
+  });
+  h.render(autoLabelProps).runEffects();await tick();
+  let r=h.render(autoLabelProps);
+  assert.ok(content(r.tree).includes('Grounding DINO: Downloading / loading'));
+  assert.ok(content(r.tree).includes('SAM 2: Waiting'));
+  assert.equal(previewButton(r.tree).props.disabled,true);
+  assert.equal(batchButton(r.tree).props.disabled,true);
+  await previewButton(r.tree).props.onClick();await batchButton(r.tree).props.onClick();
+  assert.equal(previews,0);assert.equal(batches,0);
+  assert.ok(!content(r.tree).includes('Validated (4/4 passed)'));
+
+  snapshot=readyModels;
+  await [...h.intervals.values()][0]();
+  r=h.render(autoLabelProps);
+  assert.ok(content(r.tree).includes('Models ready for Auto Labeling'));
+  assert.equal(previewButton(r.tree).props.disabled,false);
+  assert.equal(batchButton(r.tree).props.disabled,false);
+  await batchButton(r.tree).props.onClick();assert.equal(batches,1);
+});
+
+test('model download failures explain recovery and retry unlocks labeling',async()=>{
+  let attempts=0;
+  const failed={...readyModels,models:{...readyModels.models,
+    grounding_dino:{name:'Grounding DINO',state:'error',error:'Connection interrupted'}}};
+  const h=harness('components/modals/AutoLabelModal.tsx',{
+    prepareAutoLabelModels:async()=>++attempts===1?failed:readyModels,
+  });
+  h.render(autoLabelProps).runEffects();await tick();
+  let r=h.render(autoLabelProps);
+  assert.ok(content(r.tree).includes('Connection interrupted'));
+  assert.equal(batchButton(r.tree).props.disabled,true);
+  colabButton(r.tree,'Retry model preparation').props.onClick();
+  h.render(autoLabelProps).runEffects();await tick();
+  r=h.render(autoLabelProps);
+  assert.equal(attempts,2);
+  assert.equal(batchButton(r.tree).props.disabled,false);
+  assert.ok(!content(r.tree).includes('Connection interrupted'));
+});
+
+test('a stale preparation response cannot unlock a newly selected model',async()=>{
+  const first=deferred(),second=deferred();const calls=[];
+  const h=harness('components/modals/AutoLabelModal.tsx',{
+    prepareAutoLabelModels:options=>{calls.push(options);return calls.length===1?first.promise:second.promise;},
+  });
+  h.render(autoLabelProps).runEffects();
+  const r=h.render(autoLabelProps);
+  match(r.tree,n=>n.type==='input' && n.props.id==='locate-anything-detector')
+    .props.onChange({target:{checked:true}});
+  h.render(autoLabelProps).runEffects();
+  assert.equal(calls[1].enable_locate_anything,true);
+  first.resolve(readyModels);await tick();
+  assert.equal(batchButton(h.render(autoLabelProps).tree).props.disabled,true);
+  assert.equal(h.intervals.size,0);
+  second.resolve(readyModels);await tick();
+  assert.equal(batchButton(h.render(autoLabelProps).tree).props.disabled,false);
+  h.render({...autoLabelProps,isOpen:false}).runEffects();
+  assert.equal(h.intervals.size,0);
+});
+
+test('cloud labeling stays available without local model downloads',async()=>{
+  const h=harness('components/modals/AutoLabelModal.tsx',{
+    prepareAutoLabelModels:async()=>({backend:'cloud',models:{}}),
+  });
+  h.render(autoLabelProps).runEffects();await tick();
+  const r=h.render(autoLabelProps);
+  assert.ok(content(r.tree).includes('No local model downloads are needed'));
+  assert.equal(previewButton(r.tree).props.disabled,false);
+  assert.equal(batchButton(r.tree).props.disabled,false);
+});
+
+test('a failed preparation request shows a retry instead of waiting forever',async()=>{
+  const h=harness('components/modals/AutoLabelModal.tsx',{
+    prepareAutoLabelModels:async()=>{throw Error('API unavailable');},
+  });
+  h.render(autoLabelProps).runEffects();await tick();
+  const r=h.render(autoLabelProps);
+  assert.ok(content(r.tree).includes('Cannot prepare models: Error: API unavailable'));
+  assert.ok(colabButton(r.tree,'Retry model preparation'));
+  assert.equal(batchButton(r.tree).props.disabled,true);
+  assert.equal(h.intervals.size,0);
+});
+
+test('labeling requires an object detector even when verifier and masks are ready',async()=>{
+  const h=harness('components/modals/AutoLabelModal.tsx');
+  h.render(autoLabelProps).runEffects();await tick();
+  const tree=h.render(autoLabelProps).tree;
+  for(const title of ['Grounding DINO 1.5 Pro','YOLO & Custom Weights Ensemble']) {
+    const node=match(tree,n=>n.type==='div' && n.props.onClick && content(n).includes(title));
+    node.props.onClick();
+  }
+  const r=h.render(autoLabelProps);r.runEffects();
+  assert.ok(content(r.tree).includes('Select an object detector'));
+  assert.equal(previewButton(r.tree).props.disabled,true);
+  assert.equal(batchButton(r.tree).props.disabled,true);
+  assert.equal(h.intervals.size,0);
+});
+
+const classNameInput=(tree,id)=>match(tree,n=>n.type==='input' && n.props.id===`class-name-${id}`);
+
+test('class names are editable and renamed classes reach preview and batch',async()=>{
+  const previews=[],batches=[];
+  const h=harness('components/modals/AutoLabelModal.tsx',{
+    runAutoLabelPreview:async payload=>{previews.push(payload);return {detections:[]};},
+    startAutoLabelBatch:async payload=>{batches.push(payload);return {status:'started'};},
+  });
+  h.render(autoLabelProps).runEffects();await tick();
+  const input=classNameInput(h.render(autoLabelProps).tree,'01');
+  assert.ok(input,'Class names must be editable');
+  assert.equal(input.props.value,'Car');
+  input.props.onChange({target:{value:'Traffic sign'}});
+  let r=h.render(autoLabelProps);
+  assert.equal(classNameInput(r.tree,'01').props.value,'Traffic sign');
+  await previewButton(r.tree).props.onClick();await tick();
+  assert.equal(previews[0].classes[0].name,'Traffic sign');
+  assert.equal(previews[0].classes[0].prompt,'Traffic sign, visual entity');
+  r=h.render(autoLabelProps);await batchButton(r.tree).props.onClick();
+  assert.equal(batches[0].classes[0].name,'Traffic sign');
+});
+
+test('renaming a class preserves its custom detection prompt',()=>{
+  const h=harness('components/modals/AutoLabelModal.tsx');
+  let r=h.render(autoLabelProps);
+  const input=classNameInput(r.tree,'01');
+  assert.ok(input,'Class names must be editable');
+  match(r.tree,n=>n.type==='button' && n.props.title==='Edit prompt text').props.onClick();
+  r=h.render(autoLabelProps);
+  find(r.tree,'textarea').props.onChange({target:{value:'a red octagonal stop sign beside the road'}});
+  r=h.render(autoLabelProps);
+  classNameInput(r.tree,'01').props.onChange({target:{value:'Stop sign'}});
+  r=h.render(autoLabelProps);
+  assert.equal(find(r.tree,'textarea').props.value,'a red octagonal stop sign beside the road');
+});
+
+test('new classes focus the name field and keep distinct identities after deletion',()=>{
+  const h=harness('components/modals/AutoLabelModal.tsx');
+  let r=h.render(autoLabelProps);
+  match(r.tree,n=>n.type==='button' && content(n).includes('Add Class Prompt')).props.onClick();
+  r=h.render(autoLabelProps);
+  const added=classNameInput(r.tree,'02');
+  assert.ok(added,'New classes need an editable name field');
+  assert.equal(added.props.autoFocus,true);
+  added.props.onChange({target:{value:'Helmet'}});
+  r=h.render(autoLabelProps);
+  match(r.tree,n=>n.type==='button' && n.props['aria-label']==='Remove class Car').props.onClick();
+  r=h.render(autoLabelProps);
+  match(r.tree,n=>n.type==='button' && content(n).includes('Add Class Prompt')).props.onClick();
+  r=h.render(autoLabelProps);
+  assert.equal(classNameInput(r.tree,'02').props.value,'Helmet');
+  assert.ok(classNameInput(r.tree,'03'));
+});
+
+test('blank class names block labeling and surrounding whitespace is trimmed',async()=>{
+  let previews=0,batches=0;
+  const h=harness('components/modals/AutoLabelModal.tsx',{
+    runAutoLabelPreview:async()=>{previews++;return {detections:[]};},
+    startAutoLabelBatch:async()=>{batches++;return {status:'started'};},
+  });
+  h.render(autoLabelProps).runEffects();await tick();
+  let r=h.render(autoLabelProps);
+  const input=classNameInput(r.tree,'01');
+  assert.ok(input,'Class names must be editable');
+  input.props.onChange({target:{value:'   '}});
+  r=h.render(autoLabelProps);
+  assert.equal(classNameInput(r.tree,'01').props['aria-invalid'],true);
+  assert.equal(previewButton(r.tree).props.disabled,true);
+  assert.equal(batchButton(r.tree).props.disabled,true);
+  await previewButton(r.tree).props.onClick();await batchButton(r.tree).props.onClick();
+  assert.equal(previews,0);assert.equal(batches,0);
+  classNameInput(r.tree,'01').props.onChange({target:{value:'  Pedestrian  '}});
+  r=h.render(autoLabelProps);
+  classNameInput(r.tree,'01').props.onBlur({target:{value:'  Pedestrian  '}});
+  r=h.render(autoLabelProps);
+  assert.equal(classNameInput(r.tree,'01').props.value,'Pedestrian');
+  assert.equal(batchButton(r.tree).props.disabled,false);
 });

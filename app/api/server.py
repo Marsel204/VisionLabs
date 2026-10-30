@@ -47,6 +47,7 @@ from app.services.auto_label.models import (
     DEFAULT_AUTO_LABEL_CLASSES,
 )
 from app.services.inference.cloud import CloudInferenceError
+from app.services.inference.preparation import ModelPreparation
 from app.export.exporters import (
     CocoExporter,
     YoloExporter,
@@ -114,6 +115,7 @@ AUTOLABEL_ENGINE = AutoLabelEngine()
 COLAB_CONNECTION = ColabConnection(PathSettings().cache_root / "colab")
 DATASET_STATE_LOCK = threading.RLock()
 INFERENCE_LOCK = threading.RLock()
+MODEL_PREPARATION = ModelPreparation(AUTOLABEL_ENGINE, INFERENCE_LOCK)
 SESSION_TOKEN = secrets.token_urlsafe(32)
 ALLOWED_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:1420", "http://127.0.0.1:1420", "http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"}
 
@@ -308,6 +310,37 @@ class AutoLabelBatchRequest(BaseModel):
 
 class ValidateModelRequest(BaseModel):
     path: str
+
+
+class PrepareModelsRequest(BaseModel):
+    enable_grounding_dino: bool = True
+    enable_sam2_masks: bool = True
+    enable_florence2: bool = False
+    enable_locate_anything: bool = False
+    enable_florence2_verifier: bool = False
+    enable_yolo: bool = True
+    yolo_models: List[str] = Field(default_factory=lambda: ["yolo11n.pt"], max_length=3)
+
+
+@app.get("/api/models/status")
+def get_model_preparation_status():
+    return MODEL_PREPARATION.snapshot()
+
+
+@app.post("/api/models/prepare")
+def prepare_autolabel_models(req: PrepareModelsRequest):
+    model_ids = []
+    if req.enable_grounding_dino:
+        model_ids.append("grounding_dino")
+    if req.enable_yolo:
+        model_ids.extend(f"yolo:{name}" for name in (req.yolo_models or ["yolo11n.pt"]))
+    if req.enable_florence2 or req.enable_florence2_verifier:
+        model_ids.append("florence2")
+    if req.enable_locate_anything:
+        model_ids.append("locate_anything")
+    if req.enable_sam2_masks:
+        model_ids.append("sam2")
+    return MODEL_PREPARATION.start(model_ids)
 
 
 def _parse_input_classes(raw_classes: List[Union[AutoLabelClassInput, str]]) -> List[AutoLabelClass]:

@@ -247,6 +247,24 @@ export async function startAutoLabelBatch(payload: {
   return res.json();
 }
 
+export async function prepareAutoLabelModels(payload: {
+  enable_grounding_dino: boolean;
+  enable_sam2_masks: boolean;
+  enable_florence2: boolean;
+  enable_locate_anything: boolean;
+  enable_florence2_verifier: boolean;
+  enable_yolo: boolean;
+  yolo_models: string[];
+}): Promise<import('../types').ModelPreparationStatus> {
+  return (await apiFetch(`${BASE_URL}/api/models/prepare`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  })).json();
+}
+
+export async function fetchModelPreparationStatus(): Promise<import('../types').ModelPreparationStatus> {
+  return (await apiFetch(`${BASE_URL}/api/models/status`)).json();
+}
+
 export async function fetchModelPresets(): Promise<{ presets: Array<{ id: string; name: string; size: string; type: string }> }> {
   const res = await apiFetch(`${BASE_URL}/api/models/presets`);
   if (!res.ok) throw new Error(`Failed to fetch model presets: ${res.statusText}`);
