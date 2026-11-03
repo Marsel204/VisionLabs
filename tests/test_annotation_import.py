@@ -278,6 +278,35 @@ def test_import_endpoint_updates_the_index_so_the_lists_show_the_labels(client):
     assert [b["class_name"] for b in shown["boxes"]] == ["motorcycle", "car"]
 
 
+@pytest.mark.parametrize("endpoint", [False, True])
+def test_import_overwrites_cached_histograms(client, dataset, monkeypatch, endpoint):
+    root, _ = dataset
+    # Warm an empty cache first; both direct imports and HTTP jobs must replace it.
+    assert client.get("/api/dataset/stats").json()["total_annotations"] == 0
+    source = root / "train/annotations.json"
+    if endpoint:
+        response = client.post("/api/dataset/import-annotations", json={"sources": ["train/annotations.json"]})
+        assert response.status_code == 200, response.text
+        assert wait_for_import(client)["error"] is None
+    else:
+        assert import_coco(AnnotationRepository(root), source).imported == 2
+    assert client.get("/api/dataset/stats").json()["total_annotations"] == 3
+    document = json.loads(source.read_text())
+    document["annotations"] = [ann(100, 1, 2, [10, 10, 20, 20])]
+    source.write_text(json.dumps(document))
+    if endpoint:
+        response = client.post("/api/dataset/import-annotations", json={"sources": ["train/annotations.json"], "overwrite": True})
+        assert response.status_code == 200, response.text
+        assert wait_for_import(client)["error"] is None
+    else:
+        assert import_coco(AnnotationRepository(root), source, overwrite=True).imported == 2
+    monkeypatch.setattr(AnnotationRepository, "read", lambda *a, **k: pytest.fail("Import did not refresh histogram"))
+    stats = client.get("/api/dataset/stats").json()
+    assert stats["total_annotations"] == 1
+    assert stats["class_counts"]["motorcycle"] == 0
+    assert stats["class_counts"]["car"] == 1
+
+
 def test_import_rejects_bad_paths_and_non_coco_files(client, dataset):
     root, _ = dataset
     response = client.post("/api/dataset/import-annotations", json={"sources": ["nope.json"]})

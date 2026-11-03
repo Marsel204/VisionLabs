@@ -365,13 +365,14 @@ def import_coco(
                 declared if all(declared) else None,
             )
             counts.invalid_boxes += invalid
-            saved = repo.save(
-                image_path, boxes, status=IMPORT_STATUS, expected_revision=revision
-            )
-            counts.imported += 1
-            counts.boxes += len(saved["boxes"])
-            if on_saved:
-                on_saved(image_path, saved)
+            with repo.lock, repo._write_lock():
+                saved = repo.save(
+                    image_path, boxes, status=IMPORT_STATUS, expected_revision=revision
+                )
+                counts.imported += 1
+                counts.boxes += len(saved["boxes"])
+                if on_saved:
+                    on_saved(image_path, saved)
         except RevisionConflict:
             counts.skipped_conflict += 1
         except (RepositoryError, OSError, ValueError) as err:

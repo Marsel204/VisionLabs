@@ -218,10 +218,15 @@ def get_dataset_index() -> DatasetIndex:
 
 def sync_image_dimensions_and_status(index_db: DatasetIndex, img_path: Path) -> tuple[int, int, str]:
     repo = AnnotationRepository(ACTIVE_DATASET_DIR)
-    data = repo.read(img_path)
-    index_db.set_metadata(img_path, data["width"], data["height"])
-    record = index_db.get_image(img_path) or {}
-    index_db.set_status_and_count(img_path, data["status"], len(data["boxes"]), record.get("difficulty") or 0)
+    with repo.lock, repo._write_lock():
+        generation = index_db.annotation_generation()
+        data = repo.read(img_path)
+        index_db.set_metadata(img_path, data["width"], data["height"])
+        record = index_db.get_image(img_path) or {}
+        index_db.set_status_and_count(
+            img_path, data["status"], len(data["boxes"]), record.get("difficulty") or 0,
+            boxes=data["boxes"], expected_generation=generation,
+        )
     return data["width"], data["height"], data["status"]
 
 # ------------------------------------------------------------------------------
@@ -641,10 +646,15 @@ def list_images(
         cached_count = r.get("annotation_count", -1)
         if cached_count == -1:
             try:
-                data = repo.read(img_path)
-                ann_count = len(data["boxes"])
-                current_status = data["status"]
-                index_db.set_status_and_count(img_path, current_status, ann_count, r.get("difficulty") or 0)
+                with repo.lock, repo._write_lock():
+                    generation = index_db.annotation_generation()
+                    data = repo.read(img_path)
+                    ann_count = len(data["boxes"])
+                    current_status = data["status"]
+                    index_db.set_status_and_count(
+                        img_path, current_status, ann_count, r.get("difficulty") or 0,
+                        boxes=data["boxes"], expected_generation=generation,
+                    )
             except Exception as err:
                 raise HTTPException(422, f"Cannot load labels for {img_path.name}: {err}") from err
         else:
@@ -709,11 +719,17 @@ def get_annotations(image_name: str, dataset_id: Optional[str] = None):
     check_dataset(dataset_id or None)
     image = get_image_path(image_name)
     try:
-        data = AnnotationRepository(ACTIVE_DATASET_DIR).read(image)
-        index = get_dataset_index()
-        index.set_metadata(image, data["width"], data["height"])
-        record = index.get_image(image) or {}
-        index.set_status_and_count(image, data["status"], len(data["boxes"]), record.get("difficulty") or 0)
+        repo = AnnotationRepository(ACTIVE_DATASET_DIR)
+        with repo.lock, repo._write_lock():
+            index = get_dataset_index()
+            generation = index.annotation_generation()
+            data = repo.read(image)
+            index.set_metadata(image, data["width"], data["height"])
+            record = index.get_image(image) or {}
+            index.set_status_and_count(
+                image, data["status"], len(data["boxes"]), record.get("difficulty") or 0,
+                boxes=data["boxes"], expected_generation=generation,
+            )
         return data
     except Exception as err:
         raise HTTPException(422, f"Cannot load annotations: {err}") from err
@@ -729,15 +745,18 @@ def save_annotations(image_name: str, payload: SaveAnnotationRequest):
     status = payload.status or "reviewed"
     try:
         repo = AnnotationRepository(ACTIVE_DATASET_DIR)
-        data = repo.save(image, [b.model_dump() for b in payload.boxes], status=status,
-                         expected_revision=payload.expected_revision)
+        with repo.lock, repo._write_lock():
+            data = repo.save(image, [b.model_dump() for b in payload.boxes], status=status,
+                             expected_revision=payload.expected_revision)
+            index = get_dataset_index()
+            difficulty = calculate_image_difficulty(image, payload.boxes)
+            index.set_status_and_count(
+                image, status, len(data["boxes"]), difficulty, boxes=data["boxes"],
+            )
     except RevisionConflict as err:
         raise HTTPException(409, str(err)) from err
     except Exception as err:
         raise HTTPException(422, f"Cannot save annotations: {err}") from err
-    index = get_dataset_index()
-    difficulty = calculate_image_difficulty(image, payload.boxes)
-    index.set_status_and_count(image, status, len(data["boxes"]), difficulty)
     return {"status": "saved", "image_name": image_name, "count": len(data["boxes"]),
             "box_count": len(data["boxes"]), "difficulty": difficulty,
             "review_status": status, "revision": data["revision"], "boxes": data["boxes"],
@@ -1269,12 +1288,15 @@ def _execute_batch_autolabel_worker(
                 if not is_dup:
                     final_boxes.append(nb)
 
-            saved = repo.save(p, [b.model_dump() for b in final_boxes], status="ai_labeled",
-                              expected_revision=existing_data["revision"])
-            if saved.get("projection_warning"):
-                warnings.append(saved["projection_warning"])
-            diff = calculate_image_difficulty(p, final_boxes)
-            index_db.set_status_and_count(p, "ai_labeled", len(final_boxes), diff)
+            with repo.lock, repo._write_lock():
+                saved = repo.save(p, [b.model_dump() for b in final_boxes], status="ai_labeled",
+                                  expected_revision=existing_data["revision"])
+                if saved.get("projection_warning"):
+                    warnings.append(saved["projection_warning"])
+                diff = calculate_image_difficulty(p, final_boxes)
+                index_db.set_status_and_count(
+                    p, "ai_labeled", len(final_boxes), diff, boxes=saved["boxes"],
+                )
         except Exception as err:
             LOGGER.error("Failed to auto-label image %s: %s", p, err)
             failures.append({"image": str(p.relative_to(root)), "error": str(err)})
@@ -1330,9 +1352,14 @@ def _already_annotated(repo: AnnotationRepository, index_db: DatasetIndex,
     if status in {"reviewed", "ai_labeled"}:
         return True
     if count is None or count < 0:
-        data = repo.read(path)
-        status, count = data["status"], len(data["boxes"])
-        index_db.set_status_and_count(path, status, count, record.get("difficulty") or 0)
+        with repo.lock, repo._write_lock():
+            generation = index_db.annotation_generation()
+            data = repo.read(path)
+            status, count = data["status"], len(data["boxes"])
+            index_db.set_status_and_count(
+                path, status, count, record.get("difficulty") or 0,
+                boxes=data["boxes"], expected_generation=generation,
+            )
         if status in {"reviewed", "ai_labeled"}:
             return True
     return count > 0
@@ -1758,26 +1785,14 @@ def rescan_dataset():
     return {"status": "ok", "indexed_count": count, "directory": str(ACTIVE_DATASET_DIR)}
 
 
-def _canonical_class_names(repo: AnnotationRepository, image: Path) -> list[str] | None:
-    """Class names of one image's saved document, read without opening the image itself."""
-    try:
-        document = repo.canonical_path(image)
-        if not document.is_file():
-            return None
-        boxes = json.loads(document.read_text(encoding="utf-8")).get("boxes", [])
-        return [str(box.get("class_name", "")) for box in boxes]
-    except (OSError, ValueError, RepositoryError):
-        return None
-
-
 @app.get("/api/dataset/stats")
 def get_dataset_stats():
     """Dataset counts for the quality page.
 
     This deliberately does not hold the dataset lock for its whole run: on a large dataset it
     takes seconds, and every other dataset call would freeze behind it. Images the index
-    already knows have no boxes are skipped, saved documents are read without opening the
-    image, and only never-probed images fall back to the full (slower) label read.
+    already knows have no boxes are skipped. Unknown class histograms are rebuilt from
+    annotations; subsequent requests aggregate the cached histograms in SQL.
     """
     with DATASET_STATE_LOCK:
         if ACTIVE_DATASET_DIR is None:
@@ -1787,28 +1802,49 @@ def get_dataset_stats():
         root = ACTIVE_DATASET_DIR.resolve()
         index_db = get_dataset_index()
     repo = AnnotationRepository(root)
-    class_counts: Dict[str, int] = {c: 0 for c in repo.classes()}
+
+    def registry_identity():
+        # Detect a class migration between fills without rereading the registry
+        # or blocking repository writers throughout the whole scan.
+        result = []
+        for name in ("data.yaml", "dataset.yaml"):
+            try:
+                stat = (root / name).stat()
+                result.append((stat.st_mtime_ns, stat.st_size))
+            except FileNotFoundError:
+                result.append(None)
+        return result
+
     try:
-        for record in all_records(index_db):
-            count = record.get("annotation_count", -1)
-            if count == 0:
-                continue
-            image = Path(record["path"])
-            if not image.is_file():
-                continue
-            names = _canonical_class_names(repo, image) if count > 0 else None
-            if names is None:
+        with repo.lock, repo._write_lock():
+            classes = repo.classes()
+            registry = registry_identity()
+            generation = index_db.annotation_generation()
+        class_counts: Dict[str, int] = {c: 0 for c in classes}
+        for record in index_db.unknown_histograms():
+            # Coordinate each fill with saves/migrations, including other
+            # processes. Release these locks between images for other requests.
+            with repo.lock, repo._write_lock():
+                if registry_identity() != registry:
+                    raise HTTPException(409, "Dataset classes changed; reload before continuing")
+                image = Path(record["path"])
                 try:
-                    data = repo.read(image)
+                    data = repo.read(image, classes=classes)
                 except (RepositoryError, OSError, ValueError) as err:
                     LOGGER.warning("Skipping unreadable labels for %s: %s", image.name, err)
                     continue
-                names = [box["class_name"] for box in data["boxes"]]
-                index_db.set_status_and_count(
-                    image, data["status"], len(names), record.get("difficulty") or 0)
-            for name in names:
-                class_counts[name] = class_counts.get(name, 0) + 1
-        stats = index_db.stats()
+                updated = index_db.set_status_and_count(
+                    image, data["status"], len(data["boxes"]), record.get("difficulty") or 0,
+                    boxes=data["boxes"], expected_generation=generation)
+                if not updated:
+                    raise HTTPException(409, "Dataset annotations changed; reload before continuing")
+        with repo.lock, repo._write_lock():
+            if registry_identity() != registry:
+                raise HTTPException(409, "Dataset classes changed; reload before continuing")
+            class_counts.update(index_db.class_counts())
+            stats = index_db.stats()
+            if index_db.annotation_generation() != generation:
+                raise HTTPException(409, "Dataset annotations changed; reload before continuing")
     except sqlite3.ProgrammingError as err:  # the dataset was switched while this ran
         raise HTTPException(409, "Dataset changed; reload before continuing") from err
     return {
@@ -2082,7 +2118,7 @@ def _run_annotation_import(root: Path, files: List[Path], overwrite: bool, job: 
     def on_saved(image: Path, saved: dict) -> None:
         boxes = [BoundingBox(**box) for box in saved["boxes"]]
         index_db.set_status_and_count(image, saved["status"], len(boxes),
-                                      calculate_image_difficulty(image, boxes))
+                                      calculate_image_difficulty(image, boxes), boxes=saved["boxes"])
 
     try:
         for annotation_file in files:

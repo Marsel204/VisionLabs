@@ -288,6 +288,10 @@ def test_colab_job_unknown_counts_read_annotations_and_preserve_selection(tmp_pa
     repo.save(tmp_path / "image-0.jpg", [], status="reviewed", expected_revision=0)
     repo.save(tmp_path / "image-1.jpg", [], status="ai_labeled", expected_revision=0)
     (tmp_path / "image-2.txt").write_text("1 0.5 0.5 0.2 0.2\n")
+    # Repository saves now prime the cache; explicitly create the unknown state
+    # this test exercises (as with an old or rebuilt index).
+    for record in server.DATASET_INDEX.list_records():
+        server.DATASET_INDEX.set_status_and_count(Path(record["path"]), "unreviewed", -1)
     records = server.DATASET_INDEX.list_records()
     expected = []
     for record in records:

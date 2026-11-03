@@ -198,6 +198,267 @@ def test_stats_count_legacy_nested_yolo(dataset):
     assert client.get("/api/dataset/stats").json()["class_counts"]["car"] == 1
 
 
+@pytest.mark.parametrize("canonical", [False, True])
+def test_stats_response_parity(dataset, canonical):
+    """Expected response captured against the pre-M5 endpoint for both storage formats."""
+    root, path, index, client = dataset
+    path.with_suffix(".txt").write_text("1 .2 .2 .2 .2\n1 .6 .6 .2 .2\n0 .3 .3 .2 .2\n")
+    empty = image(root / "empty.jpg")
+    index.scan(root)
+    if canonical:
+        repo = AnnotationRepository(root)
+        repo.save(path, repo.read(path)["boxes"], status="reviewed")
+    # Prime only the empty row: known zero-box images must never be opened by stats.
+    index.set_status_and_count(empty, "unreviewed", 0)
+    expected = dict(directory=str(root), total_images=2, total_annotations=3,
+                    reviewed=1, unreviewed=1, ai_labeled=0,
+                    class_counts={"motorcycle": 1, "car": 2, "bus": 0, "truck": 0, "minivan": 0, "person": 0},
+                    database_file=str(index._database_path))
+    assert client.get("/api/dataset/stats").json() == expected
+    assert client.get("/api/dataset/stats").json() == expected
+
+
+@pytest.mark.parametrize("canonical", [False, True])
+def test_warm_stats_read_no_annotations(dataset, monkeypatch, canonical):
+    root, path, _, client = dataset
+    path.with_suffix(".txt").write_text("1 .2 .2 .2 .2\n")
+    if canonical:
+        repo = AnnotationRepository(root)
+        repo.save(path, repo.read(path)["boxes"])
+    first = client.get("/api/dataset/stats").json()
+    monkeypatch.setattr(AnnotationRepository, "read", lambda *a, **k: pytest.fail("Warm stats read annotations"))
+    original = Path.read_text
+
+    def no_labels(path, *args, **kwargs):
+        assert path.suffix not in {".txt", ".json"}, f"Warm stats read {path}"
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", no_labels)
+    assert client.get("/api/dataset/stats").json() == first
+
+
+def test_stats_resolves_classes_once_and_fills_all_pages(dataset, monkeypatch):
+    root, path, index, _ = dataset
+    other = image(root / "other.jpg")
+    for item in (path, other):
+        item.with_suffix(".txt").write_text("1 .2 .2 .2 .2\n")
+    index.scan(root)
+    classes = AnnotationRepository.classes
+    calls = []
+
+    def counted(repo):
+        calls.append(repo.root)
+        return classes(repo)
+
+    unknown = index.unknown_histograms
+    monkeypatch.setattr(index, "unknown_histograms", lambda: unknown(page_size=1))
+    monkeypatch.setattr(AnnotationRepository, "classes", counted)
+    assert s.get_dataset_stats()["total_annotations"] == 2
+    assert calls == [root]
+    assert list(unknown()) == []
+
+
+def test_known_empty_images_are_never_read_by_stats(dataset, monkeypatch):
+    _, path, index, _ = dataset
+    index.set_status_and_count(path, "reviewed", 0)
+    # Include the pre-histogram schema's known-empty representation.
+    index._connection.execute("UPDATE images SET class_histogram=NULL")
+    index._connection.commit()
+    monkeypatch.setattr(AnnotationRepository, "read", lambda *a, **k: pytest.fail("Read a known empty image"))
+    result = s.get_dataset_stats()
+    assert result["total_annotations"] == 0 and result["reviewed"] == 1
+
+
+def test_count_only_updates_invalidate_positive_histograms(dataset):
+    root, path, index, _ = dataset
+    AnnotationRepository(root).save(path, [box()])
+    assert index.class_counts() == {"car": 1}
+    index.set_annotation_count(path, 1)
+    assert index.class_counts() == {}
+    assert s.get_dataset_stats()["class_counts"]["car"] == 1
+    index.set_annotation_counts_batch([(path, 1)])
+    assert index.class_counts() == {}
+    assert s.get_dataset_stats()["class_counts"]["car"] == 1
+
+
+def test_saved_document_survives_histogram_refresh_failure(dataset, monkeypatch):
+    import sqlite3
+
+    root, path, index, _ = dataset
+    repo = AnnotationRepository(root)
+    repo.save(path, [box()])
+
+    def fail_refresh(*args, **kwargs):
+        raise sqlite3.OperationalError("cache refresh failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(DatasetIndex, "set_status_and_count", fail_refresh)
+        saved = repo.save(path, [box(class_name="bus", class_id=2)])
+    assert saved["revision"] == 2
+    assert "cache refresh failed" in saved["projection_warning"]
+    assert len(list(index.unknown_histograms())) == 1
+    result = s.get_dataset_stats()
+    assert result["class_counts"]["car"] == 0
+    assert result["class_counts"]["bus"] == 1
+
+
+@pytest.mark.parametrize("via_api", [False, True])
+def test_annotation_overwrite_refreshes_histogram(dataset, monkeypatch, via_api):
+    root, path, _, client = dataset
+    repo = AnnotationRepository(root)
+    repo.save(path, [box()])
+    assert s.get_dataset_stats()["class_counts"]["car"] == 1
+    replacement = [box(class_name="bus", class_id=2)]
+    if via_api:
+        assert save(client, path.name, replacement).status_code == 200
+    else:
+        repo.save(path, replacement)
+    monkeypatch.setattr(AnnotationRepository, "read", lambda *a, **k: pytest.fail("Saved histogram not refreshed"))
+    result = s.get_dataset_stats()
+    assert result["class_counts"]["car"] == 0
+    assert result["class_counts"]["bus"] == result["total_annotations"] == 1
+
+
+def test_listing_and_annotation_reads_populate_histograms(dataset, monkeypatch):
+    _, path, index, client = dataset
+    path.with_suffix(".txt").write_text("1 .2 .2 .2 .2\n")
+    for endpoint in ("/api/images", "/api/annotations/" + path.name):
+        index.invalidate_annotations()
+        assert client.get(endpoint).status_code == 200
+        with monkeypatch.context() as patch:
+            patch.setattr(AnnotationRepository, "read", lambda *a, **k: pytest.fail("Read did not cache histogram"))
+            assert s.get_dataset_stats()["total_annotations"] == 1
+
+
+def test_rescan_refreshes_external_labels_including_empty_images(dataset):
+    root, path, index, client = dataset
+    assert s.get_dataset_stats()["total_annotations"] == 0
+    path.with_suffix(".txt").write_text("1 .2 .2 .2 .2\n")
+    assert client.post("/api/dataset/rescan").status_code == 200
+    assert s.get_dataset_stats()["class_counts"]["car"] == 1
+    path.with_suffix(".txt").write_text("2 .2 .2 .2 .2\n")
+    index.scan(root)
+    result = s.get_dataset_stats()
+    assert result["class_counts"]["car"] == 0
+    assert result["class_counts"]["bus"] == 1
+
+
+def test_external_image_change_invalidates_histogram_and_review(dataset):
+    import os
+
+    root, path, index, _ = dataset
+    AnnotationRepository(root).save(path, [box()])
+    assert s.get_dataset_stats()["reviewed"] == 1
+    original = path.stat()
+    image(path, size=(217, 113))
+    os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+    index.add_paths([(path, 217, 113)])
+    assert [r["path"] for r in index.unknown_histograms()] == [str(path)]
+    result = s.get_dataset_stats()
+    assert result["reviewed"] == 0 and result["unreviewed"] == 1
+    assert result["total_annotations"] == 1
+
+
+@pytest.mark.parametrize("canonical", [False, True])
+def test_stats_cache_file_is_fully_rebuildable(dataset, monkeypatch, canonical):
+    root, path, index, _ = dataset
+    path.with_suffix(".txt").write_text("1 .2 .2 .2 .2\n")
+    repo = AnnotationRepository(root)
+    if canonical:
+        repo.save(path, repo.read(path)["boxes"], status="ai_labeled")
+    expected = s.get_dataset_stats()
+    index.close()
+    index._database_path.unlink()
+    monkeypatch.setattr(s, "DATASET_INDEX", None)
+    assert s.get_dataset_stats() == expected
+
+
+@pytest.mark.parametrize("old_count_column", [False, True])
+def test_old_index_schema_upgrades_in_place(tmp_path, monkeypatch, old_count_column):
+    import sqlite3
+
+    path = image(tmp_path / "old.jpg")
+    path.with_suffix(".txt").write_text("1 .2 .2 .2 .2\n")
+    database = tmp_path / ".dataset_index.sqlite"
+    with sqlite3.connect(database) as connection:
+        count_column = ", annotation_count INTEGER NOT NULL DEFAULT -1" if old_count_column else ""
+        connection.execute("CREATE TABLE images (path TEXT PRIMARY KEY, modified_ns INTEGER NOT NULL, "
+                           "width INTEGER, height INTEGER, difficulty REAL NOT NULL DEFAULT 0, "
+                           "status TEXT NOT NULL DEFAULT 'unreviewed'" + count_column + ")")
+        connection.execute("INSERT INTO images(path, modified_ns, width, height, difficulty, status) "
+                           "VALUES(?, ?, 100, 80, .75, 'reviewed')", (str(path), path.stat().st_mtime_ns))
+        if old_count_column:
+            connection.execute("UPDATE images SET annotation_count=1")
+    with DatasetIndex(database) as index:
+        before = index.get_image(path)
+        assert (before["width"], before["height"], before["difficulty"], before["status"]) == (100, 80, .75, "reviewed")
+        monkeypatch.setattr(s, "ACTIVE_DATASET_DIR", tmp_path)
+        monkeypatch.setattr(s, "DATASET_INDEX", index)
+        assert s.get_dataset_stats()["class_counts"]["car"] == 1
+        assert index.get_image(path)["difficulty"] == .75
+        assert list(index.unknown_histograms()) == []
+
+
+def test_unreadable_histogram_remains_unknown_until_repaired(dataset):
+    _, path, index, _ = dataset
+    label = path.with_suffix(".txt")
+    label.write_text("99 .2 .2 .2 .2\n")
+    assert s.get_dataset_stats()["total_annotations"] == 0
+    assert len(list(index.unknown_histograms())) == 1
+    label.write_text("1 .2 .2 .2 .2\n")
+    assert s.get_dataset_stats()["total_annotations"] == 1
+
+
+def test_stats_scan_releases_global_dataset_lock(dataset, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    _, _, _, client = dataset
+    entered, release = threading.Event(), threading.Event()
+    read = AnnotationRepository.read
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return read(*args, **kwargs)
+
+    monkeypatch.setattr(AnnotationRepository, "read", blocked)
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(s.get_dataset_stats)
+        try:
+            assert entered.wait(5)
+            assert s.DATASET_STATE_LOCK.acquire(timeout=1)
+            s.DATASET_STATE_LOCK.release()
+            assert client.get("/api/image/sample.jpg").status_code == 200
+        finally:
+            release.set()
+        assert future.result(timeout=5)["total_images"] == 1
+
+
+def test_stats_rejects_concurrent_rescan(dataset, monkeypatch):
+    from fastapi import HTTPException
+
+    root, _, index, _ = dataset
+    read = AnnotationRepository.read
+
+    def rescanning(*args, **kwargs):
+        data = read(*args, **kwargs)
+        # Change labels after they were read, before their histogram is published.
+        (root / "sample.txt").write_text("2 .2 .2 .2 .2\n")
+        # A separate handle also covers invalidation from another worker/process.
+        with DatasetIndex(index._database_path) as other:
+            other.scan(root)
+        return data
+
+    with monkeypatch.context() as patch:
+        patch.setattr(AnnotationRepository, "read", rescanning)
+        with pytest.raises(HTTPException) as error:
+            s.get_dataset_stats()
+        assert error.value.status_code == 409
+    result = s.get_dataset_stats()
+    assert result["total_images"] == 1
+    assert result["class_counts"]["bus"] == 1
+
+
 def test_changed_image_dimensions(dataset):
     root, path, index, client = dataset
     assert client.get("/api/images").json()["images"][0]["width"] == 100

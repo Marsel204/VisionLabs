@@ -1,0 +1,54 @@
+........................................................................ [ 15%]
+........................................................................ [ 30%]
+....................................................ss.................s [ 45%]
+........................................................................ [ 60%]
+........................................................................ [ 75%]
+........................................................................ [ 90%]
+...............................................                          [100%]
+=============================== warnings summary ===============================
+.venv/lib/python3.14/site-packages/fastapi/testclient.py:1
+  /home/marsel/.t3/worktrees/VisionLab/t3-7238a79f/.venv/lib/python3.14/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+app/api/server.py:450
+  /home/marsel/.t3/worktrees/VisionLab/t3-7238a79f/app/api/server.py:450: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    @app.on_event("startup")
+
+.venv/lib/python3.14/site-packages/fastapi/applications.py:4681
+.venv/lib/python3.14/site-packages/fastapi/applications.py:4681
+  /home/marsel/.t3/worktrees/VisionLab/t3-7238a79f/.venv/lib/python3.14/site-packages/fastapi/applications.py:4681: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    return self.router.on_event(event_type)  # ty: ignore[deprecated]
+
+app/api/server.py:521
+  /home/marsel/.t3/worktrees/VisionLab/t3-7238a79f/app/api/server.py:521: DeprecationWarning:
+          on_event is deprecated, use lifespan event handlers instead.
+
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+
+    @app.on_event("shutdown")
+
+tests/test_auto_label.py::test_auto_label_engine_florence2_vlm_localization
+tests/test_auto_label.py::test_auto_label_engine_run_preview_yolo_boxes
+tests/test_auto_label.py::test_auto_label_engine_run_preview_yolo_sam2
+tests/test_auto_label.py::test_auto_label_engine_yolo_anti_duplication
+tests/test_auto_label.py::test_auto_label_engine_multi_yolo_simultaneous_inference
+  /home/marsel/.t3/worktrees/VisionLab/t3-7238a79f/.venv/lib/python3.14/site-packages/transformers/models/grounding_dino/processing_grounding_dino.py:98: FutureWarning: The key `labels` is will return integer ids in `GroundingDinoProcessor.post_process_grounded_object_detection` output since v4.51.0. Use `text_labels` instead to retrieve string object names.
+    warnings.warn(self.message, FutureWarning)
+
+tests/test_single_ui.py::test_native_icon_uses_the_current_logo_not_the_starter_logo
+  /home/marsel/.t3/worktrees/VisionLab/t3-7238a79f/tests/test_single_ui.py:104: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    colors = {pixel[:3] for pixel in icon.convert("RGBA").getdata() if pixel[3] == 255}
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+476 passed, 3 skipped, 11 warnings in 119.60s (0:01:59)

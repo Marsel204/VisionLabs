@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import yaml
 
-from app.services.dataset.index import IMAGE_SUFFIXES
+from app.services.dataset.index import DatasetIndex, IMAGE_SUFFIXES
 from app.services.dataset.repository import AnnotationRepository, RepositoryError, atomic_text
 
 
@@ -168,6 +168,12 @@ def change_class(
             else:
                 atomic_text(backup / relative, original)
         atomic_text(backup / "manifest.json", json.dumps(manifest, indent=2))
+        cache = repo.root / ".dataset_index.sqlite"
+        if cache.is_file():
+            # This service is also called without the API. Invalidate before any
+            # migration writes, so rollback/interruption remains safe to rebuild.
+            with DatasetIndex(cache) as index:
+                index.invalidate_annotations()
         written = []
         try:
             for path, value in changes.items():
