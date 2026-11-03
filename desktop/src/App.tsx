@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import type { AuditFinding, AuditReport, BoundingBox, ImageMeta, Page, SystemHealth, ToolType } from './types';
 import {
   fetchHealth,
@@ -643,7 +643,7 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showToast]);
 
-  const summary = summarizeDataset(images);
+  const summary = useMemo(() => summarizeDataset(images), [images]);
   const datasetName = datasetNameFrom(health?.dataset_dir);
   const classes = health?.classes || [];
   const refreshAfterLabels = () => { void refreshImages(); setAnnotationReload(value => value + 1); };
