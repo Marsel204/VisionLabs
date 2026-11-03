@@ -310,10 +310,13 @@ class AutoLabelEngine:
         if not path.is_file():
             raise FileNotFoundError(f"Image not found: {path}")
 
+        active_classes = [c for c in config.classes if c.enabled and c.name.strip()]
+        if self._cloud_client is not None and active_classes:
+            return self._cloud_client.predict(path, config)
+
         image = Image.open(path).convert("RGB")
         width, height = image.width, image.height
 
-        active_classes = [c for c in config.classes if c.enabled and c.name.strip()]
         if not active_classes:
             return AutoLabelResult(
                 image_path=path,
@@ -322,9 +325,6 @@ class AutoLabelEngine:
                 detections=[],
                 elapsed_seconds=time.perf_counter() - start_time,
             )
-
-        if self._cloud_client is not None:
-            return self._cloud_client.predict(path, config)
 
         color_map = {c.name: c.color for c in active_classes}
 
