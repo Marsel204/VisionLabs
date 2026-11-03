@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
+import zipfile
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -68,6 +70,59 @@ def results_for(manager):
             for row in request["images"]
         ],
     }
+
+
+@pytest.mark.parametrize("suffix", [".jpg", ".JPEG", ".png", ".webp", ".bmp"])
+def test_input_archive_preserves_content_checksums_and_manifest(tmp_path, suffix):
+    root = tmp_path / "dataset"
+    root.mkdir()
+    image = root / f"sample{suffix}"
+    Image.new("RGB", (100, 80), "white").save(image)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    options = {"classes": [{"name": "car"}]}
+    snapshots = ColabConnection(tmp_path / "private")._pack_inputs(
+        root, [image], workspace, options, "test-job"
+    )
+    key = f"image-0000{suffix.lower()}"
+    data = image.read_bytes()
+    checksum = hashlib.sha256(data).hexdigest()
+    with zipfile.ZipFile(workspace / "input.zip") as archive:
+        assert archive.namelist() == [key, "request.json"]
+        assert archive.getinfo(key).compress_type == (
+            zipfile.ZIP_DEFLATED if suffix == ".bmp" else zipfile.ZIP_STORED
+        )
+        assert archive.read(key) == data
+        assert archive.getinfo("request.json").compress_type == zipfile.ZIP_DEFLATED
+        assert archive.read("request.json") == (workspace / "request.json").read_bytes()
+        assert json.loads(archive.read("request.json")) == {
+            "version": 1,
+            "job_id": "test-job",
+            "options": options,
+            "images": [{"key": key, "sha256": checksum}],
+        }
+    assert snapshots[key] == {
+        "path": image,
+        "sha256": checksum,
+        "size": (100, 80),
+        "data": AnnotationRepository(root).read(image),
+    }
+
+
+@pytest.mark.parametrize("limit", ["image", "selection"])
+def test_input_archive_enforces_transfer_limits(dataset, tmp_path, monkeypatch, limit):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    image = dataset / "0.jpg"
+    if limit == "image":
+        with image.open("r+b") as stream:
+            stream.truncate(20 * 1024 * 1024 + 1)
+    else:
+        monkeypatch.setattr("app.services.colab_connection.MAX_TRANSFER_BYTES", image.stat().st_size)
+    with pytest.raises(ColabConnectionError, match="transfer limit"):
+        ColabConnection(tmp_path / "private")._pack_inputs(
+            dataset, [image, dataset / "1.jpg"], workspace, {}, "test-job"
+        )
 
 
 def executor(manager, calls, *, fail_exec=False, fail_stop=False, before_download=None):

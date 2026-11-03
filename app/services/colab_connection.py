@@ -546,7 +546,12 @@ class ColabConnection:
                     "size": size,
                     "data": repo.read(path),
                 }
-                archive.writestr(key, data)
+                compression = (
+                    zipfile.ZIP_STORED
+                    if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+                    else zipfile.ZIP_DEFLATED
+                )
+                archive.writestr(key, data, compress_type=compression)
                 request["images"].append({"key": key, "sha256": checksum})
             serialized = json.dumps(request)
             archive.writestr("request.json", serialized)
