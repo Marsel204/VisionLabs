@@ -142,6 +142,68 @@ def test_colab_job_selects_three_images_and_skips_existing_labels(tmp_path, monk
     }).status_code == 422
 
 
+def test_colab_job_uses_cached_annotation_state_without_repository_reads(tmp_path, monkeypatch):
+    states = [("reviewed", 0), ("ai_labeled", 0), ("unreviewed", 1),
+              ("unreviewed", 0), ("unreviewed", 0)]
+    for index in range(len(states)):
+        Image.new("RGB", (100, 80)).save(tmp_path / f"image-{index}.jpg")
+    server.DATASET_INDEX.scan(tmp_path)
+    for index, (status, count) in enumerate(states):
+        server.DATASET_INDEX.set_status_and_count(tmp_path / f"image-{index}.jpg", status, count)
+    server.DATASET_INDEX.set_status_and_count(tmp_path / "sample.jpg", "unreviewed", 0)
+    monkeypatch.setattr(server.AnnotationRepository, "read",
+                        lambda *args: pytest.fail("Cached admission must not read annotations"))
+    selected = []
+    monkeypatch.setattr(server.COLAB_CONNECTION, "start_job",
+                        lambda root, images, *args, **kwargs: selected.extend(images))
+
+    response = client.post("/api/colab/jobs", json={"dataset_id": str(tmp_path), "classes": ["car"]})
+    assert response.status_code == 200, response.text
+    assert selected == [tmp_path / "image-3.jpg", tmp_path / "image-4.jpg", tmp_path / "sample.jpg"]
+    assert client.post("/api/colab/jobs", json={
+        "dataset_id": "/another-dataset", "classes": ["car"],
+    }).status_code == 409
+
+
+@pytest.mark.parametrize("unknown_count", [-1, None])
+def test_colab_job_unknown_counts_read_annotations_and_preserve_selection(tmp_path, monkeypatch, unknown_count):
+    for index in range(5):
+        Image.new("RGB", (100, 80)).save(tmp_path / f"image-{index}.jpg")
+    server.DATASET_INDEX.scan(tmp_path)
+    repo = server.AnnotationRepository(tmp_path)
+    repo.save(tmp_path / "image-0.jpg", [], status="reviewed", expected_revision=0)
+    repo.save(tmp_path / "image-1.jpg", [], status="ai_labeled", expected_revision=0)
+    (tmp_path / "image-2.txt").write_text("1 0.5 0.5 0.2 0.2\n")
+    records = server.DATASET_INDEX.list_records()
+    expected = []
+    for record in records:
+        image = Path(record["path"])
+        data = repo.read(image)
+        if not data["boxes"] and data["status"] not in {"reviewed", "ai_labeled"}:
+            expected.append(image)
+    assert expected == [tmp_path / "image-3.jpg", tmp_path / "image-4.jpg", tmp_path / "sample.jpg"]
+    if unknown_count is None:
+        # SQLite uses -1; also exercise the helper's nullable/absent-count compatibility.
+        list_records = server.DATASET_INDEX.list_records
+        monkeypatch.setattr(server.DATASET_INDEX, "list_records", lambda *args, **kwargs: [
+            {**record, "annotation_count": None} for record in list_records(*args, **kwargs)
+        ])
+    reads = []
+    read = server.AnnotationRepository.read
+    def counted_read(repository, image):
+        reads.append(image)
+        return read(repository, image)
+    monkeypatch.setattr(server.AnnotationRepository, "read", counted_read)
+    selected = []
+    monkeypatch.setattr(server.COLAB_CONNECTION, "start_job",
+                        lambda root, images, *args, **kwargs: selected.extend(images))
+
+    response = client.post("/api/colab/jobs", json={"dataset_id": str(tmp_path), "classes": ["car"]})
+    assert response.status_code == 200, response.text
+    assert selected == expected
+    assert reads == [Path(record["path"]) for record in records]
+
+
 def test_images_list():
     res = client.get("/api/images")
     assert res.status_code == 200

@@ -510,15 +510,14 @@ def select_colab_images(request: ColabJobRequest):
         check_dataset(request.dataset_id)
         root = ACTIVE_DATASET_DIR.resolve()
         repository = AnnotationRepository(root)
+        index_db = get_dataset_index()
         images = []
-        for record in all_records(get_dataset_index()):
+        for record in all_records(index_db):
             image = Path(record["path"])
             if not image.is_file():
                 continue
-            if request.only_unannotated:
-                data = repository.read(image)
-                if data["boxes"] or data["status"] in {"reviewed", "ai_labeled"}:
-                    continue
+            if request.only_unannotated and _already_annotated(repository, index_db, record, image):
+                continue
             images.append(image)
             if len(images) >= request.limit:
                 break
