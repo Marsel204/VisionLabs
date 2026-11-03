@@ -629,6 +629,7 @@ def list_images(
     records = index_db.list_records(status=status, order_by=order_by, limit=limit, offset=offset)
     images = []
     repo = AnnotationRepository(ACTIVE_DATASET_DIR)
+    dataset_root = ACTIVE_DATASET_DIR.resolve()
 
     for r in records:
         path_val = r.get("path") if r else None
@@ -668,8 +669,8 @@ def list_images(
 
         images.append({
             "filename": img_path.name,
-            "image_id": str(img_path.relative_to(ACTIVE_DATASET_DIR.resolve())),
-            "dataset_id": str(ACTIVE_DATASET_DIR.resolve()),
+            "image_id": str(img_path.relative_to(dataset_root)),
+            "dataset_id": str(dataset_root),
             "path": str(img_path),
             "width": w,
             "height": h,
