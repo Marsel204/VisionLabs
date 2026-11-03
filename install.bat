@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo =======================================================
-echo     Traffic Annotator - Windows Installer Wrapper
+echo     Anotara - Windows Installer Wrapper
 echo =======================================================
 echo.
 

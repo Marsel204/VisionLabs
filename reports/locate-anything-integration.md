@@ -5,7 +5,7 @@ existing auto-label pipeline, with standalone boxes, SAM 2 masks, and ensemble
 fusion. Preserve existing defaults and ongoing cloud/Colab changes.
 
 Integration covers the lazy inference adapter, pipeline configuration, preview
-and batch API, React and Qt selectors, cloud serialization, Colab pipeline
+and batch API, Anotara model selectors, cloud serialization, Colab pipeline
 selection, packaging dependencies, and setup documentation. No AEK enrollment
 is present in this repository.
 
@@ -19,8 +19,7 @@ Acceptance checks:
   errors without silently replacing Locate Anything with YOLO.
 - Forward selection through preview, batch, cloud, and Colab; preserve annotation
   provenance and existing annotations.
-- Support keyboard operation of the new desktop checkbox and existing Qt mode
-  synchronization.
+- Support keyboard operation of the Anotara model controls.
 - Pass targeted regression tests, the Python suite, desktop tests, and build.
 
 The model does not emit per-object probabilities. A score of 1.0 is a placeholder

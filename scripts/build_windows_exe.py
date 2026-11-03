@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -28,8 +29,27 @@ def check_prerequisites() -> None:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller>=6.10"])
 
 
+def build_frontend() -> Path:
+    desktop = ROOT_DIR / "desktop"
+    npm = shutil.which("npm")
+    if not npm or not shutil.which("cargo"):
+        raise RuntimeError("Building Anotara requires Node.js/npm and Rust/Cargo.")
+    command = [npm]
+    if os.name == "nt":
+        command = [os.environ.get("COMSPEC", "cmd.exe"), "/c", npm]
+    subprocess.check_call([*command, "ci"], cwd=desktop)
+    subprocess.check_call([*command, "run", "tauri", "--", "build", "--no-bundle"], cwd=desktop)
+    executable = desktop / "src-tauri" / "target" / "release" / (
+        "app.exe" if os.name == "nt" else "app"
+    )
+    if not executable.is_file():
+        raise RuntimeError(f"Anotara desktop build did not produce {executable}")
+    return executable
+
+
 def run_build(clean: bool = True, console: bool = False) -> Path:
     """Execute PyInstaller build."""
+    frontend = build_frontend()
     env = os.environ.copy()
     if console:
         env["TRAFFIC_ANNOTATOR_CONSOLE"] = "1"
@@ -51,12 +71,13 @@ def run_build(clean: bool = True, console: bool = False) -> Path:
     if not target_dir.is_dir():
         raise RuntimeError(f"Build failed: output directory {target_dir} was not created.")
 
+    shutil.copy2(frontend, target_dir / ("Anotara.exe" if os.name == "nt" else "Anotara"))
+
     # Determine executable name
     exe_name = "VisionLab.exe" if sys.platform == "win32" else "VisionLab"
     exe_path = target_dir / exe_name
     if not exe_path.exists():
-        found = list(target_dir.iterdir())[:5]
-        print(f"[!] Warning: Expected executable {exe_path} not found (files: {found}...)")
+        raise RuntimeError(f"Anotara API launcher was not produced: {exe_path}")
     else:
 
         print(f"[+] Executable created successfully: {exe_path}")
@@ -73,10 +94,11 @@ def run_build(clean: bool = True, console: bool = False) -> Path:
     # Create a portable README inside the distribution folder
     readme_txt = target_dir / "README.txt"
     readme_txt.write_text(
-        "VisionLab - Windows Standalone Distribution\r\n"
+        "Anotara - Windows Standalone Distribution\r\n"
         "===========================================\r\n\r\n"
         "To start the application:\r\n"
         "  - Double-click 'VisionLab.exe' or 'Launch_VisionLab.bat'.\r\n\r\n"
+        "  - Keep Anotara.exe beside the launcher; it is the only application UI.\r\n"
         "Features:\r\n"
         "  - Fully self-contained (no Python installation required).\r\n"
         "  - CUDA acceleration enabled automatically if NVIDIA GPU and drivers are present.\r\n"
@@ -107,7 +129,7 @@ def create_zip(target_dir: Path) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build Traffic Annotator standalone executable")
+    parser = argparse.ArgumentParser(description="Build the Anotara standalone distribution")
     parser.add_argument(
         "--clean", action="store_true", default=True, help="Clean cache before building"
     )

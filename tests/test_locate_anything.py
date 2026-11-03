@@ -177,20 +177,3 @@ def test_prompt_tuning_keeps_locate_selected():
     tuner = AITunerEngine(auto_label_engine=Mock())
     assert tuner._update_config_thresholds(config, .4, .5).enable_locate_anything
     assert tuner._update_config_classes(config, [AutoLabelClass("truck")]).enable_locate_anything
-
-
-def test_qt_selector_synchronizes_locate_mode(image_path, qapp):
-    from app.ui.dialogs.auto_label_dialog import AutoLabelDialog
-
-    dialog = AutoLabelDialog(image_paths=[image_path], engine=Mock(spec=AutoLabelEngine))
-    index = dialog.model_combo.findData(AutoLabelPipelineMode.LOCATE_ANYTHING_BOXES.value)
-    assert index >= 0
-    dialog.model_combo.setCurrentIndex(index)
-    config = dialog._get_current_config()
-    assert config.enable_locate_anything and not config.enable_grounding_dino
-    assert not config.enable_yolo and not config.enable_sam2_masks
-    dialog.sam2_chk.setChecked(True)
-    assert dialog._get_current_config().mode == AutoLabelPipelineMode.LOCATE_ANYTHING_SAM2_MASKS
-    dialog.dino_chk.setChecked(True)
-    assert dialog._get_current_config().mode.is_ensemble
-    dialog.close()

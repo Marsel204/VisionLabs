@@ -1,4 +1,4 @@
-# React + TypeScript + Vite
+# Anotara Desktop
 
 ## Removing a project
 
@@ -25,33 +25,8 @@ check and production bundle. `npm run test:canvas` runs the image/box alignment 
 headless Chromium, including resize, zoom, pan, previews, and pointer editing. Install Chromium
 on the test machine or set `CHROMIUM_BIN` to its executable path; no dataset or backend is needed.
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+## Development
 
-Currently, two official plugins are available:
+From the repository root, run `./run.sh` (Linux) or `run.bat` (Windows) to start the current desktop and local API together. All launcher aliases use `app.main`; there is no alternate desktop implementation.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
-
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+For browser-only development, start `python -m app.main --backend` in the project's virtual environment and run `npm run dev` here. The current pages live in `src/pages/`, shared studio components in `src/components/`, and bundled fonts in `public/fonts/`. Native application icons are generated from `public/favicon.svg` with `npm run tauri -- icon public/favicon.svg`.

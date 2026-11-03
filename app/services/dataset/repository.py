@@ -65,7 +65,7 @@ class AnnotationRepository:
 
     @contextmanager
     def _write_lock(self):
-        """Serialize writers in separate Qt/API processes as well as threads."""
+        """Serialize writers across processes as well as threads."""
         held = getattr(_WRITE_STATE, "held", None)
         if held is None:
             held = _WRITE_STATE.held = set()

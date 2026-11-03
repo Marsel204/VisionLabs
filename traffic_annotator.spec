@@ -1,7 +1,7 @@
-"""PyInstaller build specification for VisionLab.
+"""PyInstaller build specification for Anotara.
 
-Produces a standalone, high-performance distribution directory containing
-the executable, PySide6 GUI libraries, PyTorch runtime, model assets, and configs.
+Produces the Anotara launcher and Python API runtime. The build script adds the
+current Tauri desktop executable to the same distribution directory.
 """
 
 import os
@@ -27,7 +27,6 @@ console_mode = (
 datas = [
     (str(PROJECT_ROOT / "configs" / "active_learning.yaml"), "configs"),
     (str(PROJECT_ROOT / "fusion.yaml"), "."),
-    (str(PROJECT_ROOT / "app" / "ui" / "assets"), "app/ui/assets"),
 ]
 
 # Frozen backends offer the notebook fallback without needing unpacked Python source.
@@ -99,21 +98,15 @@ hidden_imports = [
     "app.services.inference.locate_anything",
     "app.services.integrations",
     "app.services.integrations.roboflow_client",
-    "app.ui",
-    "app.ui.main_window",
-    "app.ui.theme",
-    "app.ui.canvas",
-    "app.ui.dialogs",
-    "app.ui.views",
-    "app.ui.widgets",
+    "app.api.server",
+    "app.api.colab_routes",
+    "uvicorn.logging",
+    "uvicorn.loops.auto",
+    "uvicorn.protocols.http.auto",
+    "uvicorn.protocols.websockets.auto",
+    "uvicorn.lifespan.on",
     "src.vlm_helper",
     "pipeline_bridge",
-    # Qt / PySide6 modules
-    "PySide6.QtCore",
-    "PySide6.QtGui",
-    "PySide6.QtWidgets",
-    "PySide6.QtSvg",
-    "PySide6.QtSvgWidgets",
     # Data & ML libraries
     "yaml",
     "sqlite3",
@@ -140,7 +133,7 @@ for pkg in ("ultralytics", "timm"):
         pass
 
 # Optional icon
-icon_file = PROJECT_ROOT / "resources" / "icon.ico"
+icon_file = PROJECT_ROOT / "desktop" / "src-tauri" / "icons" / "icon.ico"
 icon_path = str(icon_file) if icon_file.is_file() else None
 
 a = Analysis(
@@ -153,6 +146,8 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
+        "PySide6",
+        "shiboken6",
         "tkinter",
         "unittest",
         "pytest",

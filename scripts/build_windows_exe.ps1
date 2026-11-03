@@ -1,4 +1,4 @@
-# Windows PowerShell build script for Traffic Annotator standalone executable
+# Windows PowerShell build script for Anotara
 [CmdletBinding()]
 param (
     [switch]$Clean = $true,
@@ -13,7 +13,7 @@ $ProjectDir = Split-Path -Parent $ScriptDir
 Set-Location $ProjectDir
 
 Write-Host "=======================================================" -ForegroundColor Cyan
-Write-Host "   Traffic Annotator - Windows Executable Builder" -ForegroundColor Cyan
+Write-Host "   Anotara - Windows Executable Builder" -ForegroundColor Cyan
 Write-Host "=======================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -40,8 +40,8 @@ if ($UvCmd) {
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host ""
-    Write-Host "[SUCCESS] Standalone distribution created in dist\TrafficAnnotator" -ForegroundColor Green
-    Write-Host "Zip package created in dist\TrafficAnnotator-windows-x64.zip" -ForegroundColor Green
+    Write-Host "[SUCCESS] Standalone distribution created in dist\VisionLab" -ForegroundColor Green
+    Write-Host "Zip package created in dist\VisionLab-windows-x64.zip" -ForegroundColor Green
 } else {
     Write-Error "Build failed with exit code $LASTEXITCODE"
 }

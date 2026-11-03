@@ -2,7 +2,7 @@
 ; Generates a professional Windows installer: VisionLab-Setup.exe
 ; Compile this script using Inno Setup (ISCC.exe installer.iss)
 
-#define MyAppName "VisionLab"
+#define MyAppName "Anotara"
 #define MyAppVersion "0.1.0"
 #define MyAppPublisher "VisionLabs"
 #define MyAppURL "https://github.com/Marsel204/VisionLabs"

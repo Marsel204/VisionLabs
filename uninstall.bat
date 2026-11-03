@@ -2,7 +2,7 @@
 setlocal
 
 echo =======================================================
-echo     Traffic Annotator - Windows Uninstaller Wrapper
+echo     Anotara - Windows Uninstaller Wrapper
 echo =======================================================
 echo.
 

@@ -84,27 +84,3 @@ def test_history_restores_previous_box_after_update(tmp_path: Path) -> None:
     history.undo()
 
     assert history.document.annotations == (annotation,)
-
-
-def test_dataset_annotation_preserves_manual_boxes(tmp_path: Path) -> None:
-    from app.ui.main_window import _DatasetAnnotationTask
-
-    manual = make_annotation()
-    prediction = Annotation(
-        "motorcycle",
-        BoundingBox(0.11, 0.21, 0.39, 0.59),
-        confidence=0.8,
-        source=AnnotationSource.YOLO,
-    )
-    image_path = tmp_path / "traffic.jpg"
-    image_path.touch()
-    document = AnnotationDocument(
-        image_path,
-        1920,
-        1080,
-        (manual,),
-    )
-
-    additions = _DatasetAnnotationTask._merge_predictions(document, [prediction])
-
-    assert additions == []

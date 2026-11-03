@@ -1,1 +1,0 @@
-"""Annotation canvas components."""
