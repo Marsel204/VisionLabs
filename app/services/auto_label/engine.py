@@ -166,11 +166,18 @@ class AutoLabelEngine:
         iou_threshold: float = 0.45,
         same_class_only: bool = True,
         containment_threshold: float = 0.90,
+        containment_area_ratio: float = 0.5,
     ) -> tuple[list[list[float]], list[AutoLabelClass], list[float]]:
         """Suppress duplicate overlapping bounding boxes using IoU Non-Maximum Suppression (anti-duplication).
 
         Handles both same-class duplicates and cross-class containment/overlap conflicts
         by prioritizing higher-confidence detections without relying on complex VLM crop checks.
+
+        A lower-scoring box that sits inside a kept box is spared when it is smaller than
+        ``containment_area_ratio`` of the kept box's area: that is usually a different, partly
+        hidden object (a motorcycle behind a car), not a duplicate. Lower-scoring boxes that
+        are larger than the kept box, or similar in size, are still suppressed. Pass ``0.0`` to
+        restore pure containment suppression.
         """
         n = len(boxes_px)
         if n <= 1:
@@ -207,7 +214,13 @@ class AutoLabelEngine:
                 iou = inter / union if union > 0 else 0.0
                 min_area = min(area_a, area_b)
                 containment = inter / min_area if min_area > 0 else 0.0
-                if iou >= iou_threshold or containment >= containment_threshold:
+                size_ratio = min_area / max(area_a, area_b)
+                # A weaker box that is much smaller than the kept one may be a hidden
+                # neighbour; a weaker box that is larger is an umbrella over it.
+                spares_hidden_neighbour = area_a < area_b and size_ratio < containment_area_ratio
+                if iou >= iou_threshold or (
+                    containment >= containment_threshold and not spares_hidden_neighbour
+                ):
                     duplicate = True
                     break
             if not duplicate:
@@ -416,64 +429,84 @@ class AutoLabelEngine:
                 else "cpu"
             )
 
+            from app.services.preprocess import (
+                apply_view,
+                merge_view_boxes,
+                restore_box,
+                validate_views,
+            )
+
+            views = validate_views(config.yolo_views or ("original",))
             for model_name in active_models:
                 try:
                     yolo = self._get_yolo_detector(model_name)
-                    input_source = str(path) if path else image
-                    try:
-                        yolo_results = yolo(
-                            input_source,
-                            conf=config.confidence_threshold,
-                            device=yolo_device,
-                            verbose=False,
+                    per_view: list[list[tuple[str, float, tuple[float, float, float, float]]]] = []
+                    for view in views:
+                        # The original view keeps the file path as input for speed and for
+                        # identical behaviour to a single-pass run.
+                        input_source = (
+                            str(path) if path and view == "original" else apply_view(image, view)
                         )
-                    except Exception as err:
-                        LOGGER.warning(
-                            "YOLO (%s) inference failed on %s: %s, retrying with PIL image",
-                            model_name,
-                            type(input_source).__name__,
-                            err,
-                        )
-                        yolo_results = yolo(
-                            image,
-                            conf=config.confidence_threshold,
-                            device=yolo_device,
-                            verbose=False,
-                        )
-
-                    if yolo_results:
-                        res = yolo_results[0]
-                        names = getattr(yolo, "names", {}) or getattr(res, "names", {})
-                        boxes = getattr(res, "boxes", None)
-                        if boxes is not None:
-                            for box in boxes:
+                        try:
+                            yolo_results = yolo(
+                                input_source,
+                                conf=config.confidence_threshold,
+                                device=yolo_device,
+                                verbose=False,
+                            )
+                        except Exception as err:
+                            LOGGER.warning(
+                                "YOLO (%s) inference failed on %s: %s, retrying with PIL image",
+                                model_name,
+                                type(input_source).__name__,
+                                err,
+                            )
+                            yolo_results = yolo(
+                                apply_view(image, view),
+                                conf=config.confidence_threshold,
+                                device=yolo_device,
+                                verbose=False,
+                            )
+                        raw: list[tuple[str, float, tuple[float, float, float, float]]] = []
+                        if yolo_results:
+                            res = yolo_results[0]
+                            names = getattr(yolo, "names", {}) or getattr(res, "names", {})
+                            for box in getattr(res, "boxes", None) or []:
                                 cls_val = (
                                     box.cls[0].item()
                                     if hasattr(box.cls[0], "item")
                                     else box.cls[0]
                                 )
                                 class_id = int(cls_val)
-                                raw_label = str(names.get(class_id, class_id))
                                 conf_val = (
                                     box.conf[0].item()
                                     if hasattr(box.conf[0], "item")
                                     else box.conf[0]
                                 )
-                                score = float(conf_val)
                                 raw_xyxy = box.xyxy[0]
                                 xyxy = (
                                     raw_xyxy.tolist()
                                     if hasattr(raw_xyxy, "tolist")
                                     else list(raw_xyxy)
                                 )
+                                raw.append((
+                                    str(names.get(class_id, class_id)),
+                                    float(conf_val),
+                                    restore_box(xyxy, view, width),
+                                ))
+                        per_view.append(raw)
 
-                                matched_cls = self.match_detected_label(
-                                    raw_label, active_classes, token_map
-                                )
-                                if matched_cls is not None:
-                                    candidate_boxes_px.append([float(c) for c in xyxy])
-                                    candidate_classes.append(matched_cls)
-                                    candidate_scores.append(score)
+                    merged = per_view[0]
+                    for extra in per_view[1:]:
+                        merged = merge_view_boxes(merged, extra)
+                    for raw_label, score, xyxy in merged:
+                        matched_cls = self.match_detected_label(
+                            raw_label, active_classes, token_map
+                        )
+                        if matched_cls is not None:
+                            candidate_boxes_px.append([float(c) for c in xyxy])
+                            candidate_classes.append(matched_cls)
+                            candidate_scores.append(score)
                 except Exception as err:
                     if self._fail_on_model_error:
                         raise

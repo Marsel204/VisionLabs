@@ -189,6 +189,8 @@ class AutoLabelConfig:
     enable_locate_anything: bool = False
     enable_florence2_verifier: bool = False
     enable_sam2_masks: bool = True
+    # Extra YOLO passes layered over the original image (see app.services.preprocess.views).
+    yolo_views: tuple[str, ...] = ("original",)
 
 
 @dataclass(frozen=True, slots=True)

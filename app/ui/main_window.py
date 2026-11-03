@@ -553,7 +553,7 @@ class MainWindow(QMainWindow):
         active_learning_config: ActiveLearningConfig | None = None,
     ) -> None:
         super().__init__()
-        self.setWindowTitle("VisionLab")
+        self.setWindowTitle("Anotara")
         self.resize(1440, 900)
         self._build_central_view()
         QApplication.instance().installEventFilter(self)

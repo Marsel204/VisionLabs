@@ -219,6 +219,11 @@ class DatasetIndex:
                 raise ValueError("ambiguous image basename")
             return dict(rows[0]) if rows else None
 
+    def invalidate_annotations(self) -> None:
+        with self._lock:
+            self._connection.execute("UPDATE images SET annotation_count = -1, difficulty = 0")
+            self._connection.commit()
+
     def set_annotation_count(self, path: Path, count: int) -> None:
         """Cache the number of annotations for an image to avoid repeated filesystem probes."""
         with self._lock:
@@ -288,4 +293,3 @@ class DatasetIndex:
             result[st] = cnt
             result["total"] += cnt
         return result
-

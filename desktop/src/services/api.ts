@@ -1,6 +1,7 @@
 import type { BoundingBox, ImageMeta, SystemHealth } from '../types';
 
-const BASE_URL = 'http://127.0.0.1:8765';
+// The local API. Set VITE_API_URL to reach an engine started on another port.
+const BASE_URL: string = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8765';
 
 export interface ColabStatus {
   supported: boolean;
@@ -105,6 +106,27 @@ export async function registerDatasetClass(name: string, datasetId?: string): Pr
   return (await res.json()).classes;
 }
 
+export interface ClassChange {
+  dataset_id: string;
+  expected_classes: string[];
+  action: 'rename' | 'delete';
+  name: string;
+  target?: string;
+  delete_annotations?: boolean;
+}
+
+export interface ClassChangeResult {
+  classes: string[];
+  backup: string;
+}
+
+export async function changeDatasetClass(change: ClassChange): Promise<ClassChangeResult> {
+  const res = await apiFetch(`${BASE_URL}/api/dataset/classes`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(change),
+  });
+  return res.json();
+}
+
 export async function fetchHealth(): Promise<SystemHealth> {
   const res = await apiFetch(`${BASE_URL}/api/health`);
   if (!res.ok) throw new Error(`Health check failed: ${res.statusText}`);
@@ -147,8 +169,9 @@ export async function fetchAllImages(): Promise<{ images: ImageMeta[]; total: nu
 }
 
 
-export function getImageUrl(filename: string): string {
-  return `${BASE_URL}/api/image/${encodeURIComponent(filename)}?token=${encodeURIComponent(sessionToken)}`;
+export function getImageUrl(filename: string, enhance: string = 'none'): string {
+  const filter = enhance === 'none' ? '' : `&enhance=${encodeURIComponent(enhance)}`;
+  return `${BASE_URL}/api/image/${encodeURIComponent(filename)}?token=${encodeURIComponent(sessionToken)}${filter}`;
 }
 
 export async function fetchAnnotations(filename: string, datasetId?: string): Promise<{ boxes: BoundingBox[]; revision: number }> {
@@ -157,20 +180,23 @@ export async function fetchAnnotations(filename: string, datasetId?: string): Pr
   return res.json();
 }
 
-export async function saveAnnotations(filename: string, boxes: BoundingBox[], expectedRevision?: number, datasetId?: string): Promise<{ revision: number; boxes: BoundingBox[]; projection_warning?: string }> {
+export async function saveAnnotations(filename: string, boxes: BoundingBox[], expectedRevision?: number, datasetId?: string, status?: import('../review').ReviewStatus): Promise<{ revision: number; boxes: BoundingBox[]; review_status?: import('../review').ReviewStatus; projection_warning?: string }> {
   const res = await apiFetch(`${BASE_URL}/api/annotations/${encodeURIComponent(filename)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ image_name: filename, boxes, expected_revision: expectedRevision, dataset_id: datasetId }),
+    body: JSON.stringify({ image_name: filename, boxes, expected_revision: expectedRevision, dataset_id: datasetId, status }),
   });
   if (!res.ok) throw new Error(`Failed to save annotations: ${res.statusText}`);
   return res.json();
 }
 
-export async function detectYolo(filename: string, confThreshold: number = 0.25, models?: string[], datasetId?: string): Promise<{ boxes: BoundingBox[]; width: number; height: number }> {
+export async function detectYolo(filename: string, confThreshold: number = 0.25, models?: string[], datasetId?: string, views?: string[]): Promise<{ boxes: BoundingBox[]; width: number; height: number }> {
   const payload: Record<string, any> = { image_name: filename, conf_threshold: confThreshold, dataset_id: datasetId };
   if (models && models.length > 0) {
     payload.models = models;
+  }
+  if (views && views.length > 0) {
+    payload.views = views;
   }
   const res = await apiFetch(`${BASE_URL}/api/detect/yolo`, {
     method: 'POST',
@@ -178,6 +204,15 @@ export async function detectYolo(filename: string, confThreshold: number = 0.25,
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`YOLO detection failed: ${res.statusText}`);
+  return res.json();
+}
+
+export async function runAudit(filename: string, boxes: BoundingBox[], datasetId?: string, views?: string[], tiled: boolean = true): Promise<import('../types').AuditReport> {
+  const res = await apiFetch(`${BASE_URL}/api/audit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image_name: filename, boxes, dataset_id: datasetId, tiled, views }),
+  });
   return res.json();
 }
 
@@ -213,6 +248,7 @@ export async function runAutoLabelPreview(payload: {
   enable_florence2_verifier?: boolean;
   enable_yolo?: boolean;
   yolo_models?: string[];
+  yolo_views?: string[];
 }): Promise<any> {
   const res = await apiFetch(`${BASE_URL}/api/autolabel/preview`, {
     method: 'POST',
@@ -237,6 +273,7 @@ export async function startAutoLabelBatch(payload: {
   enable_florence2_verifier?: boolean;
   enable_yolo?: boolean;
   yolo_models?: string[];
+  yolo_views?: string[];
 }): Promise<{ status: string; total: number; classes: string[] }> {
   const res = await apiFetch(`${BASE_URL}/api/autolabel/batch`, {
     method: 'POST',
@@ -293,8 +330,56 @@ export async function fetchAutoLabelStatus(): Promise<import('../types').AutoLab
   return res.json();
 }
 
+export type ExportFormat = 'yolo' | 'coco' | 'voc' | 'cvat';
+
+export interface AnnotationSource {
+  path: string;
+  relative: string;
+  image_dir: string;
+  images: number;
+  found_images: number;
+  annotations: number;
+  categories: string[];
+}
+
+export interface AnnotationImportStatus {
+  running: boolean;
+  completed: boolean;
+  error: string | null;
+  job_id?: string;
+  dataset_id?: string;
+  current_file?: string;
+  total?: number;
+  processed?: number;
+  imported?: number;
+  boxes?: number;
+  skipped_existing?: number;
+  skipped_conflict?: number;
+  missing_images?: number;
+  invalid_boxes?: number;
+  orphan_boxes?: number;
+  classes_added?: string[];
+  failed_count?: number;
+  failures?: Array<{ image: string; error: string }>;
+}
+
+export async function fetchAnnotationSources(): Promise<{ directory: string; sources: AnnotationSource[]; skipped: Array<{ path: string; error: string }> }> {
+  return (await apiFetch(`${BASE_URL}/api/dataset/annotation-sources`)).json();
+}
+
+export async function startAnnotationImport(payload: { sources: string[]; overwrite: boolean; dataset_id?: string }): Promise<{ status: string; job_id: string; files: number }> {
+  return (await apiFetch(`${BASE_URL}/api/dataset/import-annotations`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  })).json();
+}
+
+export async function fetchAnnotationImportStatus(): Promise<AnnotationImportStatus> {
+  return (await apiFetch(`${BASE_URL}/api/dataset/import-annotations/status`)).json();
+}
+
 export async function exportDataset(payload: {
-  format: 'yolo' | 'coco';
+  format: ExportFormat;
+  only_reviewed?: boolean;
   train_ratio?: number;
   val_ratio?: number;
   test_ratio?: number;
@@ -309,7 +394,16 @@ export async function exportDataset(payload: {
   return res.json();
 }
 
-export async function fetchActiveLearningQueue(limit: number = 20): Promise<{ queue: any[]; count: number }> {
+export interface ReviewQueueItem {
+  filename: string;
+  path: string;
+  difficulty: number;
+  status: string;
+  width: number;
+  height: number;
+}
+
+export async function fetchActiveLearningQueue(limit: number = 20): Promise<{ queue: ReviewQueueItem[]; count: number }> {
   const res = await apiFetch(`${BASE_URL}/api/active-learning/queue?limit=${limit}`);
   if (!res.ok) throw new Error(`Failed to fetch active learning queue: ${res.statusText}`);
   return res.json();
@@ -321,6 +415,13 @@ export async function selectDatasetFolder(folderPath: string): Promise<{ status:
   });
   if (!res.ok) throw new Error(`Failed to switch dataset folder: ${res.statusText}`);
   return res.json();
+}
+
+export async function closeProject(datasetId: string): Promise<void> {
+  await apiFetch(`${BASE_URL}/api/dataset/close`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dataset_id: datasetId }),
+  });
 }
 
 export async function rescanDataset(): Promise<{ status: string; indexed_count: number; directory: string }> {

@@ -1,175 +1,132 @@
 import React from 'react';
+import { Button, Icon } from '../ui';
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
 }
 
-interface ShortcutItem {
-  keys: string[];
-  description: string;
-  badge?: string;
-}
-
 interface ShortcutCategory {
   title: string;
   icon: string;
-  items: ShortcutItem[];
+  items: { keys: string[]; description: string }[];
 }
+
+const CATEGORIES: ShortcutCategory[] = [
+  {
+    title: 'Alat anotasi',
+    icon: 'construction',
+    items: [
+      { keys: ['V'], description: 'Pilih & ubah kotak' },
+      { keys: ['B'], description: 'Gambar kotak' },
+      { keys: ['P'], description: 'Gambar poligon' },
+      { keys: ['H'], description: 'Geser kanvas' },
+      { keys: ['F'], description: 'Ganti filter tampilan (tajam / kontras / hujan)' },
+    ],
+  },
+  {
+    title: 'Navigasi gambar',
+    icon: 'photo_library',
+    items: [
+      { keys: ['A', 'atau', '←'], description: 'Gambar sebelumnya' },
+      { keys: ['D', 'atau', '→'], description: 'Gambar berikutnya' },
+      { keys: ['Home'], description: 'Gambar pertama' },
+      { keys: ['End'], description: 'Gambar terakhir' },
+    ],
+  },
+  {
+    title: 'Kotak terpilih',
+    icon: 'select',
+    items: [
+      { keys: ['Tab'], description: 'Pilih kotak berikutnya' },
+      { keys: ['Shift', 'Tab'], description: 'Pilih kotak sebelumnya' },
+      { keys: ['1-9'], description: 'Ganti kelas kotak' },
+      { keys: ['Enter'], description: 'Tandai kotak benar' },
+      { keys: ['Del'], description: 'Hapus kotak' },
+      { keys: ['Esc'], description: 'Batal pilih / tutup dialog' },
+    ],
+  },
+  {
+    title: 'AI & cek kualitas',
+    icon: 'auto_awesome',
+    items: [
+      { keys: ['R'], description: 'Deteksi AI pada gambar ini' },
+      { keys: ['Q'], description: 'Cari objek terlewat, tertutup, dan kotak salah' },
+      { keys: ['J', 'atau', 'K'], description: 'Temuan berikutnya / sebelumnya' },
+      { keys: ['Y', 'atau', 'N'], description: 'Terapkan / abaikan temuan' },
+    ],
+  },
+  {
+    title: 'Halaman',
+    icon: 'space_dashboard',
+    items: [
+      { keys: ['Ctrl', 'S'], description: 'Simpan & setujui gambar' },
+      { keys: ['L'], description: 'Buka auto-label' },
+      { keys: ['I'], description: 'Buka impor dataset' },
+      { keys: ['E'], description: 'Buka ekspor dataset' },
+      { keys: ['?'], description: 'Tampilkan pintasan ini' },
+    ],
+  },
+];
 
 export const KeyboardShortcutsModal: React.FC<Props> = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
-
-  const categories: ShortcutCategory[] = [
-    {
-      title: 'Tools & Annotation Mode',
-      icon: 'construction',
-      items: [
-        { keys: ['V'], description: 'Select & Transform tool' },
-        { keys: ['B'], description: '2D Bounding Box drawing tool' },
-        { keys: ['H'], description: 'Hand / Pan Canvas tool' },
-        { keys: ['P'], description: 'Polygon Segmentation tool' },
-      ],
-    },
-    {
-      title: 'Image Navigation',
-      icon: 'photo_library',
-      items: [
-        { keys: ['A', 'or', '←', 'or', '['], description: 'Previous image in queue' },
-        { keys: ['D', 'or', '→', 'or', ']'], description: 'Next image in queue' },
-        { keys: ['Home'], description: 'Jump to first image' },
-        { keys: ['End'], description: 'Jump to last image' },
-      ],
-    },
-    {
-      title: 'Object Selection & Triage',
-      icon: 'fact_check',
-      items: [
-        { keys: ['Tab'], description: 'Cycle select next bounding box' },
-        { keys: ['Shift', 'Tab'], description: 'Cycle select previous bounding box' },
-        { keys: ['Del', 'or', 'Backspace'], description: 'Delete selected bounding box' },
-        { keys: ['Enter', 'or', 'Space'], description: 'Accept / Validate selected box (100% conf)' },
-        { keys: ['Esc'], description: 'Deselect box / Close active modal' },
-      ],
-    },
-    {
-      title: 'Quick Class Assignment (1-6)',
-      icon: 'label',
-      items: [
-        { keys: ['1-6'], description: 'Quickly assign corresponding class 1-6 to selected object' },
-      ],
-    },
-    {
-      title: 'AI & Automation',
-      icon: 'smart_toy',
-      items: [
-        { keys: ['R'], description: 'Run YOLO AI detection on active image', badge: 'YOLO11' },
-        { keys: ['L', 'or', 'M'], description: 'Open Auto-Label AI Configuration & Batch Modal' },
-      ],
-    },
-    {
-      title: 'Data & Workstation',
-      icon: 'tune',
-      items: [
-        { keys: ['Ctrl', 'S'], description: 'Save current annotations to disk' },
-        { keys: ['I'], description: 'Open Dataset Import dialog' },
-        { keys: ['E'], description: 'Open Dataset Export dialog' },
-        { keys: ['?'], description: 'Toggle this Shortcuts Guide' },
-      ],
-    },
-  ];
-
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md animate-fadeIn"
-      onClick={onClose}
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/30 p-4 backdrop-blur-[2px]" onClick={onClose}>
       <div
-        className="w-[720px] max-h-[85vh] bg-[#0c1220] border border-[#2a3a48]/70 rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="shortcuts-title"
+        className="flex max-h-[85vh] w-[760px] flex-col overflow-hidden rounded-2xl border border-line bg-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
-        <div className="px-5 py-3.5 bg-[#0f172a] border-b border-[#2a3a48]/50 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-[#0e4d6e]/80 border border-[#7dd3fc]/40 flex items-center justify-center text-[#7dd3fc]">
-              <span className="material-symbols-outlined text-[19px]">keyboard</span>
-            </div>
+        <div className="flex items-center justify-between border-b border-line px-6 py-4">
+          <div className="flex items-center gap-3">
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-100 text-brand-600">
+              <Icon name="keyboard" className="text-[20px]" />
+            </span>
             <div>
-              <h2 className="text-sm font-semibold text-[#e0e8f0] tracking-tight">
-                Keyboard Shortcuts Reference
-              </h2>
-              <p className="text-[11px] text-[#7dd3fc]/80 font-mono">
-                VisionLab AI High-Velocity Annotation Hotkeys
-              </p>
+              <h2 id="shortcuts-title" className="text-lg font-bold text-ink-900">Pintasan keyboard</h2>
+              <p className="text-xs text-ink-500">Pintasan alat dan gambar aktif di halaman review.</p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            type="button"
-            className="w-7 h-7 rounded-lg bg-[#141c2e] hover:bg-[#1a2438] text-[#a0b4c4] hover:text-[#e0e8f0] flex items-center justify-center transition-colors cursor-pointer"
-            title="Close (Esc)"
-          >
-            <span className="material-symbols-outlined text-[17px]">close</span>
+          <button type="button" onClick={onClose} title="Tutup (Esc)" aria-label="Tutup"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-ink-500 hover:bg-brand-50 cursor-pointer">
+            <Icon name="close" className="text-[18px]" />
           </button>
         </div>
 
-        {/* Content Grid */}
-        <div className="p-5 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-4 custom-scrollbar">
-          {categories.map((cat, idx) => (
-            <div
-              key={idx}
-              className="bg-[#111828]/60 border border-[#2a3a48]/40 rounded-xl p-3.5 space-y-2.5"
-            >
-              <div className="flex items-center gap-2 pb-1 border-b border-[#2a3a48]/30">
-                <span className="material-symbols-outlined text-[16px] text-[#06b6d4]">
-                  {cat.icon}
-                </span>
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-[#dae2fd]">
-                  {cat.title}
-                </span>
-              </div>
-
-              <div className="space-y-1.5">
-                {cat.items.map((item, itemIdx) => (
-                  <div
-                    key={itemIdx}
-                    className="flex items-center justify-between text-[11px] py-0.5"
-                  >
-                    <span className="text-[#94a3b8] truncate pr-2">{item.description}</span>
-                    <div className="flex items-center gap-1 shrink-0">
-                      {item.keys.map((k, kIdx) =>
-                        k === 'or' ? (
-                          <span key={kIdx} className="text-[10px] text-[#64748b] px-0.5">
-                            /
-                          </span>
-                        ) : (
-                          <kbd
-                            key={kIdx}
-                            style={item.badge ? { borderColor: `${item.badge}55` } : {}}
-                            className="px-1.5 py-0.5 rounded bg-[#172136] border border-[#334155] text-[10px] font-mono font-semibold text-[#f1f5f9] shadow-sm min-w-[20px] text-center"
-                          >
-                            {k}
-                          </kbd>
-                        )
-                      )}
-                    </div>
+        <div className="grid grid-cols-1 gap-4 overflow-y-auto p-6 md:grid-cols-2">
+          {CATEGORIES.map(category => (
+            <section key={category.title} className="rounded-xl border border-line p-4">
+              <h3 className="mb-3 flex items-center gap-2 text-[13px] font-semibold text-ink-900">
+                <Icon name={category.icon} className="text-[17px] text-brand-600" />
+                {category.title}
+              </h3>
+              <div className="space-y-2">
+                {category.items.map(item => (
+                  <div key={item.description} className="flex items-center justify-between gap-3 text-xs">
+                    <span className="text-ink-500">{item.description}</span>
+                    <span className="flex shrink-0 items-center gap-1">
+                      {item.keys.map((key, index) => key === 'atau' ? (
+                        <span key={index} className="text-[10px] text-ink-400">/</span>
+                      ) : (
+                        <kbd key={index}
+                          className="min-w-[22px] rounded border border-line-strong bg-brand-50 px-1.5 py-0.5 text-center font-sans text-[11px] font-semibold text-ink-700">
+                          {key}
+                        </kbd>
+                      ))}
+                    </span>
                   </div>
                 ))}
               </div>
-            </div>
+            </section>
           ))}
         </div>
 
-        {/* Footer */}
-        <div className="px-5 py-2.5 bg-[#0f172a] border-t border-[#2a3a48]/50 flex items-center justify-between text-[11px] font-mono text-[#64748b]">
-          <span>Tip: Press <kbd className="px-1 py-0.5 rounded bg-[#172136] text-[#e0e8f0] border border-[#334155]">?</kbd> anytime to toggle this modal</span>
-          <button
-            onClick={onClose}
-            type="button"
-            className="px-3 py-1 rounded-md bg-[#0e4d6e] hover:bg-[#0284c7] text-[#e0f2fe] text-xs font-semibold transition-colors cursor-pointer"
-          >
-            Got it
-          </button>
+        <div className="flex items-center justify-between border-t border-line px-6 py-3 text-xs text-ink-500">
+          <span>Tekan <kbd className="rounded border border-line-strong bg-brand-50 px-1 font-sans">?</kbd> kapan saja untuk membuka panel ini.</span>
+          <Button size="sm" onClick={onClose}>Mengerti</Button>
         </div>
       </div>
     </div>

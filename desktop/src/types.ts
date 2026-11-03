@@ -34,6 +34,7 @@ export interface ImageMeta {
 
 export interface DatasetStats {
   directory: string;
+  total_annotations?: number;
   total_images: number;
   unreviewed: number;
   reviewed: number;
@@ -53,6 +54,7 @@ export interface ExportResult {
     test: number;
   };
   total_documents: number;
+  skipped_unreviewed?: number;
 }
 
 export interface ModelPreparationStatus {
@@ -103,27 +105,30 @@ export interface SystemHealth {
 
 export type ToolType = 'select' | 'pan' | 'bbox' | 'polygon';
 
-export const CLASS_COLORS: Record<string, { stroke: string; bg: string; text: string }> = {
-  object: { stroke: '#06b6d4', bg: 'rgba(6, 182, 212, 0.15)', text: '#06b6d4' },
-  car: { stroke: '#06b6d4', bg: 'rgba(6, 182, 212, 0.15)', text: '#06b6d4' },
-  motorcycle: { stroke: '#f59e0b', bg: 'rgba(245, 158, 11, 0.18)', text: '#f59e0b' },
-  minivan: { stroke: '#a855f7', bg: 'rgba(168, 85, 247, 0.18)', text: '#c084fc' },
-  bus: { stroke: '#10b981', bg: 'rgba(16, 185, 129, 0.18)', text: '#34d399' },
-  truck: { stroke: '#3b82f6', bg: 'rgba(59, 130, 246, 0.18)', text: '#60a5fa' },
-  person: { stroke: '#ec4899', bg: 'rgba(236, 72, 153, 0.18)', text: '#f472b6' },
+export type Page = 'overview' | 'projects' | 'import' | 'autolabel' | 'review' | 'quality' | 'export';
+
+const swatch = (hex: string, alpha = 0.14) => {
+  const n = parseInt(hex.slice(1), 16);
+  return { stroke: hex, bg: `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`, text: hex };
 };
 
-const PALETTE = [
-  { stroke: '#06b6d4', bg: 'rgba(6, 182, 212, 0.15)', text: '#06b6d4' },
-  { stroke: '#f59e0b', bg: 'rgba(245, 158, 11, 0.18)', text: '#f59e0b' },
-  { stroke: '#10b981', bg: 'rgba(16, 185, 129, 0.18)', text: '#34d399' },
-  { stroke: '#ec4899', bg: 'rgba(236, 72, 153, 0.18)', text: '#f472b6' },
-  { stroke: '#3b82f6', bg: 'rgba(59, 130, 246, 0.18)', text: '#60a5fa' },
-  { stroke: '#a855f7', bg: 'rgba(168, 85, 247, 0.18)', text: '#c084fc' },
-  { stroke: '#eab308', bg: 'rgba(234, 179, 8, 0.18)', text: '#fde047' },
-  { stroke: '#14b8a6', bg: 'rgba(20, 184, 166, 0.18)', text: '#2dd4bf' },
-  { stroke: '#f97316', bg: 'rgba(249, 115, 22, 0.18)', text: '#fb923c' },
-];
+export const CLASS_COLORS: Record<string, { stroke: string; bg: string; text: string }> = {
+  object: swatch('#2f6fe4'),
+  motorcycle: swatch('#2f6fe4'),
+  car: swatch('#1d8fd1'),
+  rider: swatch('#8b7be0'),
+  person: swatch('#8b7be0'),
+  minivan: swatch('#b05fc9'),
+  bus: swatch('#16935a'),
+  truck: swatch('#0f8a84'),
+};
+
+/** Boxes below this confidence are drawn in the warning colour, matching the design. */
+export const LOW_CONFIDENCE = 0.65;
+export const LOW_CONFIDENCE_COLOR = swatch('#d9822b', 0.12);
+
+const PALETTE = ['#2f6fe4', '#8b7be0', '#16935a', '#1d8fd1', '#c2508e', '#0f8a84', '#b05fc9', '#5b6ee8', '#a8781a']
+  .map(hex => swatch(hex));
 
 export function getClassColor(className: string): { stroke: string; bg: string; text: string } {
   const lower = (className || 'object').toLowerCase();
@@ -137,4 +142,43 @@ export function getClassColor(className: string): { stroke: string; bg: string; 
   }
   const index = Math.abs(hash) % PALETTE.length;
   return PALETTE[index];
+}
+
+export type AuditKind =
+  | 'possibly_missed' | 'misaligned' | 'class_mismatch'
+  | 'duplicate' | 'unsupported' | 'implausible_shape';
+
+export interface AuditBox {
+  norm_left: number; norm_top: number; norm_right: number; norm_bottom: number;
+  x: number; y: number; width: number; height: number;
+}
+
+export interface AuditFinding {
+  id: string;
+  kind: AuditKind;
+  severity: number;
+  message: string;
+  annotation_id: string | null;
+  class_name: string | null;
+  confidence: number | null;
+  occlusion: number;
+  likely_occluded: boolean;
+  box: AuditBox | null;
+}
+
+export interface AuditOcclusion {
+  annotation_id: string;
+  fraction: number;
+  occluded: boolean;
+  occluder_ids: string[];
+}
+
+export interface AuditReport {
+  image_name: string;
+  width: number;
+  height: number;
+  findings: AuditFinding[];
+  occlusion: AuditOcclusion[];
+  summary: Partial<Record<AuditKind, number>>;
+  prediction_count: number;
 }

@@ -535,3 +535,59 @@ def test_auto_label_run_batch_preserves_existing_annotations(sample_image: Path)
     assert len(updated_doc.annotations) == 3
     classes = {ann.class_name for ann in updated_doc.annotations}
     assert classes == {"car", "bus", "motorcycle"}
+
+
+def test_suppress_duplicates_keeps_small_occluded_box_inside_larger_box() -> None:
+    from app.services.auto_label.engine import AutoLabelEngine
+    from app.services.auto_label.models import AutoLabelClass
+
+    motorcycle = AutoLabelClass(name="motorcycle")
+    boxes = [[100.0, 100.0, 300.0, 400.0], [120.0, 120.0, 180.0, 200.0]]
+    kept, _, _ = AutoLabelEngine.suppress_duplicate_boxes(boxes, [motorcycle] * 2, [0.9, 0.5])
+    assert kept == boxes
+    legacy, _, _ = AutoLabelEngine.suppress_duplicate_boxes(
+        boxes, [motorcycle] * 2, [0.9, 0.5], containment_area_ratio=0.0
+    )
+    assert legacy == [boxes[0]]
+    near_identical = [[100.0, 100.0, 300.0, 400.0], [105.0, 105.0, 295.0, 395.0]]
+    kept, _, _ = AutoLabelEngine.suppress_duplicate_boxes(
+        near_identical, [motorcycle] * 2, [0.9, 0.5]
+    )
+    assert kept == [near_identical[0]]
+
+    umbrella = [[0.0, 0.0, 640.0, 480.0], [120.0, 120.0, 180.0, 200.0]]
+    kept, _, _ = AutoLabelEngine.suppress_duplicate_boxes(
+        umbrella, [motorcycle] * 2, [0.4, 0.9]
+    )
+    assert kept == [umbrella[1]]
+
+
+def test_auto_label_engine_layers_a_flipped_yolo_pass(sample_image: Path) -> None:
+    """The flipped pass adds a mirrored box; the original pass result is untouched."""
+    mock_box = MagicMock()
+    mock_box.cls = [0]
+    mock_box.conf = [0.9]
+    mock_box.xyxy = [[50.0, 60.0, 200.0, 180.0]]
+    mock_res = MagicMock()
+    mock_res.boxes = [mock_box]
+    mock_yolo = MagicMock(return_value=[mock_res])
+    mock_yolo.names = {0: "car"}
+
+    def run(views: tuple[str, ...]) -> AutoLabelResult:
+        config = AutoLabelConfig(
+            mode=AutoLabelPipelineMode.YOLO_BOXES,
+            confidence_threshold=0.35,
+            classes=[AutoLabelClass(name="car", prompt="car")],
+            enable_grounding_dino=False,
+            enable_sam2_masks=False,
+            yolo_views=views,
+        )
+        return AutoLabelEngine(yolo_detector=mock_yolo).run_preview(sample_image, config)
+
+    single = run(("original",))
+    assert single.count == 1
+    layered = run(("original", "flip"))
+    lefts = sorted(round(d.box.left * 640) for d in layered.detections)
+    assert lefts == [50, 440]
+    with pytest.raises(ValueError):
+        run(("sepia",))

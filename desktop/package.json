@@ -6,6 +6,7 @@
   "scripts": {
     "tauri": "tauri",
     "test": "node --test tests/*.cjs",
+    "test:canvas": "node --test tests/browser/canvas-layout.mjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",

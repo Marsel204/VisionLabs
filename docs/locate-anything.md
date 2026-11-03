@@ -1,6 +1,6 @@
 # Locate Anything 3B
 
-VisionLab supports NVIDIA's [LocateAnything-3B](https://huggingface.co/nvidia/LocateAnything-3B)
+Anotara supports NVIDIA's [LocateAnything-3B](https://huggingface.co/nvidia/LocateAnything-3B)
 for object localization from natural-language class descriptions. It can generate
 boxes on its own, join the existing detector ensemble, or provide boxes for SAM 2
 polygon masks.
@@ -18,7 +18,7 @@ The Qt interface also offers Locate Anything in its model dropdown and detector
 checkboxes. Existing model defaults are unchanged.
 
 The first selected run downloads the weights (approximately 7.7 GB) and the
-checkpoint's custom Transformers code from Hugging Face. VisionLab pins both to
+checkpoint's custom Transformers code from Hugging Face. Anotara pins both to
 revision `c32291ca5e996f5a7a485845b4f57a233936bba0`. Later runs reuse the model
 and Hugging Face cache. No separate inference-provider API key is required.
 
@@ -34,7 +34,7 @@ structured 0–1000 coordinates are converted to normalized dataset boxes. Inval
 or zero-area boxes and point-only outputs are ignored. Generation uses hybrid
 decoding with a limit of 8192 new tokens per class prompt.
 
-Locate Anything does **not** supply per-object confidence probabilities. VisionLab
+Locate Anything does **not** supply per-object confidence probabilities. Anotara
 stores a placeholder score of `1.0` for its valid generated boxes so they fit the
 existing annotation format; it is not a calibrated probability or human acceptance.
 The confidence threshold still controls the other detectors. Review generated
@@ -45,7 +45,7 @@ the failure. Locate Anything requests do not silently fall back to YOLO.
 
 ## Cloud and Colab
 
-In cloud mode, the studio forwards the same detector toggle to a VisionLab worker.
+In cloud mode, the studio forwards the same detector toggle to a Anotara worker.
 Update the worker from this checkout before selecting the new model; an older
 worker may reject the new option. The Modal worker template includes the model's
 dependencies. Running Quick Detect remains the existing YOLO action.

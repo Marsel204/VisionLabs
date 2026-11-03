@@ -1,41 +1,109 @@
 @import "tailwindcss";
 
+/* Anotara design tokens (from the "Anotara — Aplikasi Anotasi AI" reference). */
+@theme {
+  --font-sans: 'Manrope', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --color-brand-50: #f3f7fd;
+  --color-brand-100: #eaf1fd;
+  --color-brand-200: #d5e3fa;
+  --color-brand-300: #b5ccf4;
+  --color-brand-500: #4a84ea;
+  --color-brand-600: #2f6fe4;
+  --color-brand-700: #2559c4;
+
+  --color-ink-900: #15213b;
+  --color-ink-700: #33415a;
+  --color-ink-500: #5f6e85;
+  --color-ink-400: #8a97ab;
+  --color-ink-300: #b4bfce;
+
+  --color-line: #e4e9f1;
+  --color-line-strong: #d3dbe7;
+
+  --color-warn-50: #fdf1de;
+  --color-warn-500: #d9822b;
+  --color-warn-700: #93530f;
+
+  --color-danger-50: #fcebe8;
+  --color-danger-600: #c4493a;
+
+  --color-ok-50: #e7f6ee;
+  --color-ok-600: #16935a;
+
+  --color-canvas: #14243d;
+}
+
 @layer base {
   * {
     box-sizing: border-box;
   }
   body {
-    user-select: none;
     overscroll-behavior: none;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
   }
 }
 
-/* Custom scrollbars */
-::-webkit-scrollbar,
-.custom-scrollbar::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+/* Fonts are bundled (public/fonts) so the app works offline and sends nothing to a font CDN. */
+@font-face {
+  font-family: 'Manrope';
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('/fonts/manrope-latin.woff2') format('woff2');
 }
-::-webkit-scrollbar-track,
-.custom-scrollbar::-webkit-scrollbar-track {
-  background: #0b1326;
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url('/fonts/jetbrains-mono-latin.woff2') format('woff2');
 }
-::-webkit-scrollbar-thumb,
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #2d3449;
-  border-radius: 4px;
-}
-::-webkit-scrollbar-thumb:hover,
-.custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #4cd7f6;
-}
-
-.reticle-glow {
-  filter: drop-shadow(0 0 6px rgba(6, 182, 212, 0.6));
-}
-
-.amber-glow {
-  filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.6));
+/* A subset of Material Symbols Outlined holding only the icons the app uses. When you use a new
+   icon, add its name to the list in public/fonts/README.md and rebuild the subset. */
+@font-face {
+  font-family: 'Material Symbols Outlined';
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: block;
+  src: url('/fonts/material-symbols-outlined.woff2') format('woff2');
 }
 
+/* In the components layer so size utilities such as text-[18px] still win. */
+@layer components {
+  .material-symbols-outlined {
+    font-family: 'Material Symbols Outlined';
+    font-weight: normal;
+    font-style: normal;
+    font-size: 24px;
+    line-height: 1;
+    letter-spacing: normal;
+    text-transform: none;
+    display: inline-block;
+    white-space: nowrap;
+    word-wrap: normal;
+    direction: ltr;
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: 'liga';
+    font-variation-settings: 'FILL' 0, 'wght' 350, 'GRAD' 0, 'opsz' 20;
+  }
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d3dbe7;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b5ccf4;
+  background-clip: padding-box;
+}
