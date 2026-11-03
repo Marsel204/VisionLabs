@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "VisionLab",
+  "productName": "Anotara",
   "version": "1.0.0",
   "identifier": "com.visionlabs.visionlab",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "VisionLab - AI Annotation Studio",
+        "title": "Anotara - AI Annotation Studio",
         "width": 1600,
         "height": 1000,
         "minWidth": 1280,

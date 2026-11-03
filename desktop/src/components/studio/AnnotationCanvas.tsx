@@ -1,6 +1,8 @@
 import React, { useRef, useState, useEffect } from 'react';
-import type { BoundingBox, ImageMeta, ToolType } from '../../types';
-import { getClassColor } from '../../types';
+import type { AuditFinding, BoundingBox, ImageMeta, ToolType } from '../../types';
+import { getClassColor, LOW_CONFIDENCE, LOW_CONFIDENCE_COLOR } from '../../types';
+import { AUDIT_KIND_LABELS, ENHANCE_PRESETS } from '../../audit';
+import { Icon, KeyHint } from '../ui';
 import { getImageUrl } from '../../services/api';
 
 interface Props {
@@ -8,18 +10,48 @@ interface Props {
   boxes: BoundingBox[];
   selectedBoxId: string | null;
   activeTool: ToolType;
-  imageIndex: number;
-  totalImages: number;
+  imageIndex?: number;
+  totalImages?: number;
   activeClassName?: string;
   availableClasses?: string[];
   readOnly?: boolean;
   onSelectBox: (id: string | null) => void;
   onAddBox: (box: BoundingBox) => void;
   onUpdateBox?: (box: BoundingBox) => void;
-  onPrevImage: () => void;
-  onNextImage: () => void;
+  onPrevImage?: () => void;
+  onNextImage?: () => void;
   onRunYoloDetect: () => void;
   isDetecting: boolean;
+  auditFindings?: AuditFinding[];
+  selectedFindingId?: string | null;
+  isAuditing?: boolean;
+  onSelectFinding?: (id: string) => void;
+  onRunAudit?: () => void;
+  enhance?: string;
+  onChangeEnhance?: (preset: string) => void;
+  flipDetect?: boolean;
+  flipDetectDisabled?: boolean;
+  onChangeFlipDetect?: (enabled: boolean) => void;
+  onSelectTool?: (tool: ToolType) => void;
+  footer?: React.ReactNode;
+}
+
+const TOOLS: { type: ToolType; icon: string; key: string; title: string }[] = [
+  { type: 'select', icon: 'near_me', key: 'V', title: 'Pilih & ubah' },
+  { type: 'bbox', icon: 'crop_free', key: 'B', title: 'Kotak' },
+  { type: 'polygon', icon: 'polyline', key: 'P', title: 'Poligon' },
+  { type: 'pan', icon: 'pan_tool', key: 'H', title: 'Geser kanvas' },
+];
+
+const TOOL_HINTS: Record<ToolType, string> = {
+  select: 'Pilih objek untuk mengedit',
+  bbox: 'Tarik untuk menggambar kotak baru',
+  polygon: 'Klik titik-titik, klik ganda untuk selesai',
+  pan: 'Tarik untuk menggeser gambar',
+};
+
+function boxColor(box: BoundingBox) {
+  return box.confidence < LOW_CONFIDENCE ? LOW_CONFIDENCE_COLOR : getClassColor(box.class_name);
 }
 
 export const AnnotationCanvas: React.FC<Props> = ({
@@ -27,18 +59,26 @@ export const AnnotationCanvas: React.FC<Props> = ({
   boxes,
   selectedBoxId,
   activeTool,
-  imageIndex,
-  totalImages,
   activeClassName = 'object',
   availableClasses = [],
   readOnly = false,
   onUpdateBox,
   onSelectBox,
   onAddBox,
-  onPrevImage,
-  onNextImage,
   onRunYoloDetect,
   isDetecting,
+  auditFindings = [],
+  selectedFindingId = null,
+  isAuditing = false,
+  onSelectFinding,
+  onRunAudit,
+  enhance = 'none',
+  onChangeEnhance,
+  flipDetect = false,
+  flipDetectDisabled = false,
+  onChangeFlipDetect,
+  onSelectTool,
+  footer,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -218,82 +258,129 @@ export const AnnotationCanvas: React.FC<Props> = ({
 
   if (!image) {
     return (
-      <main className="flex-1 flex items-center justify-center bg-[#0a0e1a] text-[#a0b4c4]">
-        Loading image canvas...
+      <main className="flex flex-1 items-center justify-center rounded-xl border border-line bg-white text-sm text-ink-500">
+        Memuat kanvas…
       </main>
     );
   }
 
+  // Labels and handles are drawn in image pixels, so scale them up for large images.
+  const ui = Math.max(1, image.width / 900);
+  const toolButton = (active: boolean) =>
+    `flex h-8 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium transition-colors cursor-pointer ${
+      active ? 'bg-brand-100 text-brand-600 ring-1 ring-brand-200' : 'text-ink-500 hover:bg-brand-50 hover:text-brand-600'
+    }`;
+
   return (
     <main
-      className="flex-1 flex flex-col relative overflow-hidden bg-[#0a0e1a] select-none"
+      className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-line bg-white select-none"
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
     >
-      {/* Top Status & Controls Header */}
-      <div className="h-8 px-3.5 bg-[#0f1524]/90 backdrop-blur-md flex items-center justify-between z-20 border-b border-[#2a3a48]/30">
-        <div className="flex items-center gap-2 text-[10px] font-mono">
-          <span className="px-1.5 py-0.5 rounded bg-[#141c2e] text-[#06b6d4] font-semibold border border-[#2a3a48]/30">
-            {image.filename}
-          </span>
-          <span className="text-[#4a6070]">•</span>
-          <span className="text-[#a0b4c4]">
-            {image.width}×{image.height} (Full HD Static JPG)
-          </span>
-          <span className="text-[#4a6070]">•</span>
-          <span className="text-[#10b981] flex items-center gap-1 font-semibold">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]"></span>
-            {boxes.length} annotations
-          </span>
-        </div>
+      {/* Toolbar */}
+      <div className="flex h-12 shrink-0 items-center gap-1 border-b border-line px-3">
+        {TOOLS.map(tool => (
+          <button
+            key={tool.type}
+            type="button"
+            title={`${tool.title} (${tool.key})`}
+            aria-pressed={activeTool === tool.type}
+            onClick={() => onSelectTool?.(tool.type)}
+            className={toolButton(activeTool === tool.type)}
+          >
+            <Icon name={tool.icon} className="text-[17px]" />
+            <span>{tool.key}</span>
+          </button>
+        ))}
+        <span className="mx-1.5 h-6 w-px bg-line" />
+        <span className="hidden min-w-0 truncate text-xs text-ink-500 2xl:inline">{readOnly ? 'Memuat anotasi…' : TOOL_HINTS[activeTool]}</span>
 
-        <div className="flex items-center gap-2">
-          {/* YOLO AI Detect Button */}
+        <div className="ml-auto flex shrink-0 items-center gap-2 whitespace-nowrap">
+          {onChangeEnhance && (
+            <label
+              title="Filter tampilan untuk frame yang sulit dilihat; label dan deteksi tidak berubah (F)"
+              className="flex items-center gap-1 text-[11px] text-ink-500"
+            >
+              <Icon name="deblur" className="text-[16px]" />
+              <select
+                value={enhance}
+                onChange={(e) => onChangeEnhance(e.target.value)}
+                className="h-8 rounded-md border border-line-strong bg-white px-1.5 text-[11px] text-ink-700 cursor-pointer focus:outline-none focus:border-brand-500"
+              >
+                {ENHANCE_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id}>{preset.label}</option>
+                ))}
+              </select>
+            </label>
+          )}
+          {onChangeFlipDetect && (
+            <label
+              title={flipDetectDisabled
+                ? 'Lapisan tambahan hanya berjalan di mesin lokal'
+                : 'Deteksi juga pada salinan cermin lalu gabungkan: menemukan lebih banyak objek tertutup, sekitar 2x lebih lambat'}
+              className={`flex items-center gap-1 text-[11px] text-ink-500 ${flipDetectDisabled ? 'opacity-50' : 'cursor-pointer'}`}
+            >
+              <input
+                type="checkbox"
+                checked={flipDetect}
+                disabled={flipDetectDisabled}
+                onChange={(e) => onChangeFlipDetect(e.target.checked)}
+                className="accent-brand-600"
+              />
+              +Flip
+            </label>
+          )}
           <button
             onClick={onRunYoloDetect}
-            disabled={isDetecting}
+            disabled={isDetecting || readOnly}
             type="button"
-            className="flex items-center gap-1 px-2.5 py-0.5 rounded bg-[#06b6d4]/20 hover:bg-[#06b6d4]/30 text-[#06b6d4] text-[10px] font-mono font-semibold border border-[#06b6d4]/40 transition-all cursor-pointer disabled:opacity-50"
+            title="Jalankan deteksi YOLO pada gambar ini (R)"
+            className="flex h-8 items-center gap-1.5 rounded-md border border-brand-200 bg-brand-50 px-2.5 text-[11px] font-semibold text-brand-600 hover:bg-brand-100 cursor-pointer disabled:opacity-50"
           >
-            <span className="material-symbols-outlined text-[13px]">
-              {isDetecting ? 'sync' : 'auto_awesome'}
-            </span>
-            <span>{isDetecting ? 'Detecting...' : 'Detect YOLO11'}</span>
+            <Icon name={isDetecting ? 'progress_activity' : 'auto_awesome'} className={`text-[16px] ${isDetecting ? 'animate-spin' : ''}`} />
+            {isDetecting ? 'Mendeteksi…' : 'Deteksi AI'}
           </button>
+          {onRunAudit && (
+            <button
+              onClick={onRunAudit}
+              disabled={isAuditing}
+              type="button"
+              title="Cari objek terlewat, tertutup, dan kotak yang salah (Q)"
+              className="flex h-8 items-center gap-1.5 rounded-md border border-line-strong bg-white px-2.5 text-[11px] font-semibold text-ink-700 hover:bg-brand-50 cursor-pointer disabled:opacity-50"
+            >
+              <Icon name={isAuditing ? 'progress_activity' : 'rule'} className={`text-[16px] ${isAuditing ? 'animate-spin' : ''}`} />
+              {isAuditing ? 'Memeriksa…' : 'Audit'}
+            </button>
+          )}
+          <span className="hidden pl-1 text-[11px] tabular-nums text-ink-400 2xl:inline">{image.width} × {image.height}</span>
         </div>
       </div>
 
-      {/* Main Canvas Viewport Area */}
+      {/* Viewport */}
       <div
         ref={containerRef}
         onMouseDown={handleMouseDown}
         onWheel={handleWheel}
         onDoubleClick={() => { if (activeTool === "polygon") finishPolygon(); }}
-        className={`relative flex-1 w-full h-full overflow-hidden flex items-center justify-center ${
+        className={`relative flex min-h-[320px] flex-1 items-center justify-center overflow-hidden bg-canvas ${
           activeTool === 'pan' ? 'cursor-grab active:cursor-grabbing' : 'cursor-crosshair'
         }`}
       >
-        {/* Subtle background grid pattern */}
-        <div className="absolute inset-0 bg-[radial-gradient(#1a2438_1px,transparent_1px)] [background-size:24px_24px] opacity-60 pointer-events-none"></div>
-
-        {/* Viewport Transform Frame */}
         <div
           style={{
             transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom / 100})`,
             transformOrigin: 'center center',
           }}
-          className="relative max-w-[94%] max-h-[86%] shadow-2xl rounded-lg overflow-hidden transition-transform duration-75 ease-out select-none border border-[#2a3a48]/40"
+          className="relative max-h-[94%] max-w-[96%] select-none transition-transform duration-75 ease-out"
         >
-          {/* Active Image Viewport */}
           <img
             ref={imgRef}
-            src={getImageUrl(image.path || image.image_id || image.filename)}
+            src={getImageUrl(image.path || image.image_id || image.filename, enhance)}
             alt={image.filename}
-            className="w-auto h-auto max-w-full max-h-[72vh] object-contain pointer-events-none block"
+            className="pointer-events-none block h-auto max-h-[calc(100vh-330px)] w-auto max-w-full object-contain"
             draggable={false}
           />
 
-          {/* SVG 2D Vector Bounding Box Overlay Layer */}
           <svg
             className="absolute inset-0 w-full h-full pointer-events-none"
             viewBox={`0 0 ${image.width} ${image.height}`}
@@ -302,7 +389,9 @@ export const AnnotationCanvas: React.FC<Props> = ({
             {boxes.map((originalBox) => {
               const box = transformPreview?.id === originalBox.id ? transformPreview : originalBox;
               const isSelected = box.id === selectedBoxId;
-              const color = getClassColor(box.class_name);
+              const color = boxColor(box);
+              const label = `${box.class_name} ${box.confidence.toFixed(2)}`;
+              const font = 11 * ui;
 
               return (
                 <g
@@ -311,22 +400,20 @@ export const AnnotationCanvas: React.FC<Props> = ({
                     e.stopPropagation();
                     onSelectBox(box.id);
                   }}
-                  className="pointer-events-auto cursor-pointer group"
+                  className="pointer-events-auto cursor-pointer"
                 >
                   {box.polygon_normalized && <polygon
                     points={box.polygon_normalized.map(([x,y]) => `${x*image.width},${y*image.height}`).join(' ')}
-                    fill={color.bg} stroke={color.stroke} strokeWidth={2} />}
-                  {/* Bounding Box Rectangle */}
+                    fill={color.bg} stroke={color.stroke} strokeWidth={1.5 * ui} />}
                   <rect
                     x={box.x}
                     y={box.y}
                     width={box.width}
                     height={box.height}
-                    fill={color.bg}
-                    fillOpacity={labelOpacity / 100}
+                    fill={color.stroke}
+                    fillOpacity={(labelOpacity / 100) * (isSelected ? 0.2 : 0.08)}
                     stroke={color.stroke}
-                    strokeWidth={isSelected ? 2.5 : 1.5}
-                    rx={3}
+                    strokeWidth={(isSelected ? 2.5 : 1.5) * ui}
                     onMouseDown={(e) => {
                       if (activeTool !== 'select' || readOnly) return;
                       e.stopPropagation(); const point = clientToImageCoords(e.clientX, e.clientY);
@@ -334,149 +421,122 @@ export const AnnotationCanvas: React.FC<Props> = ({
                     }}
                   />
 
-                  {/* Corner Handles for selected box */}
                   {isSelected && activeTool === 'select' && !readOnly && [
                     [box.x, box.y], [box.x + box.width, box.y], [box.x, box.y + box.height], [box.x + box.width, box.y + box.height]
-                  ].map(([x,y], corner) => <rect key={corner} x={x-3} y={y-3} width={6} height={6} fill={color.stroke}
+                  ].map(([x,y], corner) => <rect key={corner} x={x-3*ui} y={y-3*ui} width={6*ui} height={6*ui}
+                    fill="#ffffff" stroke={color.stroke} strokeWidth={1.5 * ui}
                     onMouseDown={e => { e.stopPropagation(); const point = clientToImageCoords(e.clientX, e.clientY);
                       if (point) transformRef.current = { box, start: point, corner }; }} />)}
 
-                  {/* Label Header Pill */}
                   <rect
-                    x={box.x}
-                    y={Math.max(0, box.y - 18)}
-                    width={Math.max(70, box.class_name.length * 8 + 36)}
-                    height={18}
-                    fill="#0f1524"
-                    fillOpacity={0.92}
-                    stroke={color.stroke}
-                    strokeWidth={1}
-                    rx={3}
+                    x={box.x - 0.75 * ui}
+                    y={Math.max(0, box.y - font * 1.6)}
+                    width={label.length * font * 0.6 + font}
+                    height={font * 1.6}
+                    fill={color.stroke}
+                    fillOpacity={Math.max(0.55, labelOpacity / 100)}
                   />
                   <text
-                    x={box.x + 5}
-                    y={Math.max(12, box.y - 5)}
-                    fill={color.text}
-                    fontFamily="monospace"
-                    fontSize="11"
-                    fontWeight="bold"
+                    x={box.x + font * 0.45}
+                    y={Math.max(font * 1.15, box.y - font * 0.45)}
+                    fill="#ffffff"
+                    fontFamily="Manrope, sans-serif"
+                    fontSize={font}
+                    fontWeight={600}
                   >
-                    {box.class_name} {Math.round(box.confidence * 100)}%
+                    {label}
+                  </text>
+                </g>
+              );
+            })}
+
+            {/* Audit findings: dashed ghosts for suggestions, dashed outlines on suspect boxes */}
+            {auditFindings.map((finding) => {
+              const meta = AUDIT_KIND_LABELS[finding.kind];
+              const selected = finding.id === selectedFindingId;
+              const subject = boxes.find((b) => b.id === finding.annotation_id);
+              const rect = finding.box && finding.kind !== 'class_mismatch'
+                ? finding.box
+                : subject ?? null;
+              const outline = finding.kind === 'misaligned' && subject ? subject : null;
+              if (!rect) return null;
+              return (
+                <g key={finding.id} className="pointer-events-none">
+                  {outline && (
+                    <rect x={outline.x} y={outline.y} width={outline.width} height={outline.height}
+                      fill="none" stroke={meta.color} strokeWidth={1.5 * ui} strokeDasharray={`${2 * ui} ${3 * ui}`} />
+                  )}
+                  <rect
+                    x={rect.x} y={rect.y} width={rect.width} height={rect.height}
+                    fill={finding.kind === 'possibly_missed' ? `${meta.color}33` : 'none'}
+                    stroke={meta.color} strokeWidth={(selected ? 3 : 2) * ui} strokeDasharray={`${8 * ui} ${4 * ui}`}
+                    className="pointer-events-auto cursor-pointer"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => { e.stopPropagation(); onSelectFinding?.(finding.id); }}
+                  />
+                  <text x={rect.x + 4 * ui} y={rect.y + 13 * ui} fill={meta.color} fontFamily="Manrope, sans-serif"
+                    fontSize={11 * ui} fontWeight="bold" stroke="#14243d" strokeWidth={3 * ui} paintOrder="stroke">
+                    {meta.label}{finding.class_name ? ` · ${finding.class_name}` : ''}
                   </text>
                 </g>
               );
             })}
 
             {polygonPoints.length > 0 && <polyline points={polygonPoints.map(p => `${p.x},${p.y}`).join(' ')}
-              fill="rgba(6,182,212,0.2)" stroke="#06b6d4" strokeWidth={2} />}
-            {/* Drawing Preview Rectangle */}
+              fill="rgba(47,111,228,0.2)" stroke="#2f6fe4" strokeWidth={2 * ui} />}
             {isDrawing && drawStart && drawCurrent && (
               <rect
                 x={Math.min(drawStart.x, drawCurrent.x)}
                 y={Math.min(drawStart.y, drawCurrent.y)}
                 width={Math.abs(drawCurrent.x - drawStart.x)}
                 height={Math.abs(drawCurrent.y - drawStart.y)}
-                fill="rgba(6, 182, 212, 0.2)"
-                stroke="#06b6d4"
-                strokeWidth={2}
-                strokeDasharray="4 2"
+                fill="rgba(47, 111, 228, 0.18)"
+                stroke="#4a84ea"
+                strokeWidth={2 * ui}
+                strokeDasharray={`${4 * ui} ${2 * ui}`}
               />
             )}
           </svg>
         </div>
+
+        {activeTool === 'polygon' && polygonPoints.length > 0 && (
+          <div className="absolute left-3 top-3 z-10 flex items-center gap-3 rounded-md bg-white px-3 py-1.5 text-xs text-ink-700 shadow">
+            {polygonPoints.length} titik
+            <button type="button" onMouseDown={e => e.stopPropagation()} onClick={finishPolygon}
+              className="font-semibold text-brand-600 cursor-pointer">Selesai</button>
+            <button type="button" onMouseDown={e => e.stopPropagation()} onClick={() => setPolygonPoints([])}
+              className="text-ink-500 cursor-pointer">Batal</button>
+          </div>
+        )}
       </div>
 
-      {activeTool === 'polygon' && <div className="absolute top-10 left-4 z-30 bg-[#0f1524] p-2 text-white text-xs">
-        Click vertices, then double-click or <button onClick={finishPolygon} className="underline">Finish polygon</button>
-        <button onClick={() => setPolygonPoints([])} className="ml-3 underline">Cancel</button>
-      </div>}
-      {/* Floating Bottom Static Image Navigation Bar */}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#0f1524]/90 backdrop-blur-2xl border border-[#2a3a48]/40 shadow-2xl z-30 select-none">
-        {/* Pagination Prev/Next */}
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={onPrevImage}
-            disabled={imageIndex === 0}
-            type="button"
-            className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#141c2e] hover:bg-[#1a2438] text-[#e0e8f0] text-[11px] font-medium transition-colors disabled:opacity-30 cursor-pointer"
-            title="Previous Image (A / [)"
-          >
-            <span className="material-symbols-outlined text-[14px]">arrow_back</span>
-            <span>Prev</span>
-          </button>
-          <span className="font-mono text-[11px] font-medium text-[#e0e8f0] px-2 whitespace-nowrap">
-            Image <strong className="text-[#06b6d4] font-semibold">{imageIndex + 1}</strong> of{' '}
-            {totalImages}
+      {/* Hint row with view controls */}
+      <div className="flex h-11 shrink-0 items-center gap-4 border-t border-line px-3 text-[11px] text-ink-500">
+        <span className="flex min-w-0 items-center gap-2 truncate">
+          <Icon name="center_focus_weak" className="text-[16px]" />
+          Geser kotak untuk memperbaiki posisi. Ubah kelas dari panel anotasi.
+        </span>
+        <div className="ml-auto flex shrink-0 items-center gap-3">
+          <span className="flex items-center gap-1">
+            <button type="button" aria-label="Perkecil" onClick={() => setZoom(z => Math.max(50, z - 10))}
+              className="flex h-6 w-6 items-center justify-center rounded hover:bg-brand-50 cursor-pointer"><Icon name="remove" className="text-[15px]" /></button>
+            <button type="button" title="Sesuaikan layar" onClick={() => { setZoom(100); setPan({ x: 0, y: 0 }); }}
+              className="w-10 text-center tabular-nums hover:text-brand-600 cursor-pointer">{zoom}%</button>
+            <button type="button" aria-label="Perbesar" onClick={() => setZoom(z => Math.min(300, z + 10))}
+              className="flex h-6 w-6 items-center justify-center rounded hover:bg-brand-50 cursor-pointer"><Icon name="add" className="text-[15px]" /></button>
           </span>
-          <button
-            onClick={onNextImage}
-            disabled={imageIndex >= totalImages - 1}
-            type="button"
-            className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#141c2e] hover:bg-[#1a2438] text-[#e0e8f0] text-[11px] font-medium transition-colors disabled:opacity-30 cursor-pointer"
-            title="Next Image (D / ])"
-          >
-            <span>Next</span>
-            <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
-          </button>
-        </div>
-
-        <span className="w-px h-4 bg-[#2a3a48]"></span>
-
-        {/* Quick Zoom Presets */}
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => setZoom(100)}
-            type="button"
-            className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
-              zoom === 100
-                ? 'bg-[#0e4d6e] text-[#7dd3fc] font-semibold'
-                : 'text-[#a0b4c4] hover:text-[#e0e8f0] hover:bg-[#141c2e]'
-            }`}
-          >
-            100%
-          </button>
-          <button
-            onClick={() => setZoom(140)}
-            type="button"
-            className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
-              zoom === 140
-                ? 'bg-[#0e4d6e] text-[#7dd3fc] font-semibold'
-                : 'text-[#a0b4c4] hover:text-[#e0e8f0] hover:bg-[#141c2e]'
-            }`}
-          >
-            140%
-          </button>
-          <button
-            onClick={() => {
-              setZoom(100);
-              setPan({ x: 0, y: 0 });
-            }}
-            type="button"
-            className="w-6 h-6 rounded bg-[#141c2e] hover:bg-[#1a2438] text-[#a0b4c4] hover:text-[#7dd3fc] flex items-center justify-center transition-colors cursor-pointer"
-            title="Fit to Screen"
-          >
-            <span className="material-symbols-outlined text-[14px]">aspect_ratio</span>
-          </button>
-        </div>
-
-        <span className="w-px h-4 bg-[#2a3a48]"></span>
-
-        {/* Label Opacity Slider */}
-        <div className="flex items-center gap-1.5 text-xs">
-          <span className="material-symbols-outlined text-[14px] text-[#a0b4c4]" title="Label Opacity">
-            opacity
-          </span>
-          <input
-            type="range"
-            min="10"
-            max="100"
-            value={labelOpacity}
-            onChange={(e) => setLabelOpacity(Number(e.target.value))}
-            className="w-14 h-1.5 bg-[#1a2438] rounded-lg appearance-none cursor-pointer accent-[#06b6d4]"
-          />
-          <span className="font-mono text-[10px] text-[#06b6d4] w-6">{labelOpacity}%</span>
+          <label className="flex items-center gap-1.5" title="Kepekatan label">
+            <Icon name="opacity" className="text-[15px]" />
+            <input type="range" min="10" max="100" value={labelOpacity}
+              onChange={(e) => setLabelOpacity(Number(e.target.value))}
+              className="w-16 accent-brand-600 cursor-pointer" />
+          </label>
+          <KeyHint k="B" label="Kotak" />
+          <KeyHint k="V" label="Pilih" />
         </div>
       </div>
+
+      {footer}
     </main>
   );
 };

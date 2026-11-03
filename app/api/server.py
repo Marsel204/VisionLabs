@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 from PIL import Image
 
@@ -50,6 +50,8 @@ from app.services.inference.cloud import CloudInferenceError
 from app.services.inference.preparation import ModelPreparation
 from app.export.exporters import (
     CocoExporter,
+    CvatExporter,
+    PascalVocExporter,
     YoloExporter,
     split_documents,
 )
@@ -58,9 +60,9 @@ logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger("api_server")
 
 app = FastAPI(
-    title="VisionLab AI Annotation API",
+    title="Anotara AI Annotation API",
     version="2.0.0",
-    description="Backend AI API for VisionLab universal desktop annotation studio with SQLite database & active learning",
+    description="Backend AI API for the Anotara desktop annotation app with SQLite database & active learning",
 )
 
 # Enable CORS for Tauri desktop and web dev server
@@ -239,12 +241,28 @@ class BoundingBox(BaseModel):
         return self
 
 
+def _validated_views(views: Optional[List[str]]) -> tuple[str, ...]:
+    """Validate requested detector views; extra views run only on the local backend."""
+    from app.services.preprocess import ORIGINAL_ONLY, validate_views
+
+    if not views:
+        return ORIGINAL_ONLY
+    try:
+        result = validate_views(views)
+    except ValueError as err:
+        raise HTTPException(422, str(err)) from err
+    if result != ORIGINAL_ONLY and AUTOLABEL_ENGINE.uses_cloud:
+        raise HTTPException(400, "Layered detection passes run only on the local backend")
+    return result
+
+
 class DetectionRequest(BaseModel):
     image_name: str
     dataset_id: Optional[str] = None
     conf_threshold: float = 0.25
     classes: Optional[List[str]] = None
     models: Optional[List[str]] = None
+    views: Optional[List[str]] = None
 
 
 class PromptRefineRequest(BaseModel):
@@ -260,7 +278,8 @@ class SaveAnnotationRequest(BaseModel):
 
 
 class ExportRequest(BaseModel):
-    format: str = "yolo"  # "yolo", "coco"
+    format: str = "yolo"  # "yolo", "coco", "voc", "cvat"
+    only_reviewed: bool = False
     train_ratio: float = 0.70
     val_ratio: float = 0.20
     test_ratio: float = 0.10
@@ -290,6 +309,7 @@ class AutoLabelPreviewRequest(BaseModel):
     enable_florence2_verifier: bool = False
     enable_yolo: bool = True
     yolo_models: List[str] = ["yolo11n.pt"]
+    yolo_views: Optional[List[str]] = None
 
 
 class AutoLabelBatchRequest(BaseModel):
@@ -306,6 +326,7 @@ class AutoLabelBatchRequest(BaseModel):
     enable_florence2_verifier: bool = False
     enable_yolo: bool = True
     yolo_models: List[str] = ["yolo11n.pt"]
+    yolo_views: Optional[List[str]] = None
 
 
 class ValidateModelRequest(BaseModel):
@@ -636,12 +657,34 @@ def list_images(
 
 
 
+@functools.lru_cache(maxsize=16)
+def _enhanced_image_bytes(path: str, mtime_ns: int, preset: str, fmt: str) -> bytes:
+    from app.services.preprocess import enhance, resolve_preset
+
+    with Image.open(path) as source:
+        result = enhance(source.convert("RGB"), resolve_preset(preset))
+    buffer = io.BytesIO()
+    result.save(buffer, format=fmt, **({"quality": 92} if fmt == "JPEG" else {}))
+    return buffer.getvalue()
+
+
 @app.get("/api/image/{image_name:path}")
 @dataset_operation
-def serve_image(image_name: str):
-    """Serve image file content."""
+def serve_image(image_name: str, enhance: Optional[str] = None):
+    """Serve image file content, optionally with a display-only enhancement preset."""
     img_path = get_image_path(image_name)
-    media_type = "image/jpeg" if img_path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
+    is_jpeg = img_path.suffix.lower() in {".jpg", ".jpeg"}
+    media_type = "image/jpeg" if is_jpeg else "image/png"
+    if enhance and enhance.lower() != "none":
+        from app.services.preprocess import PRESETS
+
+        if enhance.lower() not in PRESETS:
+            raise HTTPException(422, f"Unknown enhancement preset: {enhance}")
+        data = _enhanced_image_bytes(
+            str(img_path), img_path.stat().st_mtime_ns, enhance.lower(),
+            "JPEG" if is_jpeg else "PNG",
+        )
+        return Response(data, media_type=media_type)
     return FileResponse(img_path, media_type=media_type)
 
 
@@ -772,6 +815,7 @@ def detect_yolo(req: DetectionRequest):
     """Run YOLO object detection on an image (supports multi-model ensemble)."""
     check_dataset(req.dataset_id)
     img_path = get_image_path(req.image_name)
+    views = _validated_views(req.views)
 
     if AUTOLABEL_ENGINE.uses_cloud:
         classes = req.classes or get_dataset_class_names(str(ACTIVE_DATASET_DIR))
@@ -809,8 +853,11 @@ def detect_yolo(req: DetectionRequest):
     ]
     active_models = active_models[:3]
 
+    from app.services.preprocess import apply_view, merge_view_boxes, restore_box
+
     with Image.open(img_path) as img:
         img_w, img_h = img.size
+        view_image = img.convert("RGB") if views != ("original",) else None
 
     raw_candidates_px: list[list[float]] = []
     raw_candidate_classes: list[AutoLabelClass] = []
@@ -825,36 +872,43 @@ def detect_yolo(req: DetectionRequest):
             if model is None:
                 continue
 
-        results = model(str(img_path), conf=req.conf_threshold)
-        for r in results:
-            names = getattr(model, "names", {}) or getattr(r, "names", {})
-            for box in r.boxes:
-                cls_id = int(box.cls[0])
-                raw_name = names.get(cls_id, "unknown")
-                conf = float(box.conf[0])
+        per_view = []
+        for view in views:
+            source = str(img_path) if view == "original" else apply_view(view_image, view)
+            view_boxes = []
+            for r in model(source, conf=req.conf_threshold):
+                names = getattr(model, "names", {}) or getattr(r, "names", {})
+                for box in r.boxes:
+                    view_boxes.append((
+                        names.get(int(box.cls[0]), "unknown"), float(box.conf[0]),
+                        restore_box(box.xyxy[0].tolist(), view, img_w),
+                    ))
+            per_view.append(view_boxes)
+        layered = per_view[0]
+        for extra in per_view[1:]:
+            layered = merge_view_boxes(layered, extra)
+        for raw_name, conf, xyxy in layered:
+            raw_lower = raw_name.lower().strip()
+            class_name = raw_name
+            if raw_lower in {"car", "mobil", "sedan", "suv", "vehicle", "automobile"}:
+                class_name = "car"
+            elif raw_lower in {"motorcycle", "motor", "bike", "motorbike", "scooter", "moped"}:
+                class_name = "motorcycle"
+            elif raw_lower in {"bus", "bis", "minibus", "angkot"}:
+                class_name = "bus"
+            elif raw_lower in {"truck", "truk", "pickup"}:
+                class_name = "truck"
+            elif raw_lower in {"person", "pedestrian", "orang"}:
+                class_name = "person"
 
-                raw_lower = raw_name.lower().strip()
-                class_name = raw_name
-                if raw_lower in {"car", "mobil", "sedan", "suv", "vehicle", "automobile"}:
-                    class_name = "car"
-                elif raw_lower in {"motorcycle", "motor", "bike", "motorbike", "scooter", "moped"}:
-                    class_name = "motorcycle"
-                elif raw_lower in {"bus", "bis", "minibus", "angkot"}:
-                    class_name = "bus"
-                elif raw_lower in {"truck", "truk", "pickup"}:
-                    class_name = "truck"
-                elif raw_lower in {"person", "pedestrian", "orang"}:
-                    class_name = "person"
+            if req.classes:
+                req_classes_lower = {str(c).lower().strip() for c in req.classes}
+                if class_name.lower().strip() not in req_classes_lower:
+                    continue
 
-                if req.classes:
-                    req_classes_lower = {str(c).lower().strip() for c in req.classes}
-                    if class_name.lower().strip() not in req_classes_lower:
-                        continue
-
-                xyxy = box.xyxy[0].tolist()
-                raw_candidates_px.append([float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3])])
-                raw_candidate_classes.append(AutoLabelClass(name=class_name, prompt=class_name))
-                raw_candidate_scores.append(conf)
+            raw_candidates_px.append([float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3])])
+            raw_candidate_classes.append(AutoLabelClass(name=class_name, prompt=class_name))
+            raw_candidate_scores.append(conf)
 
     boxes: list[BoundingBox] = []
     if raw_candidates_px:
@@ -954,6 +1008,7 @@ def autolabel_preview(req: AutoLabelPreviewRequest):
         enable_florence2_verifier=req.enable_florence2_verifier,
         enable_yolo=req.enable_yolo,
         yolo_models=req.yolo_models or ["yolo11n.pt"],
+        yolo_views=_validated_views(req.yolo_views),
     )
 
     if req.enable_yolo:
@@ -1120,6 +1175,7 @@ def _execute_batch_autolabel_worker(
         enable_florence2_verifier=req.enable_florence2_verifier,
         enable_yolo=req.enable_yolo,
         yolo_models=req.yolo_models or ["yolo11n.pt"],
+        yolo_views=tuple(req.yolo_views or ("original",)),
     )
 
     if req.enable_yolo:
@@ -1251,6 +1307,7 @@ def _run_batch_autolabel_worker(req, target_paths, classes, dataset_root=None, j
 def start_autolabel_batch(req: AutoLabelBatchRequest, background_tasks: BackgroundTasks):
     global AUTOLABEL_BATCH_STATUS
     check_dataset(req.dataset_id)
+    _validated_views(req.yolo_views)  # reject bad views before the job is marked running
     with AUTOLABEL_BATCH_LOCK:
         if AUTOLABEL_BATCH_STATUS["running"]:
             raise HTTPException(409, "Batch auto-labeling is already in progress")
@@ -1567,12 +1624,19 @@ def get_dataset_stats():
 @app.post("/api/dataset/export")
 @dataset_operation
 def export_dataset(req: ExportRequest):
-    """Export annotated dataset into standard YOLO or COCO formats with train/val/test splits."""
+    """Export the dataset as YOLO, COCO (with train/val/test splits), Pascal VOC or CVAT XML."""
+    export_format = req.format.lower()
+    if export_format not in {"yolo", "coco", "voc", "cvat"}:
+        raise HTTPException(422, f"Unsupported export format: {req.format}")
     index_db = get_dataset_index()
     records = all_records(index_db)
     documents: List[AnnotationDocument] = []
     repo = AnnotationRepository(ACTIVE_DATASET_DIR)
+    skipped_unreviewed = 0
     for record in records:
+        if req.only_reviewed and record.get("status") != "reviewed":
+            skipped_unreviewed += 1
+            continue
         image = Path(record["path"])
         if not image.is_file():
             raise HTTPException(422, "An indexed source image is missing; rescan before exporting")
@@ -1582,7 +1646,9 @@ def export_dataset(req: ExportRequest):
             raise HTTPException(422, f"Cannot export {image.name}: {err}") from err
 
     if not documents:
-        raise HTTPException(status_code=400, detail="No valid images to export.")
+        detail = ("No approved images to export yet." if req.only_reviewed and skipped_unreviewed
+                  else "No valid images to export.")
+        raise HTTPException(status_code=400, detail=detail)
 
     # 1. Split documents
     try:
@@ -1597,24 +1663,27 @@ def export_dataset(req: ExportRequest):
 
     # 2. Prepare export destination directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = Path(req.output_dir) if req.output_dir else PROJECT_ROOT / "exports" / f"{req.format}_{timestamp}"
+    out_dir = Path(req.output_dir) if req.output_dir else PROJECT_ROOT / "exports" / f"{export_format}_{timestamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # 3. Execute exporter
     try:
-        if req.format.lower() == "coco":
+        if export_format == "coco":
             exporter = CocoExporter(splits=splits, class_order=repo.classes())
-            artifact = exporter.export(documents, out_dir)
+        elif export_format == "voc":
+            exporter = PascalVocExporter()
+        elif export_format == "cvat":
+            exporter = CvatExporter()
         else:
             exporter = YoloExporter(splits=splits, class_order=repo.classes())
-            artifact = exporter.export(documents, out_dir)
+        artifact = exporter.export(documents, out_dir)
     except Exception as err:
         LOGGER.exception("Export failed")
         raise HTTPException(status_code=500, detail=f"Export generation failed: {err}")
 
     return {
         "status": "success",
-        "format": req.format,
+        "format": export_format,
         "destination": str(out_dir),
         "artifact": str(artifact),
         "splits": {
@@ -1623,7 +1692,99 @@ def export_dataset(req: ExportRequest):
             "test": len(splits.get("test", [])),
         },
         "total_documents": len(documents),
+        "skipped_unreviewed": skipped_unreviewed,
     }
+
+
+class AuditRequest(BaseModel):
+    image_name: str
+    dataset_id: Optional[str] = None
+    conf_threshold: float = Field(default=0.08, ge=0.01, le=0.9)
+    models: Optional[List[str]] = None
+    tiled: bool = True
+    views: Optional[List[str]] = None
+    boxes: Optional[List[BoundingBox]] = None
+
+    @model_validator(mode="after")
+    def validate_views(self):
+        from app.services.preprocess import VIEWS
+
+        unknown = [view for view in self.views or [] if view not in VIEWS]
+        if unknown:
+            raise ValueError(f"unknown detection views: {unknown}; choose from {sorted(VIEWS)}")
+        return self
+
+
+def _audit_predictions(img_path: Path, req: AuditRequest, classes: list[str]):
+    """Collect high-recall reference detections for the annotation audit."""
+    from app.services.audit import Prediction
+    from app.services.audit.detector import detect_reference, merge_predictions
+
+    if AUTOLABEL_ENGINE.uses_cloud:
+        config = AutoLabelConfig(
+            mode=AutoLabelPipelineMode.YOLO_BOXES,
+            classes=[AutoLabelClass(name=name) for name in classes],
+            confidence_threshold=req.conf_threshold,
+            yolo_models=(req.models or [AUTOLABEL_ENGINE.yolo_model_name])[:3],
+            enable_grounding_dino=False, enable_florence2=False,
+            enable_florence2_verifier=False, enable_sam2_masks=False, enable_yolo=True,
+        )
+        result = AUTOLABEL_ENGINE.run_preview(img_path, config)
+        return [Prediction(d.class_name, d.box, d.confidence) for d in result.detections]
+
+    predictions: list = []
+    with Image.open(img_path) as source:
+        image = source.convert("RGB")
+    tile_size = 640 if req.tiled else max(image.size)
+    for model_name in (req.models or [AUTOLABEL_ENGINE.yolo_model_name or "yolo11n.pt"])[:3]:
+        try:
+            model = AUTOLABEL_ENGINE._get_yolo_detector(model_name)
+        except Exception as err:
+            LOGGER.warning("Could not load YOLO model '%s': %s", model_name, err)
+            model = get_yolo_model()
+            if model is None:
+                continue
+        predictions.extend(detect_reference(
+            model, image, confidence=req.conf_threshold, tile_size=tile_size,
+            allowed_classes=classes or None,
+            **({"views": req.views} if req.views else {}),
+        ))
+    return merge_predictions(predictions, 0.6)
+
+
+@app.post("/api/audit")
+@dataset_operation
+@inference_operation
+def audit_image(req: AuditRequest):
+    """Flag likely-missed (often occluded) objects and suspicious boxes in one image."""
+    from app.services.annotation.domain import BoundingBox as DomainBox
+    from app.services.audit import AuditBox, audit_annotations
+    from app.services.audit.payload import report_payload
+
+    check_dataset(req.dataset_id)
+    img_path = get_image_path(req.image_name)
+    repo = AnnotationRepository(ACTIVE_DATASET_DIR)
+    if req.boxes is not None:
+        stored = [b.model_dump() for b in req.boxes]
+    else:
+        stored = repo.read(img_path)["boxes"]
+    with Image.open(img_path) as img:
+        img_w, img_h = img.size
+    existing = [
+        AuditBox(
+            id=str(b["id"]), class_name=b["class_name"],
+            box=DomainBox(b["norm_left"], b["norm_top"], b["norm_right"], b["norm_bottom"]),
+            confidence=b.get("confidence"), source=b.get("source", "human"),
+        )
+        for b in stored
+    ]
+    classes = get_dataset_class_names(str(ACTIVE_DATASET_DIR))
+    predictions = _audit_predictions(img_path, req, classes)
+    report = audit_annotations(existing, predictions, img_w, img_h)
+    payload = report_payload(report, img_w, img_h)
+    payload.update(image_name=req.image_name, width=img_w, height=img_h,
+                   prediction_count=len(predictions))
+    return payload
 
 
 @app.get("/api/active-learning/queue")

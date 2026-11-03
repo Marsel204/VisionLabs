@@ -1,16 +1,16 @@
 # Annotate with existing Google Colab credits
 
-## Connect from VisionLab
+## Connect from Anotara
 
 On Linux and macOS, open your dataset and click **Colab** in the studio header:
 
-1. Click **Sign in with Google**. VisionLab prepares Google's official Colab CLI
+1. Click **Sign in with Google**. Anotara prepares Google's official Colab CLI
    automatically and opens Google sign-in in your browser.
 2. Sign in to the account with your Colab credits. Copy the authorization code Google
-   displays, paste it into VisionLab, and click **Finish connection**. Google's current
+   displays, paste it into Anotara, and click **Finish connection**. Google's current
    CLI flow requires this one-time paste; it does not return directly to the app.
 3. Enter the classes to find. Leave **Images this run = 3** for your first run.
-4. Click **Start annotation**. VisionLab starts a Colab GPU, transfers those images,
+4. Click **Start annotation**. Anotara starts a Colab GPU, transfers those images,
    installs the models, runs annotation, saves the labels in your open dataset, and
    releases the GPU. Open the resulting images in the studio to review their boxes
    and masks.
@@ -24,15 +24,15 @@ runtime count. Opening it refreshes these details without allocating hardware;
 **Refresh account details** checks them again. If the email is your free account
 and the credits are on another account, click **Switch account**, select the
 credited account in Google's account chooser, and paste the new authorization code.
-Switching removes only VisionLab's cached authorization; it keeps local annotations
+Switching removes only Anotara's cached authorization; it keeps local annotations
 and transfer files and does not stop notebooks opened outside VisionLab. An unfinished
-VisionLab runtime must be released before switching, so cleanup retains its credentials.
+Anotara runtime must be released before switching, so cleanup retains its credentials.
 
 The default is Grounding DINO with SAM 2 masks on a T4. Under **More options →
 Colab GPU**, choose T4, L4, A100, H100, or G4. These are the GPU request types
 supported by the pinned official CLI, not a guarantee of available hardware on
 your account. Compute units do not guarantee access to a particular GPU; Colab
-also applies account permissions, usage limits, and current capacity. VisionLab
+also applies account permissions, usage limits, and current capacity. Anotara
 passes your selected GPU to Colab without substituting another type. If Colab
 rejects allocation, the app displays the rejection. HTTP 412 does not establish
 which limit or precondition failed; check the displayed Google account and active
@@ -50,9 +50,9 @@ script has a 30-minute limit. Use smaller batches if setup and inference take lo
 Only the chosen images and inference source are uploaded; Google credentials,
 dataset paths, and existing annotations are excluded from the upload.
 
-You can close the dialog while annotation continues. Keep VisionLab running to
+You can close the dialog while annotation continues. Keep Anotara running to
 receive the results. **Stop annotation** cancels the work and releases its runtime;
-normal app shutdown also attempts cleanup. If release cannot be confirmed, VisionLab
+normal app shutdown also attempts cleanup. If release cannot be confirmed, Anotara
 shows **Release GPU** and blocks another job until cleanup. It remembers unfinished
 cleanup after a restart. You can also stop the runtime in Google Colab, then click
 **I've stopped it in Colab** to acknowledge that manual action.
@@ -62,9 +62,9 @@ saving. Changes made to an image or its annotations during inference are preserv
 and reported as conflicts. Existing overlapping boxes are retained without duplicates.
 The image queue refreshes when a job finishes; annotations still need human review.
 
-Google authorization is kept in a private VisionLab profile under the app cache
+Google authorization is kept in a private Anotara profile under the app cache
 directory, separate from any other Colab CLI installation. The one-time code is not
-saved or logged. **Disconnect** removes VisionLab's local authorization and transfer
+saved or logged. **Disconnect** removes Anotara's local authorization and transfer
 files after its runtime has been released. To revoke Google's grant as well, use
 your Google account's connected-app settings.
 
@@ -79,7 +79,7 @@ a real Colab GPU, including use of paid compute units, remains unverified. See t
 ## Notebook fallback
 
 Use [the Colab batch notebook](../notebooks/visionlab_colab_batch.ipynb) to generate
-annotations on a Colab GPU, then review them in VisionLab on your laptop. This
+annotations on a Colab GPU, then review them in Anotara on your laptop. This
 fallback works without connecting the studio to Colab. The notebook does not start
 or connect to your Colab account by itself.
 
@@ -90,7 +90,7 @@ does not clone the dataset or download its large `annotations.json` file.
 
 ## Prepare the files
 
-From this VisionLab checkout:
+From this Anotara checkout:
 
 ```sh
 python scripts/package_colab.py
@@ -123,7 +123,7 @@ first `LIMIT` supported images, in filename order; it does not unpack the rest o
 the dataset or its labels. Increase `LIMIT` deliberately when ready for a larger
 batch. Image ZIP entries are limited to 20 MiB each and must have safe relative paths.
 
-## Review in VisionLab
+## Review in Anotara
 
 The default **visionlab** download retains images, `data.yaml`, derived YOLO labels,
 and canonical `.visionlab` annotations. Extract it on your laptop and select the
@@ -141,7 +141,7 @@ Other downloads:
 
 Colab batch review uses local dataset files, so a live cloud endpoint is unnecessary.
 If `.env` was configured for a remote worker earlier, use
-`VISIONLAB_INFERENCE_BACKEND=local` and restart VisionLab for local review. A local
+`VISIONLAB_INFERENCE_BACKEND=local` and restart Anotara for local review. A local
 GPU is unnecessary for opening, editing, and exporting the annotations. Use the
 notebook for further AI annotation when your laptop lacks the local model runtime.
 

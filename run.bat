@@ -1,12 +1,12 @@
 : << "BATCH_BLOCK"
 @echo off
 setlocal enabledelayedexpansion
-title VisionLab Studio
+title Anotara Studio
 
 cd /d "%~dp0"
 
 echo ========================================================
-echo              VisionLab One-Click Launcher
+echo              Anotara One-Click Launcher
 echo ========================================================
 echo.
 
@@ -25,7 +25,7 @@ if !ERRORLEVEL! neq 0 (
 
 REM 2. Ensure virtual environment and dependencies exist
 if not exist ".venv\Scripts\python.exe" (
-    echo [SETUP] Initializing VisionLab environment (.venv)...
+    echo [SETUP] Initializing Anotara environment (.venv)...
     where uv >nul 2>nul
     if !ERRORLEVEL! equ 0 (
         uv sync
@@ -52,7 +52,7 @@ if exist ".venv\Scripts\python.exe" (
 
 REM 4. Mode Selection: --qt forces standalone Qt GUI; default launches Desktop Studio if npm is available
 if "%1"=="--qt" (
-    echo Launching VisionLab Standalone Qt GUI...
+    echo Launching Anotara Standalone Qt GUI...
     shift
     %PY_BIN% -m app.main %*
     if !ERRORLEVEL! neq 0 pause
@@ -67,15 +67,15 @@ if !ERRORLEVEL! equ 0 (
 )
 
 REM Fallback to standalone Qt GUI if npm/desktop not available
-echo Launching VisionLab Standalone Qt GUI...
+echo Launching Anotara Standalone Qt GUI...
 %PY_BIN% -m app.main %*
 if !ERRORLEVEL! neq 0 pause
 exit /b !ERRORLEVEL!
 
 :run_desktop_win
-echo === VisionLab: Starting Desktop Studio ===
+echo === Anotara: Starting Desktop Studio ===
 echo [1/2] Starting Python AI Engine on :8765...
-start "VisionLab Backend" /B %PY_BIN% -m uvicorn app.api.server:app --port 8765 --host 127.0.0.1 --log-level warning
+start "Anotara Backend" /B %PY_BIN% -m uvicorn app.api.server:app --port 8765 --host 127.0.0.1 --log-level warning
 powershell -NoProfile -Command "for ($i=0; $i -lt 60; $i++) { try { $session=Invoke-RestMethod -Uri 'http://127.0.0.1:8765/api/session' -TimeoutSec 1; if ($session.token) { exit 0 } } catch {}; Start-Sleep -Milliseconds 500 }; exit 1"
 if !ERRORLEVEL! neq 0 (
     echo [ERROR] Python AI Engine did not become ready.
@@ -92,7 +92,7 @@ if not exist "node_modules" (
 call npm run tauri dev
 if !ERRORLEVEL! neq 0 (
     echo.
-    echo [ERROR] VisionLab exited with an error.
+    echo [ERROR] Anotara exited with an error.
     pause
 )
 exit /b !ERRORLEVEL!
@@ -106,7 +106,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
 echo "========================================================"
-echo "             VisionLab One-Click Launcher"
+echo "             Anotara One-Click Launcher"
 echo "========================================================"
 echo ""
 
@@ -120,14 +120,14 @@ fi
 
 # 2. Ensure virtual environment exists
 if [ ! -f ".venv/bin/python" ]; then
-    echo "[SETUP] Initializing VisionLab environment (.venv)..."
+    echo "[SETUP] Initializing Anotara environment (.venv)..."
     if command -v uv >/dev/null 2>&1; then
         uv sync
     elif command -v python3 >/dev/null 2>&1; then
         python3 -m venv .venv
         .venv/bin/pip install -e .
     else
-        echo "[ERROR] Python 3 or uv is required to run VisionLab."
+        echo "[ERROR] Python 3 or uv is required to run Anotara."
         read -p "Press Enter to exit..."
         exit 1
     fi
@@ -146,16 +146,16 @@ fi
 # 4. Mode Selection: --qt forces standalone Qt GUI; default launches Desktop Studio if npm is available
 if [ "$1" = "--qt" ]; then
     shift
-    echo "Launching VisionLab Standalone Qt GUI..."
+    echo "Launching Anotara Standalone Qt GUI..."
     $PY_BIN -m app.main "$@" || {
-        echo "[ERROR] VisionLab exited with an error."
+        echo "[ERROR] Anotara exited with an error."
         read -p "Press Enter to exit..."
     }
     exit 0
 fi
 
 if command -v npm >/dev/null 2>&1 && [ -f "desktop/package.json" ]; then
-    echo "=== VisionLab: Starting Desktop Studio ==="
+    echo "=== Anotara: Starting Desktop Studio ==="
     if ! curl -fsS http://127.0.0.1:8765/api/session > /dev/null 2>&1; then
         echo "[1/2] Launching Python AI Engine in background..."
         $PY_BIN -m uvicorn app.api.server:app --port 8765 --host 127.0.0.1 --log-level warning &
@@ -192,9 +192,9 @@ if command -v npm >/dev/null 2>&1 && [ -f "desktop/package.json" ]; then
 fi
 
 # Fallback to standalone Qt GUI if npm/tauri is not available
-echo "Launching VisionLab Standalone Qt GUI..."
+echo "Launching Anotara Standalone Qt GUI..."
 $PY_BIN -m app.main "$@" || {
-    echo "[ERROR] VisionLab exited with an error."
+    echo "[ERROR] Anotara exited with an error."
     read -p "Press Enter to exit..."
 }
 exit 0

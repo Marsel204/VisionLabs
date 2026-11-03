@@ -13,6 +13,14 @@ const readyModels={backend:'local',models:Object.fromEntries(
   ['grounding_dino','sam2','florence2','locate_anything','yolo:yolo11n.pt']
     .map(id=>[id,{name:id,state:'ready',error:null}]))};
 const jsx = (type, props) => ({type, props:props || {}});
+// Native buttons and the shared Button component are both clickable buttons.
+const isBtn = n => n.type==='button' || n.type==='Button';
+function loadPure(file) {
+  const code=ts.transpileModule(fs.readFileSync(path.join(root,file),'utf8'), {
+    compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022},
+  }).outputText;
+  const module={exports:{}};vm.runInNewContext(code,{module,exports:module.exports});return module.exports;
+}
 function harness(file, supplied = {}) {
   const state=[], refs=[], effects=[], callbacks=[]; let cursor=0, pending=[];
   const same=(a,b)=>a && b && a.length===b.length && a.every((v,i)=>Object.is(v,b[i]));
@@ -43,6 +51,11 @@ function harness(file, supplied = {}) {
     if (name==='react') return {...React,default:React};
     if (name==='react/jsx-runtime') return {jsx,jsxs:jsx};
     if (name.endsWith('/api')) return api;
+    if (name.endsWith('/audit')) return {visibleFindings:()=>[],applyFinding:()=>null,applyOcclusionFlags:()=>null};
+    // Pure helpers run for real; components stay as named placeholders.
+    if (name.endsWith('/datasetSummary')) return loadPure('pages/datasetSummary.ts');
+    if (name.endsWith('/format')) return loadPure('format.ts');
+    if (name.endsWith('/recentDatasets')) return {rememberDataset(){},recentDatasets:()=>[],forgetDataset(){}};
     if (name.endsWith('/types')) return {getClassColor:()=>({stroke:'blue',text:'blue',bg:'black'})};
     return new Proxy({}, {get:(_t,key)=>String(key)});
   }, window:{location:{search:''},addEventListener(){},removeEventListener(){}}, URLSearchParams,console,
@@ -67,7 +80,8 @@ const images=[{filename:'a.jpg',path:'/dataset/a.jpg',dataset_id:'/dataset',widt
   {filename:'b.jpg',path:'/dataset/b.jpg',dataset_id:'/dataset',width:100,height:80}];
 const boxed=id=>({id,class_name:'cat',class_id:1,x:10,y:10,width:20,height:20,
   norm_left:.1,norm_top:.125,norm_right:.3,norm_bottom:.375,confidence:1});
-function setup(supplied={}) { const h=harness('App.tsx',supplied);h.render();h.state[1]=images;
+function setup(supplied={}) { const h=harness('App.tsx',supplied);
+  find(h.render().tree,'Sidebar').props.onNavigate('review');h.state[1]=images;
   h.render().runEffects();return h; }
 
 test('late image response cannot replace the selected document',async()=>{
@@ -92,7 +106,7 @@ test('equal filenames in different datasets trigger a new annotation request',as
 test('batch completion refreshes labels without running detection',async()=>{
   let detections=0;const h=setup({detectYolo:async()=>{detections++;return {boxes:[]};},
     fetchImages:async()=>({images,total:2,directory:'/dataset'})});
-  await tick();const modal=find(h.render().tree,'AutoLabelModal');
+  await tick();const modal=find(h.render().tree,'AutoLabelPage');
   modal.props.onStartBatch(['cat'],.5);modal.props.onBatchComplete();await tick();
   assert.equal(detections,0);
 });
@@ -172,7 +186,7 @@ function match(tree, predicate) {
   }
   return null;
 }
-const colabButton=(tree,label)=>match(tree,n=>n.type==='button' && content(n)===label);
+const colabButton=(tree,label)=>match(tree,n=>isBtn(n) && content(n)===label);
 
 test('Colab login passes a transient code and never starts annotation',async()=>{
   const calls=[];
@@ -183,14 +197,14 @@ test('Colab login passes a transient code and never starts annotation',async()=>
     startColabJob:async()=>{throw Error('Sign-in must not allocate a GPU');},
   });
   h.render(colabProps).runEffects();await tick();
-  colabButton(h.render(colabProps).tree,'Sign in with Google').props.onClick();await tick();
+  colabButton(h.render(colabProps).tree,'Masuk dengan Google').props.onClick();await tick();
   let r=h.render(colabProps);
   const input=match(r.tree,n=>n.props?.id==='colab-code');
   assert.equal(input.props.type,'password');
   input.props.onChange({target:{value:'test-one-time-code'}});
   find(h.render(colabProps).tree,'form').props.onSubmit({preventDefault(){}});await tick();
   r=h.render(colabProps);assert.deepEqual(calls,['connect','test-one-time-code']);
-  assert.equal(colabButton(r.tree,'Start annotation').props.disabled,false);
+  assert.equal(colabButton(r.tree,'Mulai anotasi').props.disabled,false);
   assert.ok(!h.state.includes('test-one-time-code'));
 });
 
@@ -246,9 +260,9 @@ test('stale Colab status cannot undo a completed connection action',async()=>{
   });
   h.render(colabProps).runEffects();await tick();
   [...h.intervals.values()][0]();
-  colabButton(h.render(colabProps).tree,'Sign in with Google').props.onClick();await tick();
+  colabButton(h.render(colabProps).tree,'Masuk dengan Google').props.onClick();await tick();
   stale.resolve(colabStatus);await tick();
-  assert.ok(colabButton(h.render(colabProps).tree,'Disconnect'));
+  assert.ok(colabButton(h.render(colabProps).tree,'Putuskan'));
 });
 
 test('a Colab job continues polling after closing and refreshes labels once',async()=>{
@@ -275,9 +289,9 @@ test('Colab release failures block new work until retry or explicit manual confi
   h.render(colabProps).runEffects();await tick();
   const r=h.render(colabProps);
   assert.equal(find(r.tree,'fieldset').props.disabled,true);
-  assert.equal(colabButton(r.tree,'Disconnect').props.disabled,true);
+  assert.equal(colabButton(r.tree,'Putuskan').props.disabled,true);
   assert.equal(confirmations,0);
-  colabButton(r.tree,"I've stopped it in Colab").props.onClick();await tick();
+  colabButton(r.tree,'Sudah kuhentikan di Colab').props.onClick();await tick();
   assert.equal(confirmations,1);
 });
 
@@ -291,9 +305,9 @@ test('Colab shows the connected account and allows switching without starting a 
   h.render(colabProps).runEffects();await tick();
   const r=h.render(colabProps);
   assert.ok(content(r.tree).includes('free@example.com'));
-  assert.ok(content(r.tree).includes('0.00 compute units'));
-  assert.ok(content(r.tree).includes('1 active runtime'));
-  colabButton(r.tree,'Switch account').props.onClick();await tick();
+  assert.ok(content(r.tree).includes('0.00 unit komputasi'));
+  assert.ok(content(r.tree).includes('1 runtime aktif'));
+  colabButton(r.tree,'Ganti akun').props.onClick();await tick();
   assert.equal(switches,1);
 });
 
@@ -305,15 +319,15 @@ test('unsupported Colab installations offer notebook downloads without Google si
   });
   h.render(colabProps).runEffects();await tick();
   const r=h.render(colabProps);
-  assert.equal(colabButton(r.tree,'Sign in with Google'),null);
-  colabButton(r.tree,'Download notebook').props.onClick();await tick();
-  colabButton(h.render(colabProps).tree,'Download source bundle').props.onClick();await tick();
+  assert.equal(colabButton(r.tree,'Masuk dengan Google'),null);
+  colabButton(r.tree,'Unduh notebook').props.onClick();await tick();
+  colabButton(h.render(colabProps).tree,'Unduh paket sumber').props.onClick();await tick();
   assert.deepEqual(downloads,['notebook','source']);
 });
 
 test('Locate Anything selection reaches preview, batch, and ensemble mode',async()=>{
   const previews=[],batches=[];
-  const h=harness('components/modals/AutoLabelModal.tsx',{
+  const h=harness('pages/AutoLabelPage.tsx',{
     runAutoLabelPreview:async payload=>{previews.push(payload);return {detections:[],count:0};},
     startAutoLabelBatch:async payload=>{batches.push(payload);return {status:'started'};},
   });
@@ -325,22 +339,22 @@ test('Locate Anything selection reaches preview, batch, and ensemble mode',async
   checkbox.props.onChange({target:{checked:true}});
   h.render(props).runEffects();await tick();
   r=h.render(props);
-  match(r.tree,n=>n.type==='button' && content(n).includes('Run Test Preview')).props.onClick();
+  match(r.tree,n=>isBtn(n) && content(n).includes('Jalankan pratinjau')).props.onClick();
   await tick();
   assert.equal(previews[0].enable_locate_anything,true);
   assert.equal(previews[0].pipeline_mode,'ensemble_fusion_sam2_masks');
   // Disable the incumbent detector cards through their actual click handlers.
-  for (const title of ['Grounding DINO 1.5 Pro','YOLO & Custom Weights Ensemble']) {
+  for (const title of ['Grounding DINO','YOLO']) {
     const node=match(h.render(props).tree,n=>n.type==='div' && n.props.onClick && content(n).includes(title));
     node.props.onClick();
     h.render(props).runEffects();await tick();
   }
   h.render(props).runEffects();await tick();
   r=h.render(props);
-  match(r.tree,n=>n.type==='button' && content(n).includes('Run Test Preview')).props.onClick();
+  match(r.tree,n=>isBtn(n) && content(n).includes('Jalankan pratinjau')).props.onClick();
   await tick();
   assert.equal(previews.at(-1).pipeline_mode,'locate_anything_sam2_masks');
-  match(h.render(props).tree,n=>n.type==='button' && content(n).includes('Start Batch Auto-Labeling')).props.onClick();
+  match(h.render(props).tree,n=>isBtn(n) && content(n).includes('Mulai auto-label batch')).props.onClick();
   await tick();
   assert.equal(batches[0].enable_locate_anything,true);
   assert.equal(batches[0].enable_yolo,false);
@@ -350,16 +364,16 @@ test('Locate Anything selection reaches preview, batch, and ensemble mode',async
 
 const autoLabelProps={isOpen:true,onClose(){},onStartBatch(){},
   health:{dataset_dir:'/dataset',classes:['car']},images,totalImages:2};
-const previewButton=tree=>match(tree,n=>n.type==='button' && content(n).includes('Run Test Preview'));
-const batchButton=tree=>match(tree,n=>n.type==='button' &&
-  /Start Batch Auto-Labeling|Waiting for models|Models unavailable/.test(content(n)));
+const previewButton=tree=>match(tree,n=>isBtn(n) && content(n).includes('Jalankan pratinjau'));
+const batchButton=tree=>match(tree,n=>isBtn(n) &&
+  /Mulai auto-label batch|Menunggu model|Model tidak tersedia/.test(content(n)));
 
 test('model downloads show live status and block preview and batch until ready',async()=>{
   let snapshot={...readyModels,models:{...readyModels.models,
     grounding_dino:{name:'Grounding DINO',state:'preparing',error:null},
     sam2:{name:'SAM 2',state:'queued',error:null}}};
   let previews=0,batches=0;
-  const h=harness('components/modals/AutoLabelModal.tsx',{
+  const h=harness('pages/AutoLabelPage.tsx',{
     prepareAutoLabelModels:async()=>snapshot,
     fetchModelPreparationStatus:async()=>snapshot,
     runAutoLabelPreview:async()=>{previews++;return {detections:[]};},
@@ -367,8 +381,8 @@ test('model downloads show live status and block preview and batch until ready',
   });
   h.render(autoLabelProps).runEffects();await tick();
   let r=h.render(autoLabelProps);
-  assert.ok(content(r.tree).includes('Grounding DINO: Downloading / loading'));
-  assert.ok(content(r.tree).includes('SAM 2: Waiting'));
+  assert.ok(content(r.tree).includes('Grounding DINO: Mengunduh / memuat'));
+  assert.ok(content(r.tree).includes('SAM 2: Menunggu'));
   assert.equal(previewButton(r.tree).props.disabled,true);
   assert.equal(batchButton(r.tree).props.disabled,true);
   await previewButton(r.tree).props.onClick();await batchButton(r.tree).props.onClick();
@@ -378,7 +392,7 @@ test('model downloads show live status and block preview and batch until ready',
   snapshot=readyModels;
   await [...h.intervals.values()][0]();
   r=h.render(autoLabelProps);
-  assert.ok(content(r.tree).includes('Models ready for Auto Labeling'));
+  assert.ok(content(r.tree).includes('Model siap untuk auto-label'));
   assert.equal(previewButton(r.tree).props.disabled,false);
   assert.equal(batchButton(r.tree).props.disabled,false);
   await batchButton(r.tree).props.onClick();assert.equal(batches,1);
@@ -388,14 +402,14 @@ test('model download failures explain recovery and retry unlocks labeling',async
   let attempts=0;
   const failed={...readyModels,models:{...readyModels.models,
     grounding_dino:{name:'Grounding DINO',state:'error',error:'Connection interrupted'}}};
-  const h=harness('components/modals/AutoLabelModal.tsx',{
+  const h=harness('pages/AutoLabelPage.tsx',{
     prepareAutoLabelModels:async()=>++attempts===1?failed:readyModels,
   });
   h.render(autoLabelProps).runEffects();await tick();
   let r=h.render(autoLabelProps);
   assert.ok(content(r.tree).includes('Connection interrupted'));
   assert.equal(batchButton(r.tree).props.disabled,true);
-  colabButton(r.tree,'Retry model preparation').props.onClick();
+  colabButton(r.tree,'Coba siapkan ulang').props.onClick();
   h.render(autoLabelProps).runEffects();await tick();
   r=h.render(autoLabelProps);
   assert.equal(attempts,2);
@@ -405,7 +419,7 @@ test('model download failures explain recovery and retry unlocks labeling',async
 
 test('a stale preparation response cannot unlock a newly selected model',async()=>{
   const first=deferred(),second=deferred();const calls=[];
-  const h=harness('components/modals/AutoLabelModal.tsx',{
+  const h=harness('pages/AutoLabelPage.tsx',{
     prepareAutoLabelModels:options=>{calls.push(options);return calls.length===1?first.promise:second.promise;},
   });
   h.render(autoLabelProps).runEffects();
@@ -424,38 +438,38 @@ test('a stale preparation response cannot unlock a newly selected model',async()
 });
 
 test('cloud labeling stays available without local model downloads',async()=>{
-  const h=harness('components/modals/AutoLabelModal.tsx',{
+  const h=harness('pages/AutoLabelPage.tsx',{
     prepareAutoLabelModels:async()=>({backend:'cloud',models:{}}),
   });
   h.render(autoLabelProps).runEffects();await tick();
   const r=h.render(autoLabelProps);
-  assert.ok(content(r.tree).includes('No local model downloads are needed'));
+  assert.ok(content(r.tree).includes('Tidak perlu mengunduh model lokal'));
   assert.equal(previewButton(r.tree).props.disabled,false);
   assert.equal(batchButton(r.tree).props.disabled,false);
 });
 
 test('a failed preparation request shows a retry instead of waiting forever',async()=>{
-  const h=harness('components/modals/AutoLabelModal.tsx',{
+  const h=harness('pages/AutoLabelPage.tsx',{
     prepareAutoLabelModels:async()=>{throw Error('API unavailable');},
   });
   h.render(autoLabelProps).runEffects();await tick();
   const r=h.render(autoLabelProps);
-  assert.ok(content(r.tree).includes('Cannot prepare models: Error: API unavailable'));
-  assert.ok(colabButton(r.tree,'Retry model preparation'));
+  assert.ok(content(r.tree).includes('Model tidak bisa disiapkan: Error: API unavailable'));
+  assert.ok(colabButton(r.tree,'Coba siapkan ulang'));
   assert.equal(batchButton(r.tree).props.disabled,true);
   assert.equal(h.intervals.size,0);
 });
 
 test('labeling requires an object detector even when verifier and masks are ready',async()=>{
-  const h=harness('components/modals/AutoLabelModal.tsx');
+  const h=harness('pages/AutoLabelPage.tsx');
   h.render(autoLabelProps).runEffects();await tick();
   const tree=h.render(autoLabelProps).tree;
-  for(const title of ['Grounding DINO 1.5 Pro','YOLO & Custom Weights Ensemble']) {
+  for(const title of ['Grounding DINO','YOLO']) {
     const node=match(tree,n=>n.type==='div' && n.props.onClick && content(n).includes(title));
     node.props.onClick();
   }
   const r=h.render(autoLabelProps);r.runEffects();
-  assert.ok(content(r.tree).includes('Select an object detector'));
+  assert.ok(content(r.tree).includes('Pilih detektor objek'));
   assert.equal(previewButton(r.tree).props.disabled,true);
   assert.equal(batchButton(r.tree).props.disabled,true);
   assert.equal(h.intervals.size,0);
@@ -465,7 +479,7 @@ const classNameInput=(tree,id)=>match(tree,n=>n.type==='input' && n.props.id===`
 
 test('class names are editable and renamed classes reach preview and batch',async()=>{
   const previews=[],batches=[];
-  const h=harness('components/modals/AutoLabelModal.tsx',{
+  const h=harness('pages/AutoLabelPage.tsx',{
     runAutoLabelPreview:async payload=>{previews.push(payload);return {detections:[]};},
     startAutoLabelBatch:async payload=>{batches.push(payload);return {status:'started'};},
   });
@@ -484,11 +498,11 @@ test('class names are editable and renamed classes reach preview and batch',asyn
 });
 
 test('renaming a class preserves its custom detection prompt',()=>{
-  const h=harness('components/modals/AutoLabelModal.tsx');
+  const h=harness('pages/AutoLabelPage.tsx');
   let r=h.render(autoLabelProps);
   const input=classNameInput(r.tree,'01');
   assert.ok(input,'Class names must be editable');
-  match(r.tree,n=>n.type==='button' && n.props.title==='Edit prompt text').props.onClick();
+  match(r.tree,n=>isBtn(n) && n.props.title==='Edit prompt text').props.onClick();
   r=h.render(autoLabelProps);
   find(r.tree,'textarea').props.onChange({target:{value:'a red octagonal stop sign beside the road'}});
   r=h.render(autoLabelProps);
@@ -498,18 +512,18 @@ test('renaming a class preserves its custom detection prompt',()=>{
 });
 
 test('new classes focus the name field and keep distinct identities after deletion',()=>{
-  const h=harness('components/modals/AutoLabelModal.tsx');
+  const h=harness('pages/AutoLabelPage.tsx');
   let r=h.render(autoLabelProps);
-  match(r.tree,n=>n.type==='button' && content(n).includes('Add Class Prompt')).props.onClick();
+  match(r.tree,n=>isBtn(n) && content(n).includes('Tambah kelas')).props.onClick();
   r=h.render(autoLabelProps);
   const added=classNameInput(r.tree,'02');
   assert.ok(added,'New classes need an editable name field');
   assert.equal(added.props.autoFocus,true);
   added.props.onChange({target:{value:'Helmet'}});
   r=h.render(autoLabelProps);
-  match(r.tree,n=>n.type==='button' && n.props['aria-label']==='Remove class Car').props.onClick();
+  match(r.tree,n=>isBtn(n) && n.props['aria-label']==='Remove class Car').props.onClick();
   r=h.render(autoLabelProps);
-  match(r.tree,n=>n.type==='button' && content(n).includes('Add Class Prompt')).props.onClick();
+  match(r.tree,n=>isBtn(n) && content(n).includes('Tambah kelas')).props.onClick();
   r=h.render(autoLabelProps);
   assert.equal(classNameInput(r.tree,'02').props.value,'Helmet');
   assert.ok(classNameInput(r.tree,'03'));
@@ -517,7 +531,7 @@ test('new classes focus the name field and keep distinct identities after deleti
 
 test('blank class names block labeling and surrounding whitespace is trimmed',async()=>{
   let previews=0,batches=0;
-  const h=harness('components/modals/AutoLabelModal.tsx',{
+  const h=harness('pages/AutoLabelPage.tsx',{
     runAutoLabelPreview:async()=>{previews++;return {detections:[]};},
     startAutoLabelBatch:async()=>{batches++;return {status:'started'};},
   });
@@ -538,4 +552,38 @@ test('blank class names block labeling and surrounding whitespace is trimmed',as
   r=h.render(autoLabelProps);
   assert.equal(classNameInput(r.tree,'01').props.value,'Pedestrian');
   assert.equal(batchButton(r.tree).props.disabled,false);
+});
+
+test('the R-key detection layers a flipped pass only when +Flip is on',async()=>{
+  const calls=[];
+  const h=setup({detectYolo:async(...args)=>{calls.push(args);return {boxes:[]};}});
+  await tick();let canvas=find(h.render().tree,'AnnotationCanvas');
+  await canvas.props.onRunYoloDetect();
+  assert.equal(calls.at(-1)[4],undefined);
+  canvas.props.onChangeFlipDetect(true);
+  canvas=find(h.render().tree,'AnnotationCanvas');
+  assert.equal(canvas.props.flipDetect,true);
+  await canvas.props.onRunYoloDetect();
+  assert.deepEqual([...calls.at(-1)[4]],['original','flip']);
+});
+
+test('the Auto-Label flip pass reaches preview and batch payloads',async()=>{
+  const previews=[],batches=[];
+  const h=harness('pages/AutoLabelPage.tsx',{
+    runAutoLabelPreview:async payload=>{previews.push(payload);return {detections:[],count:0};},
+    startAutoLabelBatch:async payload=>{batches.push(payload);return {status:'started'};},
+  });
+  const props={isOpen:true,onClose(){},onStartBatch(){},health:{dataset_dir:'/dataset',classes:['car']},images,totalImages:2};
+  h.render(props).runEffects();await tick();h.render(props).runEffects();await tick();
+  let r=h.render(props);
+  const flip=match(r.tree,n=>n.type==='input' && n.props.id==='yolo-flip-pass');
+  assert.equal(flip.props.checked,false);
+  flip.props.onChange({target:{checked:true}});
+  h.render(props).runEffects();await tick();
+  match(h.render(props).tree,n=>isBtn(n) && content(n).includes('Jalankan pratinjau')).props.onClick();
+  await tick();
+  assert.deepEqual([...previews.at(-1).yolo_views],['original','flip']);
+  match(h.render(props).tree,n=>isBtn(n) && content(n).includes('Mulai auto-label batch')).props.onClick();
+  await tick();
+  assert.deepEqual([...batches.at(-1).yolo_views],['original','flip']);
 });

@@ -10,7 +10,7 @@ GPU worker. Review, manual editing, canonical annotations, class IDs, dataset fi
 and exports stay on your computer. Only selected image bytes and inference options
 are sent to the worker; image paths and existing annotations are not uploaded.
 
-The worker runs VisionLab's YOLO, Grounding DINO, Florence-2, Locate Anything 3B, and SAM 2
+The worker runs Anotara's YOLO, Grounding DINO, Florence-2, Locate Anything 3B, and SAM 2
 pipeline. It implements a VisionLab-specific API, not a chat/completions API.
 For the new detector, see [Locate Anything setup](locate-anything.md) and update
 the worker before enabling it in the studio.

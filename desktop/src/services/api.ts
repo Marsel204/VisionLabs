@@ -147,8 +147,9 @@ export async function fetchAllImages(): Promise<{ images: ImageMeta[]; total: nu
 }
 
 
-export function getImageUrl(filename: string): string {
-  return `${BASE_URL}/api/image/${encodeURIComponent(filename)}?token=${encodeURIComponent(sessionToken)}`;
+export function getImageUrl(filename: string, enhance: string = 'none'): string {
+  const filter = enhance === 'none' ? '' : `&enhance=${encodeURIComponent(enhance)}`;
+  return `${BASE_URL}/api/image/${encodeURIComponent(filename)}?token=${encodeURIComponent(sessionToken)}${filter}`;
 }
 
 export async function fetchAnnotations(filename: string, datasetId?: string): Promise<{ boxes: BoundingBox[]; revision: number }> {
@@ -167,10 +168,13 @@ export async function saveAnnotations(filename: string, boxes: BoundingBox[], ex
   return res.json();
 }
 
-export async function detectYolo(filename: string, confThreshold: number = 0.25, models?: string[], datasetId?: string): Promise<{ boxes: BoundingBox[]; width: number; height: number }> {
+export async function detectYolo(filename: string, confThreshold: number = 0.25, models?: string[], datasetId?: string, views?: string[]): Promise<{ boxes: BoundingBox[]; width: number; height: number }> {
   const payload: Record<string, any> = { image_name: filename, conf_threshold: confThreshold, dataset_id: datasetId };
   if (models && models.length > 0) {
     payload.models = models;
+  }
+  if (views && views.length > 0) {
+    payload.views = views;
   }
   const res = await apiFetch(`${BASE_URL}/api/detect/yolo`, {
     method: 'POST',
@@ -178,6 +182,15 @@ export async function detectYolo(filename: string, confThreshold: number = 0.25,
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`YOLO detection failed: ${res.statusText}`);
+  return res.json();
+}
+
+export async function runAudit(filename: string, boxes: BoundingBox[], datasetId?: string, views?: string[], tiled: boolean = true): Promise<import('../types').AuditReport> {
+  const res = await apiFetch(`${BASE_URL}/api/audit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image_name: filename, boxes, dataset_id: datasetId, tiled, views }),
+  });
   return res.json();
 }
 
@@ -213,6 +226,7 @@ export async function runAutoLabelPreview(payload: {
   enable_florence2_verifier?: boolean;
   enable_yolo?: boolean;
   yolo_models?: string[];
+  yolo_views?: string[];
 }): Promise<any> {
   const res = await apiFetch(`${BASE_URL}/api/autolabel/preview`, {
     method: 'POST',
@@ -237,6 +251,7 @@ export async function startAutoLabelBatch(payload: {
   enable_florence2_verifier?: boolean;
   enable_yolo?: boolean;
   yolo_models?: string[];
+  yolo_views?: string[];
 }): Promise<{ status: string; total: number; classes: string[] }> {
   const res = await apiFetch(`${BASE_URL}/api/autolabel/batch`, {
     method: 'POST',
@@ -293,8 +308,11 @@ export async function fetchAutoLabelStatus(): Promise<import('../types').AutoLab
   return res.json();
 }
 
+export type ExportFormat = 'yolo' | 'coco' | 'voc' | 'cvat';
+
 export async function exportDataset(payload: {
-  format: 'yolo' | 'coco';
+  format: ExportFormat;
+  only_reviewed?: boolean;
   train_ratio?: number;
   val_ratio?: number;
   test_ratio?: number;
@@ -309,7 +327,16 @@ export async function exportDataset(payload: {
   return res.json();
 }
 
-export async function fetchActiveLearningQueue(limit: number = 20): Promise<{ queue: any[]; count: number }> {
+export interface ReviewQueueItem {
+  filename: string;
+  path: string;
+  difficulty: number;
+  status: string;
+  width: number;
+  height: number;
+}
+
+export async function fetchActiveLearningQueue(limit: number = 20): Promise<{ queue: ReviewQueueItem[]; count: number }> {
   const res = await apiFetch(`${BASE_URL}/api/active-learning/queue?limit=${limit}`);
   if (!res.ok) throw new Error(`Failed to fetch active learning queue: ${res.statusText}`);
   return res.json();

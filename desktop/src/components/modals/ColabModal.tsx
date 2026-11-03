@@ -54,7 +54,7 @@ export const ColabModal: React.FC<Props> = ({ isOpen, onClose, health, onComplet
         const next = await fetchColabStatus();
         if (active && ticket === generation.current) { setError(''); accept(next); }
       } catch {
-        if (active) setError('Cannot reach VisionLab. Check that the local app is running.');
+        if (active) setError('Anotara tidak bisa dihubungi. Pastikan aplikasi lokal sedang berjalan.');
       } finally { pollInProgress.current = false; }
     };
     void poll();
@@ -79,7 +79,7 @@ export const ColabModal: React.FC<Props> = ({ isOpen, onClose, health, onComplet
     ++generation.current;
     setPending(true); setError('');
     try { const next = await operation(); if (next) accept(next); }
-    catch (failure) { setError(failure instanceof Error ? failure.message : 'The operation failed. Try again.'); }
+    catch (failure) { setError(failure instanceof Error ? failure.message : 'Operasi gagal. Coba lagi.'); }
     finally { actionInProgress.current = false; setPending(false); }
   };
 
@@ -88,13 +88,14 @@ export const ColabModal: React.FC<Props> = ({ isOpen, onClose, health, onComplet
   const busy = pending || !!status?.busy;
   const needsCode = status?.auth_state === 'awaiting_code';
   const job = status?.job;
-  const button = 'min-h-10 px-4 rounded-lg border border-[#496171] text-sm font-medium text-[#e0e8f0] hover:bg-[#223047] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
-  const input = 'w-full min-h-10 rounded-lg border border-[#496171] bg-[#0a0e1a] px-3 text-sm text-[#e0e8f0] focus:outline-2 focus:outline-[#7dd3fc] disabled:opacity-60';
+  const button = 'min-h-10 px-4 rounded-lg border border-line-strong bg-white text-sm font-semibold text-ink-900 hover:bg-brand-50 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
+  const primary = 'min-h-10 px-4 rounded-lg border border-brand-600 bg-brand-600 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
+  const input = 'w-full min-h-10 rounded-lg border border-line-strong bg-white px-3 text-sm text-ink-900 focus:outline-none focus:border-brand-500 disabled:opacity-60';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/30 p-4 backdrop-blur-[2px]">
       <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="colab-title" tabIndex={-1}
-        className="w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-xl border border-[#496171] bg-[#0f1524] p-6 shadow-2xl text-[#e0e8f0]"
+        className="w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-2xl border border-line bg-white p-8 shadow-2xl text-ink-900"
         onKeyDown={event => {
           event.stopPropagation();
           if (event.key === 'Escape') onClose();
@@ -110,53 +111,53 @@ export const ColabModal: React.FC<Props> = ({ isOpen, onClose, health, onComplet
         }}>
         <div className="flex items-start justify-between gap-4 mb-5">
           <div>
-            <h2 id="colab-title" className="text-xl font-semibold">Annotate with Google Colab</h2>
-            <p className="text-sm text-[#bcc9d7] mt-2 leading-relaxed">Use your Colab compute units. VisionLab handles setup, image transfer, and saving the labels.</p>
+            <h2 id="colab-title" className="text-2xl font-bold tracking-tight">Anotasi dengan Google Colab</h2>
+            <p className="text-sm text-ink-500 mt-2 leading-relaxed">Pakai unit komputasi Colab-mu. Anotara mengurus persiapan, transfer gambar, dan penyimpanan label.</p>
           </div>
-          <button className="p-2 cursor-pointer rounded hover:bg-[#223047]" type="button" aria-label="Close Colab" onClick={onClose}>
+          <button className="p-2 cursor-pointer rounded-md text-ink-500 hover:bg-brand-50" type="button" aria-label="Tutup Colab" onClick={onClose}>
             <span className="material-symbols-outlined" aria-hidden="true">close</span>
           </button>
         </div>
 
-        {!status && <p role="status" className="text-sm text-[#bcc9d7]">Checking the connection…</p>}
+        {!status && <p role="status" className="text-sm text-ink-500">Memeriksa koneksi…</p>}
         {status && !status.supported && <div className="space-y-4">
-          <p className="text-sm leading-relaxed">Direct sign-in is available on Linux and macOS. Use the Colab notebook for this installation.</p>
+          <p className="text-sm leading-relaxed text-ink-700">Masuk langsung tersedia di Linux dan macOS. Untuk instalasi ini, pakai notebook Colab.</p>
           <div className="flex flex-wrap gap-3">
-            <button type="button" className={button} disabled={pending} onClick={() => { void perform(() => downloadColabFile('notebook')); }}>Download notebook</button>
-            <button type="button" className={button} disabled={pending} onClick={() => { void perform(() => downloadColabFile('source')); }}>Download source bundle</button>
+            <button type="button" className={button} disabled={pending} onClick={() => { void perform(() => downloadColabFile('notebook')); }}>Unduh notebook</button>
+            <button type="button" className={button} disabled={pending} onClick={() => { void perform(() => downloadColabFile('source')); }}>Unduh paket sumber</button>
           </div>
         </div>}
 
         {status?.supported && <>
-          <div className="flex items-center justify-between gap-3 py-3 border-y border-[#496171]">
-            <span className="text-sm font-medium">{connected ? 'Google account connected' : needsCode ? 'Finish Google sign-in' : status.auth_state === 'connecting' ? 'Preparing your connection…' : 'Connect your Google account'}</span>
+          <div className="flex items-center justify-between gap-3 py-3 border-y border-line">
+            <span className="text-sm font-medium">{connected ? 'Akun Google terhubung' : needsCode ? 'Selesaikan masuk Google' : status.auth_state === 'connecting' ? 'Menyiapkan koneksi…' : 'Hubungkan akun Google-mu'}</span>
             {connected ? <div className="flex flex-wrap justify-end gap-2">
-              <button type="button" className={button} disabled={busy || job?.cleanup_required} onClick={() => { setCode(''); void perform(switchColabAccount); }}>Switch account</button>
-              <button type="button" className={button} disabled={busy || job?.cleanup_required} onClick={() => { void perform(disconnectColab); }}>Disconnect</button>
+              <button type="button" className={button} disabled={busy || job?.cleanup_required} onClick={() => { setCode(''); void perform(switchColabAccount); }}>Ganti akun</button>
+              <button type="button" className={button} disabled={busy || job?.cleanup_required} onClick={() => { void perform(disconnectColab); }}>Putuskan</button>
             </div>
-              : !busy && <button type="button" className={`${button} bg-[#0e4d6e] hover:bg-[#145f84]`} onClick={() => { void perform(connectColab); }}>Sign in with Google</button>}
+              : !busy && <button type="button" className={primary} onClick={() => { void perform(connectColab); }}>Masuk dengan Google</button>}
           </div>
 
           {connected && <div className="mt-4 text-sm space-y-2">
             {status.account ? <>
-              <p className="break-all font-medium">{status.account.email || 'Account email unavailable'}</p>
-              <p className="text-[#bcc9d7]">{status.account.compute_units.toFixed(2)} compute units · {status.account.active_runtimes} active runtime{status.account.active_runtimes === 1 ? '' : 's'}</p>
-              {status.account.compute_units <= 0 && <p className="text-[#f8dca0] leading-relaxed">This account has no paid compute units. If your credits are on another Google account, choose Switch account.</p>}
-            </> : <p className="text-[#bcc9d7]">Check the connected account before starting a run.</p>}
-            <button type="button" className="text-[#7dd3fc] underline cursor-pointer disabled:opacity-50" disabled={busy}
-              onClick={() => { void perform(refreshColabAccount); }}>Refresh account details</button>
+              <p className="break-all font-medium">{status.account.email || 'Email akun tidak tersedia'}</p>
+              <p className="text-ink-500">{status.account.compute_units.toFixed(2)} unit komputasi · {status.account.active_runtimes} runtime aktif</p>
+              {status.account.compute_units <= 0 && <p className="text-warn-700 leading-relaxed">Akun ini tidak punya unit komputasi berbayar. Jika kreditmu ada di akun Google lain, pilih Ganti akun.</p>}
+            </> : <p className="text-ink-500">Periksa akun yang terhubung sebelum memulai.</p>}
+            <button type="button" className="text-brand-600 font-semibold cursor-pointer disabled:opacity-50" disabled={busy}
+              onClick={() => { void perform(refreshColabAccount); }}>Muat ulang detail akun</button>
           </div>}
 
           {needsCode && <form className="mt-5 space-y-3" onSubmit={event => {
             event.preventDefault(); const value = code; setCode('');
             void perform(() => authorizeColab(value));
           }}>
-            <p className="text-sm leading-relaxed text-[#bcc9d7]">Sign in in the browser, then paste the authorization code Google shows. This one-time step connects your account without sharing your password.</p>
-            {status.auth_url && <a href={status.auth_url} target="_blank" rel="noopener noreferrer" className="text-sm text-[#7dd3fc] underline">Open Google sign-in</a>}
-            <label className="block text-sm" htmlFor="colab-code">Google authorization code</label>
+            <p className="text-sm leading-relaxed text-ink-500">Masuk di browser, lalu tempel kode otorisasi dari Google. Langkah sekali ini menghubungkan akunmu tanpa membagikan kata sandi.</p>
+            {status.auth_url && <a href={status.auth_url} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-brand-600">Buka halaman masuk Google</a>}
+            <label className="block text-sm font-semibold" htmlFor="colab-code">Kode otorisasi Google</label>
             <input id="colab-code" className={input} type="password" autoComplete="off" spellCheck={false}
               maxLength={4096} value={code} onChange={event => setCode(event.target.value)} />
-            <button type="submit" className={button} disabled={!code.trim() || pending}>Finish connection</button>
+            <button type="submit" className={primary} disabled={!code.trim() || pending}>Selesaikan koneksi</button>
           </form>}
 
           {connected && <form className="mt-5 space-y-4" onSubmit={event => {
@@ -166,62 +167,62 @@ export const ColabModal: React.FC<Props> = ({ isOpen, onClose, health, onComplet
               pipeline, limit, gpu, confidence, only_unannotated: onlyUnannotated }));
           }}>
             <fieldset disabled={busy || !!job?.cleanup_required} className="space-y-4">
-              <label className="block text-sm space-y-2"><span>Classes to find</span>
+              <label className="block text-sm space-y-2"><span className="font-semibold">Kelas yang dicari</span>
                 <input className={input} required value={classes} onChange={event => setClasses(event.target.value)} />
-                <span className="block text-xs text-[#bcc9d7]">Separate class names with commas.</span>
+                <span className="block text-xs text-ink-500">Pisahkan nama kelas dengan koma.</span>
               </label>
               <div className="grid grid-cols-2 gap-4">
-                <label className="block text-sm space-y-2"><span>Images this run</span>
+                <label className="block text-sm space-y-2"><span className="font-semibold">Gambar per run</span>
                   <input className={input} type="number" required min={1} max={100} value={limit} onChange={event => setLimit(Number(event.target.value))} />
                 </label>
-                <label className="block text-sm space-y-2"><span>Output</span>
+                <label className="block text-sm space-y-2"><span className="font-semibold">Hasil</span>
                   <select className={input} value={pipeline} onChange={event => setPipeline(event.target.value)}>
-                    <option value="dino-masks">Boxes and masks</option><option value="dino-boxes">Boxes only</option>
-                    <option value="yolo-boxes">YOLO boxes</option><option value="yolo-masks">YOLO boxes and masks</option>
-                    <option value="locate-boxes">Locate Anything 3B boxes</option>
-                    <option value="locate-masks">Locate Anything 3B boxes and masks</option>
+                    <option value="dino-masks">Kotak dan mask</option><option value="dino-boxes">Kotak saja</option>
+                    <option value="yolo-boxes">Kotak YOLO</option><option value="yolo-masks">Kotak dan mask YOLO</option>
+                    <option value="locate-boxes">Kotak Locate Anything 3B</option>
+                    <option value="locate-masks">Kotak dan mask Locate Anything 3B</option>
                   </select>
                 </label>
               </div>
               <details className="text-sm">
-                <summary className="cursor-pointer text-[#7dd3fc] min-h-8">More options</summary>
+                <summary className="cursor-pointer font-semibold text-brand-600 min-h-8">Opsi lainnya</summary>
                 <div className="grid grid-cols-2 gap-4 mt-2 mb-4">
                   <label className="block space-y-2"><span>Colab GPU</span>
                     <select className={input} value={gpu} onChange={event => setGpu(event.target.value)}>
                       {(status.supported_gpus || ['T4', 'L4']).map(name => <option key={name} value={name}>{name}</option>)}
                     </select>
                   </label>
-                  <label className="block space-y-2"><span>Minimum confidence</span>
+                  <label className="block space-y-2"><span>Confidence minimum</span>
                     <input className={input} type="number" required min={0} max={1} step={0.05} value={confidence} onChange={event => setConfidence(Number(event.target.value))} />
                   </label>
                 </div>
-                <p className="text-xs leading-relaxed text-[#bcc9d7] mb-4">GPU access depends on your Colab account and current availability, even with compute units.</p>
-                <label className="flex items-center gap-3"><input type="checkbox" checked={onlyUnannotated} onChange={event => setOnlyUnannotated(event.target.checked)} />Skip images that already have labels</label>
+                <p className="text-xs leading-relaxed text-ink-500 mb-4">Akses GPU tergantung akun Colab-mu dan ketersediaan saat ini, meski punya unit komputasi.</p>
+                <label className="flex items-center gap-3"><input type="checkbox" className="accent-brand-600" checked={onlyUnannotated} onChange={event => setOnlyUnannotated(event.target.checked)} />Lewati gambar yang sudah punya label</label>
               </details>
-              <p className="text-xs leading-relaxed text-[#bcc9d7]">Runs on the next matching images in this dataset. Starting uses your Colab compute units. VisionLab releases the GPU when the job finishes.</p>
-              <button type="submit" disabled={!health || !classes.trim()} className={`${button} bg-[#0e4d6e] hover:bg-[#145f84] w-full`}>Start annotation</button>
+              <p className="text-xs leading-relaxed text-ink-500">Berjalan pada gambar berikutnya yang cocok di dataset ini. Memulai memakai unit komputasi Colab-mu. Anotara melepas GPU saat job selesai.</p>
+              <button type="submit" disabled={!health || !classes.trim()} className={`${primary} w-full`}>Mulai anotasi</button>
             </fieldset>
           </form>}
 
-          {job && <div role="status" aria-live="polite" className="mt-5 border-t border-[#496171] pt-4 space-y-3 text-sm">
+          {job && <div role="status" aria-live="polite" className="mt-5 border-t border-line pt-4 space-y-3 text-sm">
             <p>{job.stage}</p>
-            {status.busy && job.state === 'running' && <progress className="w-full h-2 accent-[#7dd3fc]" max={job.total || 1} value={job.processed || undefined} aria-label="Images processed" />}
-            {job.total !== undefined && <p className="text-[#bcc9d7]">{job.saved || 0} saved · {job.failed || 0} failed · {job.conflicts || 0} changed images preserved</p>}
+            {status.busy && job.state === 'running' && <progress className="w-full h-2 accent-brand-600" max={job.total || 1} value={job.processed || undefined} aria-label="Gambar diproses" />}
+            {job.total !== undefined && <p className="text-ink-500">{job.saved || 0} tersimpan · {job.failed || 0} gagal · {job.conflicts || 0} gambar yang berubah dipertahankan</p>}
           </div>}
 
-          {job?.cleanup_required && <div role="alert" className="mt-4 space-y-3 text-sm text-[#f8dca0]">
-            <p>The GPU may still be running. Release it here or stop the runtime in Google Colab.</p>
+          {job?.cleanup_required && <div role="alert" className="mt-4 space-y-3 rounded-lg bg-warn-50 p-4 text-sm text-warn-700">
+            <p>GPU mungkin masih berjalan. Lepaskan di sini atau hentikan runtime di Google Colab.</p>
             <div className="flex flex-wrap gap-3">
-              <button type="button" className={button} disabled={busy} onClick={() => { void perform(stopColab); }}>Release GPU</button>
-              <button type="button" className={button} disabled={busy} onClick={() => { void perform(connectColab); }}>Reconnect</button>
-              <a className="text-[#7dd3fc] underline self-center" href="https://colab.research.google.com/" target="_blank" rel="noopener noreferrer">Open Colab</a>
+              <button type="button" className={button} disabled={busy} onClick={() => { void perform(stopColab); }}>Lepaskan GPU</button>
+              <button type="button" className={button} disabled={busy} onClick={() => { void perform(connectColab); }}>Hubungkan ulang</button>
+              <a className="font-semibold text-brand-600 self-center" href="https://colab.research.google.com/" target="_blank" rel="noopener noreferrer">Buka Colab</a>
             </div>
-            <button type="button" className="text-[#7dd3fc] underline cursor-pointer disabled:opacity-50" disabled={busy}
-              onClick={() => { void perform(acknowledgeColabRelease); }}>I've stopped it in Colab</button>
+            <button type="button" className="font-semibold text-brand-600 cursor-pointer disabled:opacity-50" disabled={busy}
+              onClick={() => { void perform(acknowledgeColabRelease); }}>Sudah kuhentikan di Colab</button>
           </div>}
-          {status.busy && <button type="button" className={`${button} mt-4`} disabled={pending} onClick={() => { void perform(stopColab); }}>{job?.state === 'running' ? 'Stop annotation' : connected ? 'Cancel account check' : 'Cancel sign-in'}</button>}
+          {status.busy && <button type="button" className={`${button} mt-4`} disabled={pending} onClick={() => { void perform(stopColab); }}>{job?.state === 'running' ? 'Hentikan anotasi' : connected ? 'Batalkan cek akun' : 'Batalkan masuk'}</button>}
         </>}
-        {(error || status?.error) && <p role="alert" className="mt-4 text-sm text-[#ffb4b4] leading-relaxed">{error || status?.error}</p>}
+        {(error || status?.error) && <p role="alert" className="mt-4 text-sm text-danger-600 leading-relaxed">{error || status?.error}</p>}
       </div>
     </div>
   );

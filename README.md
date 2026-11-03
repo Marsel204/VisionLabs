@@ -1,8 +1,8 @@
-# VisionLab
+# Anotara
 
 > Universal AI-assisted visual annotation studio and computer vision dataset curation platform.
 
-VisionLab is a general-purpose, high-performance visual annotation platform designed to annotate **anything**—from everyday objects, people, and retail products to specialized industrial, biomedical, robotic, and agricultural imagery. Built with a modern desktop interface (Tauri v2 + React 19) backed by a local GPU-accelerated Python AI engine (YOLO11, SAM 2, Grounding DINO, and Florence-2 VLM).
+Anotara is a general-purpose, high-performance visual annotation platform designed to annotate **anything**—from everyday objects, people, and retail products to specialized industrial, biomedical, robotic, and agricultural imagery. Built with a modern desktop interface (Tauri v2 + React 19) backed by a local GPU-accelerated Python AI engine (YOLO11, SAM 2, Grounding DINO, and Florence-2 VLM).
 
 ---
 
@@ -10,7 +10,7 @@ VisionLab is a general-purpose, high-performance visual annotation platform desi
 
 **Already have Colab credits?** Click **Colab → Sign in with Google** in the studio
 on Linux/macOS, paste Google's one-time code, then click **Start annotation**.
-VisionLab handles GPU setup, transfer, labeling, saving, and runtime release.
+Anotara handles GPU setup, transfer, labeling, saving, and runtime release.
 The first run defaults to three images. See the [Colab guide](docs/colab-annotation.md)
 for details and the Windows notebook fallback.
 
@@ -19,7 +19,7 @@ automatic annotation on a remote GPU with a lightweight local studio/backend.
 Review, saving, and exports remain local. Cloud deployment requires a separate
 provider account and configuration.
 
-VisionLab features a **zero-configuration, self-bootstrapping single launcher** that works out-of-the-box on both Windows and Linux without manual environment setup:
+Anotara features a **zero-configuration, self-bootstrapping single launcher** that works out-of-the-box on both Windows and Linux without manual environment setup:
 
 | Platform | One-Click Launch | Run from Terminal | Force Standalone Qt GUI |
 | :--- | :--- | :--- | :--- |
@@ -47,11 +47,30 @@ VisionLab features a **zero-configuration, self-bootstrapping single launcher** 
 
 ---
 
+## Interface
+
+The desktop studio uses the Anotara design: a light workspace with a sidebar and one page per
+step of the dataset workflow. The interface copy is in Indonesian.
+
+| Page | What it does |
+| :--- | :--- |
+| **Ringkasan** (overview) | Review progress, the next image to check, quick links to auto-label and export. |
+| **Proyek** (projects) | The active dataset folder plus recently opened folders. |
+| **Impor dataset** | Open a folder, drag in JPG/PNG/WEBP images, manage object classes. |
+| **Auto-label** | Pick models, edit class prompts, preview on samples, run a batch and watch its progress. |
+| **Review anotasi** | The annotation canvas, annotation list, audit (`Cek kualitas`), and image approval. |
+| **Kualitas dataset** | Approved vs. pending counts, hardest images, and label distribution. |
+| **Ekspor** | YOLO, COCO, Pascal VOC or CVAT export, optionally only approved images. |
+
+Saving or approving an image marks it as reviewed ("Disetujui"). Auto-labeled images stay
+"perlu review" until a person approves them. Press `?` for the keyboard shortcuts; studio keys
+only act on the review page. The screenshots below show the earlier dark interface.
+
 ## Studio Tour & Visual Walkthrough
 
 ### 1. Main Studio Workspace
 
-![VisionLab Main Studio](docs/images/01_studio_overview.png)
+![Anotara Main Studio](docs/images/01_studio_overview.png)
 
 The **Main Studio Workspace** provides an ergonomic, dark-themed environment optimized for high-throughput visual annotation:
 
@@ -127,7 +146,7 @@ The **Export Hub** (`E`) allows exporting annotated datasets into standard compu
 
 ![Dataset Import Hub](docs/images/04_dataset_hub_import.png)
 
-The **Import Hub** (`I`) allows loading new image collections and third-party datasets into VisionLab:
+The **Import Hub** (`I`) allows loading new image collections and third-party datasets into Anotara:
 
 - **Active Dataset Directory**:
   - Browse and select any local folder containing images or datasets.
@@ -144,7 +163,7 @@ The **Import Hub** (`I`) allows loading new image collections and third-party da
 
 ![Keyboard Shortcuts Reference](docs/images/05_keyboard_shortcuts.png)
 
-VisionLab is built for maximum annotation speed with extensive hotkeys (`?` or `F1`):
+Anotara is built for maximum annotation speed with extensive hotkeys (`?` or `F1`):
 
 | Category | Shortcut | Action |
 | :--- | :--- | :--- |
@@ -185,7 +204,7 @@ VisionLab is built for maximum annotation speed with extensive hotkeys (`?` or `
 
 ### One-Click Launch (Unified Launcher)
 
-VisionLab provides a single polyglot launcher ([`run.bat`](file:///home/marsel/Work/ImageAnnotator/run.bat) / [`run.sh`](file:///home/marsel/Work/ImageAnnotator/run.sh)) that runs natively on both Windows and Linux.
+Anotara provides a single polyglot launcher ([`run.bat`](file:///home/marsel/Work/ImageAnnotator/run.bat) / [`run.sh`](file:///home/marsel/Work/ImageAnnotator/run.sh)) that runs natively on both Windows and Linux.
 
 #### On Windows
 - **One-Click**: Simply double-click `run.bat` in Windows File Explorer.
@@ -316,7 +335,7 @@ Output: `dist/VisionLab-Setup.exe`.
 
 ## Core AI Engines & Programmatic API
 
-VisionLab also provides standalone Python services that can be imported directly into Python workflows:
+Anotara also provides standalone Python services that can be imported directly into Python workflows:
 
 ### Label Fusion Engine
 ```python
@@ -353,3 +372,30 @@ exporter.export(documents, destination_dir)
 ## License
 
 Apache 2.0 / MIT. Developed by Marsel204 for [VisionLabs](https://github.com/Marsel204/VisionLabs).
+
+## Annotation Audit (missed objects and wrong boxes)
+
+On the review page, press **Q** (or click **Cek kualitas** in the review toolbar) to compare the current image's boxes
+against a low-threshold, tiled YOLO pass. Findings are drawn as dashed overlays and listed by
+severity: possibly missed objects (relaxed thresholds when hidden behind another box),
+misaligned boxes, wrong classes, duplicates, boxes with no detector support, and implausible
+shapes. `J`/`K` step through findings, `Y` applies the suggested fix and `N` dismisses it.
+Occlusion is estimated from box overlap (the box lower in the frame is nearer), and
+**Tandai … kotak tertutup** sets the `Occluded` attribute on boxes that look at least 25% hidden.
+The same engine is available as `POST /api/audit`.
+
+The audit layers extra detector passes over the original image and merges them (pick the depth
+in the panel): **Cepat** (original only), **Teliti** (default; adds a horizontally flipped
+pass) or **Maksimal** (also sharpened and contrast-enhanced passes). On held-out traffic data a
+flipped pass finds somewhat more real objects than just lowering the confidence threshold
+(the margin varied between samples), whereas sharpen/contrast passes add recall about as cheaply
+as a lower threshold would, with more review work, so they are opt-in. The **F** key / image dropdown is a separate display-only filter.
+
+### Flip pass for detection and auto-label
+
+The **+Flip** checkbox next to **Deteksi AI** (R key) and the flip-pass option on the
+Auto-label page (preview and batch) run YOLO on a mirrored copy as well and merge the results;
+boxes from the original pass are never changed, only unseen ones are added. It takes about
+twice as long and produces more boxes to review, and it is local-backend only (the cloud and Colab
+workers ignore it, so the UI disables it there). On held-out traffic data it raised motorcycle recall
+by roughly 3 to 7 points over the original pass alone.

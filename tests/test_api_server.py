@@ -325,3 +325,131 @@ def test_autolabel_preview_with_florence_and_yolo_ensemble():
     data = res.json()
     assert "image_name" in data
     assert "detections" in data
+
+
+def _api_box(box_id, class_name, left, top, right, bottom, width=100, height=80):
+    return {
+        "id": box_id, "class_name": class_name, "class_id": 0, "confidence": 1.0,
+        "x": left * width, "y": top * height,
+        "width": (right - left) * width, "height": (bottom - top) * height,
+        "norm_left": left, "norm_top": top, "norm_right": right, "norm_bottom": bottom,
+        "source": "human",
+    }
+
+
+def test_audit_reports_unlabelled_detection_with_pixel_box():
+    res = client.post(
+        "/api/audit", json={"image_name": "sample.jpg", "boxes": [], "views": ["original"]}
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["summary"] == {"possibly_missed": 1}
+    finding = data["findings"][0]
+    assert finding["class_name"] == "car"
+    assert finding["box"]["x"] == 10.0 and finding["box"]["width"] == 20.0
+
+
+def test_audit_accepts_editor_boxes_and_reports_occlusion():
+    boxes = [_api_box("a", "car", 0.1, 0.1, 0.3, 0.3)]
+    res = client.post(
+        "/api/audit", json={"image_name": "sample.jpg", "boxes": boxes, "views": ["original"]}
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["findings"] == []
+    assert data["occlusion"] == [
+        {"annotation_id": "a", "fraction": 0.0, "occluded": False, "occluder_ids": []}
+    ]
+
+
+def test_audit_rejects_unknown_image():
+    res = client.post("/api/audit", json={"image_name": "missing.jpg", "boxes": []})
+    assert res.status_code >= 400
+
+
+def test_image_enhance_preset_serves_filtered_image_of_same_size():
+    plain = client.get("/api/image/sample.jpg")
+    sharp = client.get("/api/image/sample.jpg?enhance=sharpen")
+    assert plain.status_code == sharp.status_code == 200
+    assert sharp.headers["content-type"] == "image/jpeg"
+    import io
+    assert Image.open(io.BytesIO(sharp.content)).size == (100, 80)
+    assert client.get("/api/image/sample.jpg?enhance=none").content == plain.content
+
+
+def test_image_enhance_rejects_unknown_preset():
+    assert client.get("/api/image/sample.jpg?enhance=cartoon").status_code == 422
+
+
+def test_audit_layers_a_flipped_pass_by_default_and_rejects_unknown_views():
+    # The stub detector returns the same pixel box for every image, so the flipped pass
+    # reports it mirrored: one finding per view, at mirrored positions.
+    res = client.post("/api/audit", json={"image_name": "sample.jpg", "boxes": []})
+    assert res.status_code == 200, res.text
+    xs = sorted(f["box"]["x"] for f in res.json()["findings"])
+    assert xs == [10.0, 70.0]
+    bad = client.post("/api/audit", json={"image_name": "sample.jpg", "boxes": [], "views": ["sepia"]})
+    assert bad.status_code >= 400
+
+
+def test_detect_yolo_layers_flipped_pass_only_when_requested():
+    plain = client.post("/api/detect/yolo", json={"image_name": "sample.jpg"}).json()
+    assert [b["x"] for b in plain["boxes"]] == [10.0]
+    layered = client.post(
+        "/api/detect/yolo", json={"image_name": "sample.jpg", "views": ["original", "flip"]}
+    ).json()
+    assert sorted(b["x"] for b in layered["boxes"]) == [10.0, 70.0]
+
+
+def test_detect_yolo_accepts_a_single_flipped_view():
+    response = TestClient(
+        app, headers={"X-VisionLab-Token": server.SESSION_TOKEN},
+        raise_server_exceptions=False,
+    ).post("/api/detect/yolo", json={"image_name": "sample.jpg", "views": ["flip"]})
+    assert response.status_code == 200, response.text
+    assert [box["x"] for box in response.json()["boxes"]] == [70.0]
+
+
+def test_layered_views_are_validated_and_refused_on_cloud(monkeypatch):
+    bad = client.post("/api/detect/yolo", json={"image_name": "sample.jpg", "views": ["sepia"]})
+    assert bad.status_code == 422
+    monkeypatch.setattr(type(server.AUTOLABEL_ENGINE), "uses_cloud", property(lambda self: True))
+    cloud = client.post(
+        "/api/detect/yolo", json={"image_name": "sample.jpg", "views": ["original", "flip"]}
+    )
+    assert cloud.status_code == 400
+    batch = client.post("/api/autolabel/batch", json={"classes": ["car"], "yolo_views": ["original", "flip"]})
+    assert batch.status_code == 400
+
+
+def _export_fixture(tmp_path):
+    Image.new("RGB", (100, 80)).save(tmp_path / "second.jpg")
+    server.DATASET_INDEX.scan(tmp_path)
+    box = _api_box("a", "car", 0.1, 0.1, 0.3, 0.3)
+    box["class_id"] = client.get("/api/health").json()["classes"].index("car")
+    saved = client.post("/api/annotations/sample.jpg", json={"image_name": "sample.jpg", "boxes": [box]})
+    assert saved.status_code == 200, saved.text
+
+
+@pytest.mark.parametrize("fmt, artifact", [("voc", "sample.xml"), ("cvat", "annotations.xml")])
+def test_export_exposes_voc_and_cvat_and_filters_to_approved_images(tmp_path, fmt, artifact):
+    _export_fixture(tmp_path)
+    out = tmp_path / "exports" / fmt
+    res = client.post("/api/dataset/export", json={
+        "format": fmt, "only_reviewed": True, "output_dir": str(out),
+        "train_ratio": 0.8, "val_ratio": 0.1, "test_ratio": 0.1,
+    })
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["format"] == fmt
+    assert data["total_documents"] == 1
+    assert data["skipped_unreviewed"] == 1
+    assert (out / artifact).is_file()
+
+
+def test_export_rejects_unknown_format_and_explains_empty_approved_set(tmp_path):
+    assert client.post("/api/dataset/export", json={"format": "tfrecord"}).status_code == 422
+    res = client.post("/api/dataset/export", json={"format": "yolo", "only_reviewed": True,
+                                                   "output_dir": str(tmp_path / "out")})
+    assert res.status_code == 400
+    assert "approved" in res.json()["detail"]
