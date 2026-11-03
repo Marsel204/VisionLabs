@@ -21,10 +21,11 @@ export function rememberDataset(directory: string): void {
   }
 }
 
-export function forgetDataset(directory: string): void {
+export function forgetDataset(directory: string): boolean {
   try {
     localStorage.setItem(KEY, JSON.stringify(recentDatasets().filter(item => item !== directory)));
+    return true;
   } catch {
-    /* See rememberDataset. */
+    return false;
   }
 }

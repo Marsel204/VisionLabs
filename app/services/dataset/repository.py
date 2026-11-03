@@ -138,15 +138,14 @@ class AnnotationRepository:
                 path = self.root / name
                 if path.is_file():
                     try:
-                        names = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get(
-                            "names", []
-                        )
+                        config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                        names = config.get("names", [])
                         if isinstance(names, dict):
                             keys = sorted(names, key=lambda k: int(k))
                             if [int(key) for key in keys] != list(range(len(keys))):
                                 raise RepositoryError("class IDs must be contiguous from zero")
                             names = [names[key] for key in keys]
-                        if names:
+                        if "names" in config:
                             result = [str(n).strip() for n in names]
                             if any(not n for n in result) or len(
                                 {n.casefold() for n in result}

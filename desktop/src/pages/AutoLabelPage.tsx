@@ -931,7 +931,7 @@ export const AutoLabelPage: React.FC<Props> = ({
             <div className="rounded-md bg-[#eef1f6] px-3 py-1.5 text-xs text-ink-700">Ringkasan pipeline</div>
             <h2 className="mt-5 text-[22px] font-bold leading-tight text-ink-900">Jelas sebelum berjalan.</h2>
             <p className="mt-3 text-sm leading-relaxed text-ink-500">
-              Batch hanya memproses gambar yang belum direview atau belum diberi label otomatis.
+              Batch hanya memproses gambar yang belum punya kotak sama sekali. Gambar yang sudah direview, diberi label otomatis, atau diimpor dari COCO dilewati.
             </p>
             <div className="mt-5">
               {[
@@ -976,8 +976,8 @@ export const AutoLabelPage: React.FC<Props> = ({
 
             <button
               onClick={handleLaunchBatch}
-              disabled={!modelsReady || !hasValidClasses || isRescoring || isBatchRunning || totalImages === 0}
-              title={!modelsReady ? modelStatusText : undefined}
+              disabled={!modelsReady || !hasValidClasses || isRescoring || isBatchRunning || batchTarget === 0}
+              title={!modelsReady ? modelStatusText : batchTarget === 0 ? 'Semua gambar sudah punya label atau sudah direview' : undefined}
               type="button"
               className="mt-5 flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-brand-600 text-sm font-semibold text-white hover:bg-brand-700 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -986,6 +986,7 @@ export const AutoLabelPage: React.FC<Props> = ({
                 {isBatchRunning
                   ? `Memproses (${batchProgress?.current || 0}/${batchProgress?.total || batchTarget})…`
                   : !modelsReady ? (preparationFailed ? 'Model tidak tersedia' : 'Menunggu model…')
+                  : batchTarget === 0 ? 'Tidak ada gambar tanpa label'
                   : `Mulai auto-label batch (${formatCount(batchTarget)} gambar)`}
               </span>
             </button>

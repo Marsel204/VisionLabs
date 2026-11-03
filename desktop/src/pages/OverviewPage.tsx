@@ -5,6 +5,7 @@ import { Badge, Button, Card, Icon, PageHeader, ProgressBar, StatRow } from '../
 import { formatCount } from '../format';
 import { ImageWithBoxes } from '../components/ImageWithBoxes';
 import { firstPendingIndex, summarizeDataset } from './datasetSummary';
+import { useAnnotationSources } from './useAnnotationSources';
 
 interface Props {
   images: ImageMeta[];
@@ -31,6 +32,9 @@ export const OverviewPage: React.FC<Props> = ({ images, health, datasetName, onN
     return () => { active = false; };
   }, [nextKey, next?.dataset_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const { sources } = useAnnotationSources(summary.total > 0 && summary.annotations === 0 ? health?.dataset_dir : undefined);
+  const importable = sources || [];
+  const importableBoxes = importable.reduce((sum, source) => sum + source.annotations, 0);
   const classCount = health?.classes?.length || 0;
   const status = summary.total === 0 ? null : summary.pending === 0
     ? <Badge tone="ok">Siap ekspor</Badge> : <Badge tone="warn">Perlu review</Badge>;
@@ -42,6 +46,22 @@ export const OverviewPage: React.FC<Props> = ({ images, health, datasetName, onN
         subtitle="Lanjutkan anotasi, periksa hasilnya, lalu bawa dataset ke eksperimenmu."
         actions={<Button icon="add" onClick={() => onNavigate('import')}>Impor dataset</Button>}
       />
+
+      {summary.total > 0 && summary.annotations === 0 && importable.length > 0 && (
+        <Card tone="soft" className="mb-6 flex flex-wrap items-center gap-4 p-5">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white text-brand-600">
+            <Icon name="download" className="text-[20px]" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold text-ink-900">Anotasi dataset ini belum dimuat</div>
+            <div className="mt-0.5 text-xs text-ink-500">
+              Ditemukan {importable.length} file anotasi COCO dengan {formatCount(importableBoxes)} kotak.
+              Impor agar kotaknya muncul di review, audit, dan ekspor.
+            </div>
+          </div>
+          <Button onClick={() => onNavigate('import')}>Impor anotasi</Button>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_332px]">
         <section>
@@ -63,7 +83,7 @@ export const OverviewPage: React.FC<Props> = ({ images, health, datasetName, onN
                 height={next.height}
                 boxes={preview}
                 className="max-h-[360px] overflow-hidden"
-                imgClassName="max-h-[360px] object-cover"
+                imgClassName="max-h-[360px]"
               />
               <span className="absolute left-3 top-3 flex items-center gap-1.5 rounded-md bg-white/95 px-2 py-1 text-[11px] font-medium text-ink-700 shadow-sm">
                 <Icon name="crop_free" className="text-[14px]" /> Bounding box

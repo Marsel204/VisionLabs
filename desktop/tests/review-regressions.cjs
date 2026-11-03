@@ -19,7 +19,7 @@ function loadPure(file) {
   const code=ts.transpileModule(fs.readFileSync(path.join(root,file),'utf8'), {
     compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022},
   }).outputText;
-  const module={exports:{}};vm.runInNewContext(code,{module,exports:module.exports});return module.exports;
+  const module={exports:{}};vm.runInNewContext(code,{module,exports:module.exports,crypto:webcrypto});return module.exports;
 }
 function harness(file, supplied = {}) {
   const state=[], refs=[], effects=[], callbacks=[]; let cursor=0, pending=[];
@@ -43,11 +43,20 @@ function harness(file, supplied = {}) {
     prepareAutoLabelModels:async()=>readyModels,
     fetchModelPreparationStatus:async()=>readyModels,
     getImageUrl:n=>n,...supplied};
-  const code=ts.transpileModule(fs.readFileSync(path.join(root,file),'utf8'), {
-    compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022},
-  }).outputText;
-  const exports={}; let nextTimer=0; const intervals=new Map();
-  vm.runInNewContext(code, {exports, require(name) {
+  let nextTimer=0; const intervals=new Map();
+  const globals={window:{location:{search:''},addEventListener(){},removeEventListener(){}}, URLSearchParams,console,
+    document:{activeElement:null},
+    crypto:webcrypto,setTimeout:()=>++nextTimer,clearTimeout(){},
+    setInterval(fn){const id=++nextTimer;intervals.set(id,fn);return id;},
+    clearInterval(id){intervals.delete(id);}};
+  // Compile a source file with the same hooks, API stubs and globals as the component under test.
+  const load=source=>{
+    const compiled=ts.transpileModule(fs.readFileSync(path.join(root,source),'utf8'), {
+      compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022},
+    }).outputText;
+    const out={};vm.runInNewContext(compiled,{...globals,exports:out,require:requireFn});return out;
+  };
+  function requireFn(name) {
     if (name==='react') return {...React,default:React};
     if (name==='react/jsx-runtime') return {jsx,jsxs:jsx};
     if (name.endsWith('/api')) return api;
@@ -55,14 +64,14 @@ function harness(file, supplied = {}) {
     // Pure helpers run for real; components stay as named placeholders.
     if (name.endsWith('/datasetSummary')) return loadPure('pages/datasetSummary.ts');
     if (name.endsWith('/format')) return loadPure('format.ts');
-    if (name.endsWith('/recentDatasets')) return {rememberDataset(){},recentDatasets:()=>[],forgetDataset(){}};
+    if (name.endsWith('/review')) return loadPure('review.ts');
+    if (name.endsWith('/useAnnotationSources')) return load('pages/useAnnotationSources.ts');
+    if (name.endsWith('/recentDatasets')) return {rememberDataset(){},
+      recentDatasets:supplied.recentDatasets || (()=>[]),forgetDataset:supplied.forgetDataset || (()=>true)};
     if (name.endsWith('/types')) return {getClassColor:()=>({stroke:'blue',text:'blue',bg:'black'})};
     return new Proxy({}, {get:(_t,key)=>String(key)});
-  }, window:{location:{search:''},addEventListener(){},removeEventListener(){}}, URLSearchParams,console,
-  document:{activeElement:null},
-  crypto:webcrypto,setTimeout:()=>++nextTimer,clearTimeout(){},
-  setInterval(fn){const id=++nextTimer;intervals.set(id,fn);return id;},
-  clearInterval(id){intervals.delete(id);} });
+  }
+  const exports=load(file);
   const component=exports.default || exports[Object.keys(exports)[0]];
   return {state,refs,intervals,render(props) {cursor=0;pending=[];const tree=component(props);
     return {tree,runEffects(){pending.slice().forEach(fn=>fn());}};}};
@@ -586,4 +595,278 @@ test('the Auto-Label flip pass reaches preview and batch payloads',async()=>{
   match(h.render(props).tree,n=>isBtn(n) && content(n).includes('Mulai auto-label batch')).props.onClick();
   await tick();
   assert.deepEqual([...batches.at(-1).yolo_views],['original','flip']);
+});
+
+// ---- review state: editing is not approving -------------------------------------------------
+const approveButton=tree=>match(tree,n=>isBtn(n) && content(n).includes('Setujui gambar'));
+
+test('editing a box saves it as unreviewed instead of approving the image',async()=>{
+  const statuses=[];
+  const h=setup({saveAnnotations:async(_n,b,rev,_d,status)=>{statuses.push(status);return {boxes:b,revision:(rev||0)+1,review_status:status};}});
+  await tick();find(h.render().tree,'AnnotationCanvas').props.onAddBox(boxed('x'));await tick();
+  assert.deepEqual(statuses,['unreviewed']);
+  assert.equal(h.state[1][0].status,'unreviewed');
+});
+
+test('an explicit approval saves as reviewed and edits keep an approved image approved',async()=>{
+  const statuses=[],first=deferred();
+  const h=setup({saveAnnotations:async(_n,b,rev,_d,status)=>{statuses.push(status);if(statuses.length===1)await first.promise;
+    return {boxes:b,revision:(rev||0)+1,review_status:status};}});
+  await tick();
+  const approving=approveButton(h.render().tree).props.onClick();
+  // An edit made while the approval is still being written must not undo it.
+  find(h.render().tree,'AnnotationCanvas').props.onAddBox(boxed('later'));
+  first.resolve();await approving;await tick();await tick();
+  assert.deepEqual(statuses,['reviewed','reviewed']);
+  assert.equal(h.state[1][0].status,'reviewed');
+});
+
+test('detection adds new boxes and keeps the existing labels',async()=>{
+  const saved=[];
+  const existing={...boxed('human'),class_name:'dog',class_id:0};
+  const duplicate={...boxed('server-1'),class_name:'dog',class_id:0};
+  const fresh={...boxed('server-2'),class_name:'cat',norm_left:.6,norm_top:.5,norm_right:.8,norm_bottom:.8,confidence:.7,source:'yolo'};
+  const h=setup({fetchAnnotations:async()=>({boxes:[existing],revision:0}),
+    detectYolo:async()=>({boxes:[duplicate,fresh]}),
+    saveAnnotations:async(_n,b,rev,_d,status)=>{saved.push({b,status});return {boxes:b,revision:(rev||0)+1,review_status:status};}});
+  await tick();
+  await find(h.render().tree,'AnnotationCanvas').props.onRunYoloDetect();
+  assert.equal(saved.length,1);
+  assert.equal(saved[0].b.length,2);
+  assert.equal(saved[0].b[0].id,'human','the human label is untouched and first');
+  assert.notEqual(saved[0].b[1].id,'server-2','new boxes get fresh ids so they cannot collide');
+  assert.equal(saved[0].b[1].class_name,'cat');
+  assert.equal(saved[0].status,'unreviewed','detecting does not approve the image');
+});
+
+test('a detection with nothing new does not rewrite the labels',async()=>{
+  let writes=0;
+  const existing={...boxed('human'),class_name:'dog',class_id:0};
+  const h=setup({fetchAnnotations:async()=>({boxes:[existing],revision:0}),
+    detectYolo:async()=>({boxes:[{...existing,id:'server-1'}]}),
+    saveAnnotations:async(_n,b,rev)=>{writes++;return {boxes:b,revision:(rev||0)+1};}});
+  await tick();
+  await find(h.render().tree,'AnnotationCanvas').props.onRunYoloDetect();
+  assert.equal(writes,0);
+});
+
+// ---- importing existing annotations ----------------------------------------------------------
+const cocoSources=[
+  {path:'/d/train/annotations.json',relative:'train/annotations.json',image_dir:'train/images',images:3,found_images:3,annotations:30,categories:['car','motorcycle']},
+  {path:'/d/val/annotations.json',relative:'val/annotations.json',image_dir:'val/images',images:2,found_images:1,annotations:20,categories:['car']}];
+const importProps=(over={})=>({datasetKey:'/d',onImported(){},onOpenReview(){},...over});
+
+function importHarness(statusRef,started,extra={}) {
+  return harness('pages/AnnotationImportCard.tsx',{
+    fetchAnnotationSources:async()=>({directory:'/d',sources:cocoSources,skipped:[]}),
+    fetchAnnotationImportStatus:async()=>statusRef.value,
+    startAnnotationImport:async payload=>{started.push(payload);
+      statusRef.value={running:true,completed:false,error:null,job_id:'j1',dataset_id:'/d',total:5,processed:2,imported:2,boxes:20};
+      return {status:'started',job_id:'j1',files:2};},
+    ...extra});
+}
+const startButton=tree=>match(tree,n=>isBtn(n) && /^Impor \d/.test(content(n)));
+
+test('the import card lists the COCO files, warns about missing images, and imports every file at once',async()=>{
+  const started=[],status={value:{running:false,completed:false,error:null}};
+  const h=importHarness(status,started),props=importProps();
+  h.render(props).runEffects();await tick();await tick();
+  const r=h.render(props);const text=content(r.tree);
+  assert.ok(text.includes('train/annotations.json')&&text.includes('val/annotations.json'));
+  assert.ok(text.includes('1 gambar tidak ditemukan di val/images/'));
+  const button=startButton(r.tree);
+  assert.equal(content(button),'Impor 50 kotak dari 5 gambar');
+  await button.props.onClick();
+  assert.deepEqual(JSON.parse(JSON.stringify(started)),[{sources:['/d/train/annotations.json','/d/val/annotations.json'],overwrite:false,dataset_id:'/d'}]);
+});
+
+test('overwriting existing labels is off by default and sent only when ticked',async()=>{
+  const started=[],status={value:{running:false,completed:false,error:null}};
+  const h=importHarness(status,started),props=importProps();
+  h.render(props).runEffects();await tick();await tick();
+  const box=match(h.render(props).tree,n=>n.type==='input' && n.props.type==='checkbox');
+  assert.equal(box.props.checked,false);
+  box.props.onChange({target:{checked:true}});
+  await startButton(h.render(props).tree).props.onClick();
+  assert.equal(started[0].overwrite,true);
+});
+
+test('progress is shown while importing and the lists refresh exactly once when it finishes',async()=>{
+  const started=[],status={value:{running:false,completed:false,error:null}},refreshed=[];
+  const h=importHarness(status,started),props=importProps({onImported:()=>refreshed.push(1)});
+  h.render(props).runEffects();await tick();await tick();
+  await startButton(h.render(props).tree).props.onClick();await tick();await tick();
+  h.render(props).runEffects();await tick();
+  let text=content(h.render(props).tree);
+  assert.ok(text.includes('Mengimpor… 40%'),'2 of 5 images is 40%');
+  assert.equal(refreshed.length,0);
+  status.value={running:false,completed:true,error:null,job_id:'j1',dataset_id:'/d',total:5,processed:5,imported:4,boxes:48,missing_images:1,classes_added:['tuktuk']};
+  await [...h.intervals.values()][0]();await tick();
+  h.render(props).runEffects();await tick();
+  text=content(h.render(props).tree);
+  assert.ok(text.includes('Impor selesai'));
+  assert.ok(text.includes('1 gambar tidak ditemukan di disk'));
+  assert.ok(text.includes('Kelas baru ditambahkan: tuktuk'));
+  assert.ok(text.includes('perlu review'),'imported images still need approval');
+  h.render(props).runEffects();await tick();h.render(props).runEffects();
+  assert.equal(refreshed.length,1);
+});
+
+test('a COCO file elsewhere can be imported by path, and start errors are shown',async()=>{
+  const started=[],status={value:{running:false,completed:false,error:null}};
+  const h=importHarness(status,started,{startAnnotationImport:async payload=>{started.push(payload);throw Error('422: Annotation file not found: /nope.json');}});
+  const props=importProps();h.render(props).runEffects();await tick();await tick();
+  match(h.render(props).tree,n=>n.type==='input' && n.props.id==='coco-path').props.onChange({target:{value:'  /nope.json '}});
+  await match(h.render(props).tree,n=>isBtn(n) && content(n)==='Impor file ini').props.onClick();await tick();await tick();
+  assert.deepEqual(JSON.parse(JSON.stringify(started[0].sources)),['/nope.json']);
+  assert.ok(content(h.render(props).tree).includes('Annotation file not found'));
+});
+
+test('the card says so when the folder has no COCO file',async()=>{
+  const h=harness('pages/AnnotationImportCard.tsx',{fetchAnnotationSources:async()=>({directory:'/d',sources:[],skipped:[]}),
+    fetchAnnotationImportStatus:async()=>({running:false,completed:false,error:null})});
+  const props=importProps();h.render(props).runEffects();await tick();await tick();
+  const r=h.render(props);
+  assert.ok(content(r.tree).includes('Tidak ada file anotasi COCO di folder ini'));
+  assert.equal(startButton(r.tree),null);
+});
+
+const projectProps={images:[],health:{dataset_dir:'/dataset',classes:[]},datasetName:'dataset',
+  onNavigate(){},onDatasetChanged(){},onCloseProject:async()=>{}};
+const removeProjectButton=(tree,name)=>match(tree,n=>isBtn(n) && n.props['aria-label']===`Hapus proyek ${name}`);
+const confirmProjectButton=tree=>match(tree,n=>isBtn(n) && content(n)==='Hapus proyek' && !n.props['aria-label']);
+
+test('project removal requires confirmation and cancel keeps every entry',()=>{
+  let forgotten=0,closed=0;
+  const h=harness('pages/ProjectsPage.tsx',{recentDatasets:()=>['/dataset','/older'],forgetDataset:()=>{forgotten++;return true;}});
+  const props={...projectProps,onCloseProject:async()=>{closed++;}};
+  removeProjectButton(h.render(props).tree,'dataset').props.onClick();
+  assert.ok(content(h.render(props).tree).includes('File gambar dan anotasi tetap tersimpan'));
+  match(h.render(props).tree,n=>isBtn(n) && content(n)==='Batal').props.onClick();
+  assert.ok(removeProjectButton(h.render(props).tree,'dataset'));
+  assert.equal(forgotten,0);assert.equal(closed,0);
+});
+
+test('removing a recent project keeps the active project open',async()=>{
+  let recent=['/dataset','/older'],closed=0;
+  const h=harness('pages/ProjectsPage.tsx',{recentDatasets:()=>recent,
+    forgetDataset:path=>{recent=recent.filter(item=>item!==path);return true;}});
+  const props={...projectProps,onCloseProject:async()=>{closed++;}};
+  removeProjectButton(h.render(props).tree,'older').props.onClick();
+  confirmProjectButton(h.render(props).tree).props.onClick();await tick();
+  assert.deepEqual(recent,['/dataset']);assert.equal(closed,0);
+  assert.equal(removeProjectButton(h.render(props).tree,'older'),null);
+});
+
+test('failed project close keeps its entry and lets the user retry',async()=>{
+  let forgotten=0;
+  const h=harness('pages/ProjectsPage.tsx',{recentDatasets:()=>['/dataset'],forgetDataset:()=>{forgotten++;return true;}});
+  const props={...projectProps,onCloseProject:async()=>{throw Error('Tunggu auto-label selesai');}};
+  removeProjectButton(h.render(props).tree,'dataset').props.onClick();
+  confirmProjectButton(h.render(props).tree).props.onClick();await tick();
+  assert.equal(forgotten,0);
+  assert.ok(content(h.render(props).tree).includes('Tunggu auto-label selesai'));
+  assert.equal(confirmProjectButton(h.render(props).tree).props.disabled,false);
+});
+
+test('removing the active project waits for saves and refreshes to an empty workspace',async()=>{
+  const save=deferred();let closed=false;
+  const h=setup({saveAnnotations:()=>save.promise,closeProject:async()=>{closed=true;},
+    fetchHealth:async()=>({dataset_dir:closed?'':'/dataset',classes:[]}),
+    fetchImages:async()=>({images:closed?[]:images,total:closed?0:2,directory:closed?'':'/dataset'})});
+  await tick();find(h.render().tree,'AnnotationCanvas').props.onAddBox(boxed('saved'));
+  find(h.render().tree,'Sidebar').props.onNavigate('projects');
+  const work=find(h.render().tree,'ProjectsPage').props.onCloseProject('/dataset');
+  await tick();assert.equal(closed,false);
+  save.resolve({revision:1,boxes:[boxed('saved')]});await work;await tick();
+  const projects=find(h.render().tree,'ProjectsPage');
+  assert.equal(closed,true);assert.equal(projects.props.health.dataset_dir,'');assert.equal(projects.props.images.length,0);
+});
+
+test('unsaved annotations block closing the active project',async()=>{
+  let closed=false;
+  const h=setup({saveAnnotations:async()=>{throw Error('disk full');},closeProject:async()=>{closed=true;}});
+  await tick();find(h.render().tree,'AnnotationCanvas').props.onAddBox(boxed('unsaved'));await tick();
+  find(h.render().tree,'Sidebar').props.onNavigate('projects');
+  await assert.rejects(find(h.render().tree,'ProjectsPage').props.onCloseProject('/dataset'),/belum tersimpan/);
+  assert.equal(closed,false);
+});
+
+const classProps={classes:['motorcycle','car','bus'],datasetId:'/dataset',onManage:async()=>({classes:[],backup:'.visionlab/class-backups/test'})};
+const classButton=(tree,label)=>match(tree,node=>isBtn(node) && node.props['aria-label']===label);
+const submitClasses=async tree=>{find(tree,'form').props.onSubmit({preventDefault(){}});await tick();};
+
+test('class rename requires confirmation, sends the registry snapshot and supports cancel',async()=>{
+  const changes=[];
+  const h=harness('pages/ClassManager.tsx');
+  const props={...classProps,onManage:async change=>{changes.push(change);return {classes:['motorbike','car','bus'],backup:'backup/test'};}};
+  classButton(h.render(props).tree,'Ubah nama kelas motorcycle').props.onClick();
+  assert.equal(changes.length,0);
+  match(h.render(props).tree,node=>isBtn(node) && content(node)==='Batal').props.onClick();
+  assert.equal(find(h.render(props).tree,'form'),null);
+  classButton(h.render(props).tree,'Ubah nama kelas motorcycle').props.onClick();
+  find(h.render(props).tree,'input').props.onChange({target:{value:'motorbike'}});
+  await submitClasses(h.render(props).tree);
+  assert.equal(changes[0].target,'motorbike');
+  assert.equal(changes[0].dataset_id,'/dataset');
+  assert.deepEqual([...changes[0].expected_classes],classProps.classes);
+  assert.ok(content(h.render(props).tree).includes('backup/test'));
+});
+
+test('deleting a class defaults to unused-only and requires explicit annotation deletion',async()=>{
+  const changes=[];
+  const h=harness('pages/ClassManager.tsx');
+  const props={...classProps,onManage:async change=>{changes.push(change);return {classes:[],backup:'backup/test'};}};
+  classButton(h.render(props).tree,'Hapus kelas motorcycle').props.onClick();
+  assert.equal(changes.length,0);
+  await submitClasses(h.render(props).tree);
+  assert.equal(changes[0].delete_annotations,false);
+  assert.equal(changes[0].target,undefined);
+  classButton(h.render(props).tree,'Hapus kelas motorcycle').props.onClick();
+  find(h.render(props).tree,'select').props.onChange({target:{value:'delete'}});
+  assert.ok(content(h.render(props).tree).includes('Semua box dan poligon kelas ini akan dihapus'));
+  await submitClasses(h.render(props).tree);
+  assert.equal(changes[1].delete_annotations,true);
+});
+
+test('class deletion can move annotations and errors remain recoverable',async()=>{
+  const changes=[];
+  const h=harness('pages/ClassManager.tsx');
+  const props={...classProps,onManage:async change=>{changes.push(change);throw Error('disk full');}};
+  classButton(h.render(props).tree,'Hapus kelas motorcycle').props.onClick();
+  find(h.render(props).tree,'select').props.onChange({target:{value:'move:car'}});
+  await submitClasses(h.render(props).tree);
+  assert.equal(changes[0].target,'car');
+  assert.equal(changes[0].delete_annotations,false);
+  assert.ok(content(h.render(props).tree).includes('disk full'));
+  assert.equal(match(h.render(props).tree,node=>isBtn(node) && node.props.type==='submit').props.disabled,false);
+});
+
+test('class rename disables empty and duplicate names',()=>{
+  const h=harness('pages/ClassManager.tsx');
+  classButton(h.render(classProps).tree,'Ubah nama kelas motorcycle').props.onClick();
+  for(const value of ['', 'CAR']) {
+    find(h.render(classProps).tree,'input').props.onChange({target:{value}});
+    assert.equal(match(h.render(classProps).tree,node=>isBtn(node) && node.props.type==='submit').props.disabled,true);
+  }
+});
+
+test('class management blocks failed annotation saves',async()=>{
+  let changed=false;
+  const h=setup({saveAnnotations:async()=>{throw Error('disk full');},changeDatasetClass:async()=>{changed=true;}});
+  await tick();find(h.render().tree,'AnnotationCanvas').props.onAddBox(boxed('unsaved'));await tick();
+  find(h.render().tree,'Sidebar').props.onNavigate('import');
+  await assert.rejects(find(h.render().tree,'ImportPage').props.onManageClasses({dataset_id:'/dataset'}),/belum tersimpan/);
+  assert.equal(changed,false);
+});
+
+test('class management waits for pending saves before migrating annotations',async()=>{
+  const save=deferred();let changed=false;
+  const h=setup({saveAnnotations:()=>save.promise,changeDatasetClass:async()=>{changed=true;return {classes:['cat'],backup:'backup/test'};}});
+  await tick();find(h.render().tree,'AnnotationCanvas').props.onAddBox(boxed('saved'));
+  find(h.render().tree,'Sidebar').props.onNavigate('import');
+  const work=find(h.render().tree,'ImportPage').props.onManageClasses({dataset_id:'/dataset'});
+  await tick();assert.equal(changed,false);
+  save.resolve({revision:1,boxes:[boxed('saved')]});await work;
+  assert.equal(changed,true);
 });

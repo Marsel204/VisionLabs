@@ -31,8 +31,9 @@ export const ImageWithBoxes: React.FC<Props> = ({
   const font = Math.max(10, Math.round(w / 70));
   return (
     <div className={`relative ${className}`}>
-      <img src={src} alt={alt} draggable={false} className={`block h-auto w-full ${imgClassName}`} />
-      <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
+      <svg role="img" aria-label={alt} className={`pointer-events-none block h-auto w-full ${imgClassName}`}
+        viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="xMidYMid meet">
+        <image href={src} width={w} height={h} />
         {boxes.map((box, index) => {
           const low = box.confidence != null && box.confidence < LOW_CONFIDENCE;
           const color = low ? LOW_CONFIDENCE_COLOR : getClassColor(box.class_name);

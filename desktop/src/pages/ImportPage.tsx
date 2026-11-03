@@ -9,10 +9,14 @@ import {
   searchDatasetDirectories,
   selectDatasetFolder,
   uploadDatasetImages,
+  type ClassChange,
+  type ClassChangeResult,
 } from '../services/api';
 import { Badge, Button, Card, Icon, Note, PageHeader } from '../components/ui';
 import { formatCount } from '../format';
 import { WorkflowSteps } from './WorkflowSteps';
+import { AnnotationImportCard } from './AnnotationImportCard';
+import { ClassManager } from './ClassManager';
 
 interface Props {
   images: ImageMeta[];
@@ -21,12 +25,15 @@ interface Props {
   onNavigate: (page: Page) => void;
   onDatasetChanged: () => void;
   onClassesChanged: (classes: string[]) => void;
+  /** Refresh image lists and the open image after annotations were imported. */
+  onAnnotationsImported: () => void;
+  onManageClasses: (change: ClassChange) => Promise<ClassChangeResult>;
 }
 
 const IMAGE_TYPES = /\.(jpe?g|png|webp)$/i;
 
 export const ImportPage: React.FC<Props> = ({
-  images, health, datasetName, onNavigate, onDatasetChanged, onClassesChanged,
+  images, health, datasetName, onNavigate, onDatasetChanged, onClassesChanged, onAnnotationsImported, onManageClasses,
 }) => {
   const [folder, setFolder] = useState(health?.dataset_dir || '');
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -88,6 +95,10 @@ export const ImportPage: React.FC<Props> = ({
   };
 
   const upload = (files: FileList | File[]) => {
+    if (!health?.dataset_dir) {
+      setMessage({ tone: 'error', text: 'Buka folder dataset dulu sebelum menambahkan gambar.' });
+      return;
+    }
     const accepted = Array.from(files).filter(file => IMAGE_TYPES.test(file.name));
     if (!accepted.length) {
       setMessage({ tone: 'error', text: 'Pilih file JPG, PNG, atau WEBP.' });
@@ -116,6 +127,7 @@ export const ImportPage: React.FC<Props> = ({
       <WorkflowSteps current="import" onNavigate={onNavigate} />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_352px]">
+        <div className="min-w-0">
         <Card className="p-6">
           <label htmlFor="dataset-folder" className="text-[13px] font-semibold text-ink-900">Folder dataset</label>
           <div className="relative mt-2 flex gap-2">
@@ -149,7 +161,7 @@ export const ImportPage: React.FC<Props> = ({
           </div>
           <div className="mt-3 flex gap-2">
             <Button size="sm" variant="ghost" icon="folder_open" disabled={busy} onClick={() => void browse()}>Pilih folder…</Button>
-            <Button size="sm" variant="ghost" icon="refresh" disabled={busy} onClick={() => void run(async () => {
+            <Button size="sm" variant="ghost" icon="refresh" disabled={busy || !health?.dataset_dir} onClick={() => void run(async () => {
               const result = await rescanDataset();
               return `Pindai ulang selesai: ${formatCount(result.indexed_count)} gambar.`;
             })}>Pindai ulang</Button>
@@ -173,7 +185,7 @@ export const ImportPage: React.FC<Props> = ({
               type="file"
               multiple
               accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
-              disabled={busy}
+              disabled={busy || !health?.dataset_dir}
               onChange={event => { if (event.target.files) upload(event.target.files); event.target.value = ''; }}
               className="hidden"
             />
@@ -197,6 +209,12 @@ export const ImportPage: React.FC<Props> = ({
             </p>
           )}
         </Card>
+          <AnnotationImportCard
+            datasetKey={health?.dataset_dir}
+            onImported={onAnnotationsImported}
+            onOpenReview={() => onNavigate('review')}
+          />
+        </div>
 
         <Card className="h-fit p-6">
           <h2 className="text-lg font-bold text-ink-900">Kelas objek</h2>
@@ -204,10 +222,8 @@ export const ImportPage: React.FC<Props> = ({
             {datasetName || 'Dataset aktif'}
           </div>
           <div className="mt-5 text-xs text-ink-500">Kelas terdaftar</div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {(health?.classes || []).map(name => <Badge key={name}>{name}</Badge>)}
-            {!health?.classes?.length && <span className="text-xs text-ink-400">Belum ada kelas.</span>}
-          </div>
+          <ClassManager key={health?.dataset_dir || ''} classes={health?.classes || []}
+            datasetId={health?.dataset_dir || ''} onManage={onManageClasses} />
           <div className="mt-3 flex gap-2">
             <input
               value={newClass}
@@ -217,7 +233,7 @@ export const ImportPage: React.FC<Props> = ({
               aria-label="Nama kelas baru"
               className="h-9 min-w-0 flex-1 rounded-lg border border-line-strong px-3 text-sm placeholder:text-ink-400 focus:border-brand-500 focus:outline-none"
             />
-            <Button size="sm" variant="secondary" disabled={!newClass.trim()} onClick={() => void addClass()}>Tambah</Button>
+            <Button size="sm" variant="secondary" disabled={!newClass.trim() || !health?.dataset_dir} onClick={() => void addClass()}>Tambah</Button>
           </div>
           <div className="mt-6 text-xs text-ink-500">Jenis anotasi</div>
           <div className="mt-1.5 text-[15px] font-semibold text-ink-900">Bounding box &amp; poligon</div>

@@ -82,6 +82,21 @@ export const AnnotationCanvas: React.FC<Props> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+
+  // Size the image and its overlay as one plane, using the space left by the toolbar/filmstrip.
+  // Constraining only the wrapper's height lets the image overflow while the SVG gets squashed.
+  useEffect(() => {
+    const viewport = containerRef.current;
+    if (!viewport) return;
+    const measure = () => {
+      setViewportSize({ width: viewport.clientWidth, height: viewport.clientHeight });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [image?.path, image?.image_id, image?.filename]);
 
   const [zoom, setZoom] = useState<number>(100);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -266,6 +281,7 @@ export const AnnotationCanvas: React.FC<Props> = ({
 
   // Labels and handles are drawn in image pixels, so scale them up for large images.
   const ui = Math.max(1, image.width / 900);
+  const fitScale = Math.min(1, viewportSize.width * .96 / image.width, viewportSize.height * .94 / image.height);
   const toolButton = (active: boolean) =>
     `flex h-8 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium transition-colors cursor-pointer ${
       active ? 'bg-brand-100 text-brand-600 ring-1 ring-brand-200' : 'text-ink-500 hover:bg-brand-50 hover:text-brand-600'
@@ -273,12 +289,12 @@ export const AnnotationCanvas: React.FC<Props> = ({
 
   return (
     <main
-      className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-line bg-white select-none"
+      className="flex min-h-[520px] min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-line bg-white select-none xl:min-h-0"
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
     >
       {/* Toolbar */}
-      <div className="flex h-12 shrink-0 items-center gap-1 border-b border-line px-3">
+      <div className="flex min-h-12 shrink-0 flex-wrap items-center gap-1 border-b border-line px-3 py-1">
         {TOOLS.map(tool => (
           <button
             key={tool.type}
@@ -295,7 +311,7 @@ export const AnnotationCanvas: React.FC<Props> = ({
         <span className="mx-1.5 h-6 w-px bg-line" />
         <span className="hidden min-w-0 truncate text-xs text-ink-500 2xl:inline">{readOnly ? 'Memuat anotasi…' : TOOL_HINTS[activeTool]}</span>
 
-        <div className="ml-auto flex shrink-0 items-center gap-2 whitespace-nowrap">
+        <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2 whitespace-nowrap">
           {onChangeEnhance && (
             <label
               title="Filter tampilan untuk frame yang sulit dilihat; label dan deteksi tidak berubah (F)"
@@ -304,7 +320,7 @@ export const AnnotationCanvas: React.FC<Props> = ({
               <Icon name="deblur" className="text-[16px]" />
               <select
                 value={enhance}
-                onChange={(e) => onChangeEnhance(e.target.value)}
+                onChange={(e) => { onChangeEnhance(e.target.value); e.currentTarget.blur(); }}
                 className="h-8 rounded-md border border-line-strong bg-white px-1.5 text-[11px] text-ink-700 cursor-pointer focus:outline-none focus:border-brand-500"
               >
                 {ENHANCE_PRESETS.map((preset) => (
@@ -368,16 +384,18 @@ export const AnnotationCanvas: React.FC<Props> = ({
       >
         <div
           style={{
+            width: image.width * fitScale,
+            height: image.height * fitScale,
             transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom / 100})`,
             transformOrigin: 'center center',
           }}
-          className="relative max-h-[94%] max-w-[96%] select-none transition-transform duration-75 ease-out"
+          className="relative shrink-0 select-none transition-transform duration-75 ease-out"
         >
           <img
             ref={imgRef}
             src={getImageUrl(image.path || image.image_id || image.filename, enhance)}
             alt={image.filename}
-            className="pointer-events-none block h-auto max-h-[calc(100vh-330px)] w-auto max-w-full object-contain"
+            className="pointer-events-none block h-full w-full"
             draggable={false}
           />
 
@@ -529,6 +547,7 @@ export const AnnotationCanvas: React.FC<Props> = ({
             <Icon name="opacity" className="text-[15px]" />
             <input type="range" min="10" max="100" value={labelOpacity}
               onChange={(e) => setLabelOpacity(Number(e.target.value))}
+              onMouseUp={(e) => e.currentTarget.blur()}
               className="w-16 accent-brand-600 cursor-pointer" />
           </label>
           <KeyHint k="B" label="Kotak" />

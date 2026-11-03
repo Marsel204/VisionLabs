@@ -15,11 +15,12 @@
         "title": "Anotara - AI Annotation Studio",
         "width": 1600,
         "height": 1000,
-        "minWidth": 1280,
-        "minHeight": 800,
+        "minWidth": 640,
+        "minHeight": 480,
         "center": true,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "dragDropEnabled": false
       }
     ],
     "security": {

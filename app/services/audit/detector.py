@@ -5,31 +5,16 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
+from app.services.annotation.class_names import normalize_class_name
 from app.services.annotation.domain import BoundingBox
 from app.services.audit.models import Prediction
 from app.services.preprocess import apply_view, restore_box, validate_views
 
-_CLASS_ALIASES: dict[str, frozenset[str]] = {
-    "car": frozenset({"car", "mobil", "sedan", "suv", "vehicle", "automobile"}),
-    "motorcycle": frozenset({"motorcycle", "motor", "bike", "motorbike", "scooter", "moped"}),
-    "bus": frozenset({"bus", "bis", "minibus", "angkot"}),
-    "truck": frozenset({"truck", "truk", "pickup"}),
-    "person": frozenset({"person", "pedestrian", "orang"}),
-}
 _EDGE_MARGIN = 2.0
 
 Tile = tuple[int, int, int, int]
 
 DEFAULT_VIEWS: tuple[str, ...] = ("original", "flip")
-
-
-def normalize_class_name(raw: str) -> str:
-    """Map detector-specific vehicle names to the canonical dataset class names."""
-    lowered = raw.lower().strip()
-    for canonical, aliases in _CLASS_ALIASES.items():
-        if lowered in aliases:
-            return canonical
-    return raw
 
 
 def tile_grid(width: int, height: int, tile_size: int, overlap: float) -> list[Tile]:

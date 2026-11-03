@@ -28,7 +28,7 @@ export const QualityPage: React.FC<Props> = ({ images, onNavigate, onOpenImage }
       })
       .catch(err => { if (active) setError(String(err)); });
     return () => { active = false; };
-  }, [images.length, summary.approved]);
+  }, [images.length]); // approvals change counts the page already derives from the image list
 
   const counts = Object.entries(stats?.class_counts || {}).sort((a, b) => b[1] - a[1]);
   const totalLabels = counts.reduce((sum, [, count]) => sum + count, 0);

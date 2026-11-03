@@ -10,6 +10,9 @@ import {
   runAudit,
   imageIdentity,
   registerDatasetClass,
+  closeProject,
+  changeDatasetClass,
+  type ClassChange,
   refreshColabAccount,
 } from './services/api';
 import { Sidebar } from './components/shell/Sidebar';
@@ -20,6 +23,7 @@ import { AuditPanel } from './components/studio/AuditPanel';
 import { Filmstrip } from './components/studio/Filmstrip';
 import { Badge, Button, Icon } from './components/ui';
 import { applyFinding, applyOcclusionFlags, auditViews, nextEnhancePreset, visibleFindings } from './audit';
+import { activatesFocusedControl, isTypingTarget, mergeDetections, statusAfterEdit, type ReviewStatus } from './review';
 import { AutoLabelPage } from './pages/AutoLabelPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { ProjectsPage } from './pages/ProjectsPage';
@@ -108,6 +112,7 @@ export const App: React.FC = () => {
   const draftsRef = useRef(new Map<string, BoundingBox[]>());
   const revisionsRef = useRef(new Map<string, number>());
   const writesRef = useRef(new Map<string, Promise<void>>());
+  const pendingStatusRef = useRef(new Map<string, ReviewStatus>());
   const refreshGeneration = useRef(0);
   const currentImage = images[currentImageIndex] || null;
   const currentImageKey = currentImage ? imageIdentity(currentImage) : '';
@@ -131,6 +136,8 @@ export const App: React.FC = () => {
   isDetectingRef.current = isDetecting;
   const isShortcutsOpenRef = useRef<boolean>(isShortcutsOpen);
   isShortcutsOpenRef.current = isShortcutsOpen;
+  const [classChangeBusy, setClassChangeBusy] = useState(false);
+  const classChangeBusyRef = useRef(false);
 
   const refreshImages = useCallback(async () => {
     const generation = ++refreshGeneration.current;
@@ -150,6 +157,19 @@ export const App: React.FC = () => {
   }, [showToast]);
 
   useEffect(() => { void refreshImages(); }, [refreshImages]);
+
+  // Dropping a file anywhere except the import drop zone would make the webview navigate to it.
+  useEffect(() => {
+    const keepInApp = (event: DragEvent) => {
+      if (event.dataTransfer?.types?.includes('Files')) event.preventDefault();
+    };
+    window.addEventListener('dragover', keepInApp);
+    window.addEventListener('drop', keepInApp);
+    return () => {
+      window.removeEventListener('dragover', keepInApp);
+      window.removeEventListener('drop', keepInApp);
+    };
+  }, []);
   useEffect(() => { if (health?.dataset_dir) rememberDataset(health.dataset_dir); }, [health?.dataset_dir]);
 
   useEffect(() => {
@@ -179,11 +199,16 @@ export const App: React.FC = () => {
     return () => { active = false; };
   }, [currentImageKey, currentImage?.dataset_id, annotationReload, showToast]);
 
-  const persistBoxes = useCallback(async (updatedBoxes: BoundingBox[], target?: ImageMeta) => {
+  const persistBoxes = useCallback(async (updatedBoxes: BoundingBox[], target?: ImageMeta, status?: ReviewStatus) => {
     const image = target || currentImageRef.current;
     if (!image) return;
     const key = imageIdentity(image);
     if (!target && loadedImageKeyRef.current !== key) return;
+    // Editing keeps the image's review state; only an explicit approval changes it. Writes for
+    // one image are queued, so a pending approval must not be undone by an edit made right after.
+    const known = imagesRef.current.find(item => imageIdentity(item) === key) || image;
+    const saveStatus = status ?? pendingStatusRef.current.get(key) ?? statusAfterEdit(known.status);
+    pendingStatusRef.current.set(key, saveStatus);
     draftsRef.current.set(key, updatedBoxes);
     if (currentImageRef.current && imageIdentity(currentImageRef.current) === key) {
       boxesRef.current = updatedBoxes;
@@ -192,12 +217,12 @@ export const App: React.FC = () => {
     const previous = writesRef.current.get(key) || Promise.resolve();
     const write = previous.then(async () => {
       try {
-        const result = await saveAnnotations(key, updatedBoxes, revisionsRef.current.get(key), image.dataset_id);
+        const result = await saveAnnotations(key, updatedBoxes, revisionsRef.current.get(key), image.dataset_id, saveStatus);
         revisionsRef.current.set(key, result.revision);
         if (result.projection_warning) showToast(result.projection_warning, 'error');
         if (draftsRef.current.get(key) === updatedBoxes) draftsRef.current.delete(key);
         setImages(prev => prev.map(img => imageIdentity(img) === key
-          ? { ...img, annotation_count: updatedBoxes.length, status: 'reviewed' } : img));
+          ? { ...img, annotation_count: updatedBoxes.length, status: result.review_status ?? saveStatus } : img));
         setSaveError(previousError => previousError && imageIdentity(previousError.image) === key ? null : previousError);
       } catch (err) {
         setSaveError({ image, message: `Perubahan pada ${image.filename} belum tersimpan: ${String(err)}` });
@@ -205,7 +230,10 @@ export const App: React.FC = () => {
     });
     writesRef.current.set(key, write);
     await write;
-    if (writesRef.current.get(key) === write) writesRef.current.delete(key);
+    if (writesRef.current.get(key) === write) {
+      writesRef.current.delete(key);
+      pendingStatusRef.current.delete(key);
+    }
   }, [showToast]);
 
   useEffect(() => {
@@ -259,8 +287,18 @@ export const App: React.FC = () => {
         showToast('Anotasi berubah selama deteksi. Jalankan deteksi lagi untuk menerapkannya.', 'info');
         return;
       }
-      await persistBoxes(res.boxes, activeImg);
-      setSelectedBoxId(res.boxes[0]?.id || null);
+      // Keep every existing label: a detector pass only adds objects that are not labelled yet.
+      const merged = mergeDetections(startingBoxes, res.boxes);
+      if (merged.added > 0) {
+        await persistBoxes(merged.boxes, activeImg);
+        setSelectedBoxId(merged.boxes[startingBoxes.length]?.id || null);
+      }
+      showToast(
+        merged.added > 0
+          ? `${merged.added} kotak baru dari deteksi AI${merged.skipped ? ` (${merged.skipped} sudah dilabeli)` : ''}`
+          : 'Tidak ada objek baru yang terdeteksi',
+        merged.added > 0 ? 'auto_awesome' : 'info',
+      );
       const h = await fetchHealth();
       if (h.dataset_dir === currentImageRef.current?.dataset_id) setHealth(h);
     } catch (err) {
@@ -376,7 +414,7 @@ export const App: React.FC = () => {
   const approveImage = async (advance: boolean) => {
     const image = currentImageRef.current;
     if (!image || loadedImageKeyRef.current !== imageIdentity(image)) return;
-    await persistBoxes(boxesRef.current);
+    await persistBoxes(boxesRef.current, undefined, 'reviewed');
     showToast(`${image.filename} disetujui`, 'check_circle');
     if (!advance) return;
     const list = imagesRef.current;
@@ -396,6 +434,52 @@ export const App: React.FC = () => {
     void refreshImages();
   };
 
+  const manageClasses = async (change: ClassChange) => {
+    if (classChangeBusyRef.current || isDetectingRef.current || isAuditingRef.current) {
+      throw new Error('Tunggu deteksi, audit, atau perubahan kelas selesai.');
+    }
+    classChangeBusyRef.current = true;
+    setClassChangeBusy(true);
+    try {
+      await Promise.all([...writesRef.current.values()]);
+      if (draftsRef.current.size) {
+        throw new Error('Masih ada anotasi yang belum tersimpan. Simpan ulang sebelum mengubah kelas.');
+      }
+      const result = await changeDatasetClass(change);
+      if (healthRef.current?.dataset_dir === change.dataset_id) {
+        setHealth(previous => previous ? { ...previous, classes: result.classes } : previous);
+        setActiveClassName(previous => result.classes.includes(previous) ? previous : result.classes[0] || '');
+        setBoxes([]);
+        setLoadedImageKey('');
+        setSelectedBoxId(null);
+        setAuditReport(null);
+        setAnnotationReload(value => value + 1);
+      }
+      await refreshImages();
+      return result;
+    } finally {
+      classChangeBusyRef.current = false;
+      setClassChangeBusy(false);
+    }
+  };
+
+  const closeActiveProject = async (folder: string) => {
+    if (isDetectingRef.current || isAuditingRef.current) {
+      throw new Error('Tunggu deteksi atau audit selesai sebelum menghapus proyek.');
+    }
+    await Promise.all([...writesRef.current.values()]);
+    if (draftsRef.current.size) {
+      throw new Error('Masih ada anotasi yang belum tersimpan. Simpan ulang sebelum menghapus proyek.');
+    }
+    await closeProject(folder);
+    ++refreshGeneration.current;
+    setHealth(previous => previous ? { ...previous, dataset_dir: '', classes: [] } : previous);
+    setSelectedBoxId(null);
+    setAuditReport(null);
+    setIsAuditOpen(false);
+    datasetChanged();
+  };
+
   const openColab = () => {
     setIsColabOpen(true);
     void refreshColabAccount().catch(() => { /* The dialog reports connection errors. */ });
@@ -404,8 +488,10 @@ export const App: React.FC = () => {
   // Keyboard shortcuts. Studio keys only act on the review page so nothing changes out of sight.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger shortcuts when typing in an input
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName)) {
+      if (classChangeBusyRef.current) return;
+      // Typing, choosing an option or dragging a slider is not a shortcut, but ticking a
+      // checkbox must not turn the shortcuts off. Enter/Space on a focused control activates it.
+      if (isTypingTarget(e.target) || activatesFocusedControl(e.target, e.key)) {
         return;
       }
 
@@ -565,8 +651,8 @@ export const App: React.FC = () => {
   const refreshAfterLabels = () => { void refreshImages(); setAnnotationReload(value => value + 1); };
 
   const review = (
-    <div className="mx-auto flex h-full max-w-[1400px] flex-col px-6 py-6">
-      <div className="mb-5 flex items-end justify-between gap-4">
+    <div className="mx-auto flex min-h-full max-w-[1400px] flex-col px-6 py-6 xl:h-full">
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
         <div className="min-w-0 flex-1">
           <div className="text-xs text-ink-500">{datasetName || 'Dataset'}</div>
           <h1 className="mt-1 truncate text-2xl font-bold tracking-tight text-ink-900" title={currentImage?.filename}>
@@ -578,7 +664,7 @@ export const App: React.FC = () => {
             {boxes.length} anotasi
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-3">
+        <div className="flex shrink-0 flex-wrap items-center gap-3">
           {statusBadge(currentImage)}
           <Button variant="secondary" icon="rule" disabled={!currentImage || isAuditing} onClick={() => void handleRunAudit()}
             title="Cari objek terlewat, tertutup, dan kotak yang salah (Q)">
@@ -591,7 +677,7 @@ export const App: React.FC = () => {
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 gap-5">
+      <div className="flex min-h-0 flex-1 flex-col gap-5 xl:flex-row">
         <AnnotationCanvas
           image={currentImage}
           boxes={boxes}
@@ -664,7 +750,7 @@ export const App: React.FC = () => {
         />
       </div>
 
-      <div className="mt-5 flex items-center justify-between">
+      <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
         <div className="flex gap-2">
           <Button variant="secondary" disabled={currentImageIndex <= 0} onClick={() => goToImage(-1)}>Sebelumnya</Button>
           <Button variant="secondary" disabled={currentImageIndex >= images.length - 1} onClick={() => goToImage(1)}>Berikutnya</Button>
@@ -680,7 +766,8 @@ export const App: React.FC = () => {
   );
 
   return (
-    <div className="relative flex h-screen w-screen overflow-hidden bg-white font-sans text-ink-900">
+    <>
+    <div inert={classChangeBusy} className="relative flex h-screen w-screen overflow-hidden bg-white font-sans text-ink-900">
       <Sidebar page={page} onNavigate={setPage} health={health} datasetName={datasetName} reviewCount={summary.pending} />
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -690,12 +777,15 @@ export const App: React.FC = () => {
             <OverviewPage images={images} health={health} datasetName={datasetName} onNavigate={setPage} onOpenImage={openImage} />
           )}
           {page === 'projects' && (
-            <ProjectsPage images={images} health={health} datasetName={datasetName} onNavigate={setPage} onDatasetChanged={datasetChanged} />
+            <ProjectsPage images={images} health={health} datasetName={datasetName} onNavigate={setPage}
+              onDatasetChanged={datasetChanged} onCloseProject={closeActiveProject} />
           )}
           {page === 'import' && (
             <ImportPage images={images} health={health} datasetName={datasetName} onNavigate={setPage}
               onDatasetChanged={datasetChanged}
-              onClassesChanged={registered => setHealth(previous => previous ? { ...previous, classes: registered } : previous)} />
+              onClassesChanged={registered => setHealth(previous => previous ? { ...previous, classes: registered } : previous)}
+              onManageClasses={manageClasses}
+              onAnnotationsImported={refreshAfterLabels} />
           )}
           {page === 'review' && review}
           {page === 'quality' && <QualityPage images={images} onNavigate={setPage} onOpenImage={openImage} />}
@@ -708,7 +798,7 @@ export const App: React.FC = () => {
             onOpenColab={openColab}
             health={health}
             totalImages={images.length}
-            pendingImages={summary.unreviewed}
+            pendingImages={summary.unannotated}
             images={images}
             onStartBatch={refreshAfterLabels}
             onBatchComplete={refreshAfterLabels}
@@ -738,6 +828,10 @@ export const App: React.FC = () => {
       <ColabModal isOpen={isColabOpen} onClose={() => setIsColabOpen(false)} health={health} onComplete={refreshAfterLabels} />
       <KeyboardShortcutsModal isOpen={isShortcutsOpen} onClose={() => setIsShortcutsOpen(false)} />
     </div>
+    {classChangeBusy && <div role="status" aria-live="polite" className="fixed inset-0 z-50 flex items-center justify-center bg-white/95 p-6 text-sm font-medium text-ink-900">
+      Memperbarui kelas dan anotasi… Jangan tutup aplikasi.
+    </div>}
+    </>
   );
 };
 

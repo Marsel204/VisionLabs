@@ -27,7 +27,7 @@ export const AuditPanel: React.FC<Props> = ({
   <>
     <div className="shrink-0 space-y-2 border-b border-line p-3">
       <div className="flex gap-1.5">
-        <select value={depth} onChange={e => onChangeDepth(e.target.value)} disabled={isRunning}
+        <select value={depth} onChange={e => { onChangeDepth(e.target.value); e.currentTarget.blur(); }} disabled={isRunning}
           aria-label="Kedalaman audit"
           title="Jumlah lapisan deteksi. Jalankan ulang setelah mengubah."
           className="h-8 min-w-0 flex-1 rounded-md border border-line-strong bg-white px-2 text-[11px] text-ink-700 cursor-pointer focus:outline-none focus:border-brand-500">

@@ -5,6 +5,8 @@ export interface DatasetSummary {
   approved: number;
   autoLabeled: number;
   unreviewed: number;
+  /** Neither reviewed nor auto-labeled and without any box: what a batch auto-label will process. */
+  unannotated: number;
   pending: number;
   annotations: number;
   approvedPercent: number;
@@ -15,10 +17,12 @@ export function summarizeDataset(images: ImageMeta[]): DatasetSummary {
   let approved = 0;
   let autoLabeled = 0;
   let annotations = 0;
+  let unannotated = 0;
   for (const image of images) {
     if (image.status === 'reviewed') approved++;
     else if (image.status === 'ai_labeled') autoLabeled++;
-    annotations += image.annotation_count || 0;
+    else if (!(image.annotation_count > 0)) unannotated++;
+    annotations += Math.max(0, image.annotation_count || 0);
   }
   const total = images.length;
   return {
@@ -26,6 +30,7 @@ export function summarizeDataset(images: ImageMeta[]): DatasetSummary {
     approved,
     autoLabeled,
     unreviewed: total - approved - autoLabeled,
+    unannotated,
     pending: total - approved,
     annotations,
     approvedPercent: total ? Math.round((approved / total) * 100) : 0,

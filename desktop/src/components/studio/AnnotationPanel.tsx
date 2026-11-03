@@ -46,7 +46,7 @@ export const AnnotationPanel: React.FC<Props> = ({
   };
 
   return (
-    <aside className="flex w-[260px] shrink-0 flex-col overflow-hidden rounded-xl border border-line bg-white">
+    <aside className="flex h-[420px] w-full shrink-0 flex-col overflow-hidden rounded-xl border border-line bg-white xl:h-auto xl:w-[260px]">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-line px-4">
         {audit ? (
           <div className="flex gap-1" role="tablist">
@@ -74,7 +74,9 @@ export const AnnotationPanel: React.FC<Props> = ({
         <>
           <ul className="min-h-0 flex-1 overflow-y-auto py-1" aria-label="Daftar anotasi">
             {boxes.length === 0 && (
-              <li className="px-4 py-6 text-center text-xs text-ink-400">Belum ada anotasi. Gambar kotak dengan B atau jalankan Deteksi AI.</li>
+              <li className="px-4 py-6 text-center text-xs leading-relaxed text-ink-400">
+                Belum ada anotasi. Gambar kotak dengan B, jalankan Deteksi AI, atau impor anotasi dataset dari halaman Impor.
+              </li>
             )}
             {boxes.map((box, index) => {
               const isSelected = box.id === selectedBoxId;
@@ -126,6 +128,7 @@ export const AnnotationPanel: React.FC<Props> = ({
                   onChange={event => {
                     const index = availableClasses.indexOf(event.target.value);
                     onUpdateBox({ ...selected, class_name: event.target.value, class_id: index >= 0 ? index : 0 });
+                    event.currentTarget.blur(); // hand the keyboard back to the studio shortcuts
                   }}
                   className={`${fieldClass} cursor-pointer`}
                 >
@@ -178,7 +181,7 @@ export const AnnotationPanel: React.FC<Props> = ({
                 <select
                   id="new-box-class"
                   value={activeClassName}
-                  onChange={event => onChangeActiveClass(event.target.value)}
+                  onChange={event => { onChangeActiveClass(event.target.value); event.currentTarget.blur(); }}
                   className={`${fieldClass} cursor-pointer`}
                 >
                   {availableClasses.map((name, index) => <option key={name} value={name}>[{index + 1}] {name}</option>)}

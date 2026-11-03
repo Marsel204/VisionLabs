@@ -12,7 +12,7 @@ export const Logo: React.FC<{ className?: string }> = ({ className = '' }) => (
       />
       <rect x="12" y="12" width="8" height="8" rx="2" fill="#2f6fe4" />
     </svg>
-    <span className="text-[26px] leading-none font-bold tracking-tight text-ink-900">
+    <span className="hidden text-[26px] leading-none font-bold tracking-tight text-ink-900 lg:inline">
       {APP_NAME}<span className="text-brand-600">.</span>
     </span>
   </div>

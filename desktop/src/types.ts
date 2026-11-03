@@ -34,6 +34,7 @@ export interface ImageMeta {
 
 export interface DatasetStats {
   directory: string;
+  total_annotations?: number;
   total_images: number;
   unreviewed: number;
   reviewed: number;

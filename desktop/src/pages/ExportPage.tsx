@@ -76,7 +76,7 @@ export const ExportPage: React.FC<Props> = ({ images, health, datasetName, onNav
             <Icon name="folder" className="text-[26px] text-ink-500" />
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-semibold text-ink-900" title={result.destination}>{result.destination}</div>
-              <div className="mt-0.5 text-xs text-ink-500">{label} · {health?.classes?.length || 0} kelas · gambar dan anotasi</div>
+              <div className="mt-0.5 text-xs text-ink-500">{label} · {health?.classes?.length || 0} kelas · {['yolo', 'coco'].includes(result.format) ? 'gambar dan anotasi' : 'anotasi saja (gambar tidak disalin)'}</div>
             </div>
             <Button size="sm" variant="secondary" icon="content_copy"
               onClick={() => void navigator.clipboard?.writeText(result.destination)}>Salin path</Button>
@@ -93,7 +93,7 @@ export const ExportPage: React.FC<Props> = ({ images, health, datasetName, onNav
 
   return (
     <div className="mx-auto max-w-[1040px] px-8 py-10">
-      <PageHeader title="Ekspor dataset" subtitle="Folder berisi gambar asli dan anotasi sesuai format pilihanmu." />
+      <PageHeader title="Ekspor dataset" subtitle="Folder ekspor berisi anotasi sesuai format pilihanmu. YOLO dan COCO juga menyalin gambarnya." />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_352px]">
         <Card className="p-6">

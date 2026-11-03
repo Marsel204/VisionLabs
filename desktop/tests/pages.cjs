@@ -40,3 +40,28 @@ test('the review queue starts at the first image a person has not approved', () 
   assert.equal(firstPendingIndex([image('reviewed'), image('ai_labeled'), image('unreviewed')]), 1);
   assert.equal(firstPendingIndex([image('reviewed')]), 0);
 });
+
+function loadRecents(storage) {
+  const recentCode=ts.transpileModule(fs.readFileSync(path.resolve(__dirname,'../src/pages/recentDatasets.ts'),'utf8'), {
+    compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022},
+  }).outputText;
+  const module={exports:{}};
+  vm.runInNewContext(recentCode,{module,exports:module.exports,localStorage:storage});
+  return module.exports;
+}
+
+test('removed projects stay out of history after reload and can be reopened explicitly',()=>{
+  const values=new Map();const storage={getItem:key=>values.get(key),setItem:(key,value)=>values.set(key,value)};
+  const recents=loadRecents(storage);
+  recents.rememberDataset('/first');recents.rememberDataset('/second');
+  assert.equal(recents.forgetDataset('/first'),true);
+  const reloaded=loadRecents(storage);
+  assert.deepEqual([...reloaded.recentDatasets()],['/second']);
+  reloaded.rememberDataset('/first');
+  assert.deepEqual([...reloaded.recentDatasets()],['/first','/second']);
+});
+
+test('project removal reports an unavailable local history store',()=>{
+  const recents=loadRecents({getItem:()=>null,setItem:()=>{throw Error('unavailable');}});
+  assert.equal(recents.forgetDataset('/first'),false);
+});
