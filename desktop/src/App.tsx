@@ -47,12 +47,10 @@ const CRUMBS: Record<Page, string> = {
   export: 'Ekspor dataset',
 };
 
-/** Start page from the URL: ?page=review, plus the older ?modal=autolabel|dataset links. */
+/** Start page from the current page-based URL. */
 function initialPage(params: URLSearchParams | null): Page {
   const requested = params?.get('page') as Page | null;
   if (requested && PAGES.includes(requested)) return requested;
-  if (params?.get('modal') === 'autolabel') return 'autolabel';
-  if (params?.get('modal') === 'dataset') return params.get('tab') === 'export' ? 'export' : 'import';
   return 'overview';
 }
 

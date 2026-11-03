@@ -343,20 +343,6 @@ def test_export_coco_segmentation(tmp_path: Path) -> None:
     assert ann_entry["area"] > 0
 
 
-def test_main_window_dino_sam_action_registration(qapp: object) -> None:
-    """Test that MainWindow registers the 1-click DINO+SAM auto-annotate actions."""
-    from app.configs.settings import AppSettings
-    from app.ui.main_window import MainWindow
-
-    settings = AppSettings()
-    window = MainWindow(settings.fusion, settings.active_learning)
-
-    # Verify action exists and has correct shortcut
-    actions = [a.text() for a in window.findChildren(object) if hasattr(a, "text") and hasattr(a, "triggered")]
-    assert "DINO + SAM Auto-Annotate" in actions
-    assert "DINO + SAM Annotate Entire Dataset" in actions
-
-
 def test_pipeline_vlm_verification_filters_candidate_boxes(tmp_path: Path) -> None:
     """Test that AutoAnnotationPipeline filters candidate boxes using Florence-2 VLM verifier."""
     box_true = BoxPixel(10.0, 10.0, 50.0, 50.0)
@@ -402,4 +388,3 @@ def test_pipeline_vlm_verification_filters_candidate_boxes(tmp_path: Path) -> No
     assert len(result.annotations) == 1
     assert result.annotations[0].class_name == "helmet"
     assert mock_vlm.generate_caption.call_count == 2
-

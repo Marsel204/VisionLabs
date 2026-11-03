@@ -1,4 +1,4 @@
-"""FastAPI Backend Service for VisionForge AI Annotation Studio.
+"""FastAPI backend for the Anotara annotation studio.
 
 Provides full-stack REST endpoints connecting the Tauri/React desktop UI
 with the PyTorch/YOLO/SAM-2/Grounding DINO computer vision pipeline,
@@ -16,6 +16,7 @@ import threading
 import time
 import secrets
 import sqlite3
+import sys
 import yaml
 from datetime import datetime
 from pathlib import Path
@@ -79,8 +80,16 @@ app.add_middleware(
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-DEFAULT_DATASET_DIR = PROJECT_ROOT / "test image"
-DATASET_CONFIG_FILE = PROJECT_ROOT / ".active_dataset_config.json"
+
+
+def dataset_state_paths(project_root: Path) -> tuple[Path, Path]:
+    if getattr(sys, "frozen", False):
+        paths = PathSettings()
+        return paths.dataset_root, paths.cache_root / "active_dataset_config.json"
+    return project_root / "test image", project_root / ".active_dataset_config.json"
+
+
+DEFAULT_DATASET_DIR, DATASET_CONFIG_FILE = dataset_state_paths(PROJECT_ROOT)
 
 
 def get_initial_dataset_dir() -> Path | None:

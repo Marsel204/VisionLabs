@@ -19,25 +19,21 @@ automatic annotation on a remote GPU with a lightweight local studio/backend.
 Review, saving, and exports remain local. Cloud deployment requires a separate
 provider account and configuration.
 
-Anotara features a **zero-configuration, self-bootstrapping single launcher** that works out-of-the-box on both Windows and Linux without manual environment setup:
+Anotara has one desktop interface: the Tauri/React studio. Source launches require Python 3.12+, uv, Node.js/npm, Rust/Cargo, and the platform's Tauri system dependencies.
 
-| Platform | One-Click Launch | Run from Terminal | Force Standalone Qt GUI |
-| :--- | :--- | :--- | :--- |
-| **Windows** | Double-click `run.bat` | `run.bat` | `run.bat --qt` |
-| **Linux** | Double-click `run.bat` / `run.sh` | `./run.sh` or `./run.bat` | `./run.sh --qt` |
+| Platform | Launch |
+| :--- | :--- |
+| **Windows** | Double-click or run `run.bat` |
+| **Linux** | Run `./run.sh` or `./run_desktop.sh` |
 
-> **First-time users**: The launcher automatically checks for `uv` and Python dependencies, sets up the `.venv` virtual environment, starts the background AI engine, and boots the studio window automatically. If any error occurs, the terminal stays open with helpful diagnostics instead of closing abruptly.
+The launcher uses the locked Python environment, installs missing frontend dependencies, starts the local API, and opens Anotara. Missing dependencies produce an error rather than opening another interface.
 
 ---
 
 ## Table of Contents
 
-- [Studio Tour & Visual Walkthrough](#studio-tour--visual-walkthrough)
-  - [1. Main Studio Workspace](#1-main-studio-workspace)
-  - [2. Auto-Label AI Configuration & Batch Pipeline](#2-auto-label-ai-configuration--batch-pipeline)
-  - [3. Dataset Management & Export Hub](#3-dataset-management--export-hub)
-  - [4. Dataset Import & Directory Management](#4-dataset-import--directory-management)
-  - [5. High-Velocity Keyboard Shortcuts](#5-high-velocity-keyboard-shortcuts)
+- [Interface](#interface)
+- [Keyboard Shortcuts](#keyboard-shortcuts)
 - [Key Features](#key-features)
 - [Getting Started](#getting-started)
   - [One-Click Launch](#one-click-launch)
@@ -62,133 +58,17 @@ step of the dataset workflow. The interface copy is in Indonesian.
 | **Kualitas dataset** | Approved vs. pending counts, hardest images, and label distribution. |
 | **Ekspor** | YOLO, COCO, Pascal VOC or CVAT export, optionally only approved images. |
 
-Saving or approving an image marks it as reviewed ("Disetujui"). Auto-labeled images stay
-"perlu review" until a person approves them. Press `?` for the keyboard shortcuts; studio keys
-only act on the review page. The screenshots below show the earlier dark interface.
+Editing or saving annotations does not approve an image automatically. Use **Setujui gambar** to mark it as reviewed. Auto-labeled images remain pending until a person approves them.
 
-## Studio Tour & Visual Walkthrough
+## Keyboard Shortcuts
 
-### 1. Main Studio Workspace
+Press `?` for the current shortcut reference. Review shortcuts only operate on the review page:
 
-![Anotara Main Studio](docs/images/01_studio_overview.png)
-
-The **Main Studio Workspace** provides an ergonomic, dark-themed environment optimized for high-throughput visual annotation:
-
-- **Top Navigation & Telemetry Bar**:
-  - **Brand & Model Status**: Displays current active model (e.g., `YOLO11`) and dataset image counter.
-  - **GPU Hardware Telemetry**: Live telemetry of connected GPU device (e.g., `RTX 5060 Ti`), operational temperature, and free VRAM.
-  - **Quick Action Triggers**: Instant access to **Auto-Label AI**, **Import**, **Export**, and **Shortcuts** (`?`).
-- **Left Activity Rail**:
-  - Quick-switch tools: **Select/Transform** (`V`), **2D Bounding Box** (`B`), **Hand/Pan** (`H`), **Polygon Segmentation** (`P`), and settings.
-- **Image Queue Drawer**:
-  - Displays thumbnail previews, image filenames, resolutions, and current validation tags (`Reviewed`, `Unreviewed`, `AI Labeled`).
-  - Search and filter bar by status or keyword.
-  - **Active Learning Priority Queue**: When toggled, automatically prioritizes the most informative, uncertain, or crowded frames for human verification.
-- **Interactive Central Canvas**:
-  - High-precision SVG bounding box overlays with color-coded class palettes and confidence ratings.
-  - Smooth pan and zoom controls (10% to 500%), full-frame fit, and label opacity adjustment slider.
-  - Quick **Detect (R)** button for single-frame AI inference.
-- **Right Object Inspector**:
-  - **Active Class Pill**: High-contrast indicator displaying the selected box's class name and ID.
-  - **Dynamic Class Selector & Quick Custom Input**: Select from existing classes or type any custom class name and press `Enter` / `Set`.
-  - **Bounding Geometry (PX)**: Real-time readouts of `X`, `Y`, `Width`, and `Height`.
-  - **Model Confidence**: Displays detection probability and model origin.
-  - **Perception Attributes**: Toggle flags for `Occluded` or `Truncated (Edge)`.
-  - **Consensus Triage**: One-click actions to **Accept** (`Enter`/`Space`), **Flag**, or **Delete** (`Del`/`Backspace`).
-
----
-
-### 2. Auto-Label AI Configuration & Batch Pipeline
-
-![Auto-Label AI Modal](docs/images/02_autolabel_ai_pipeline.png)
-
-The **Auto-Label AI Modal** (`L` or `M`) enables zero-shot and few-shot automated labeling across entire datasets using an ensemble of foundation models:
-
-- **AI Ensemble Pipeline Configuration**:
-  - **Object Detectors**:
-    - **Grounding DINO 1.5 Pro**: Open-vocabulary natural language prompt grounding for open-domain bounding box candidate generation.
-    - **YOLO & Custom Weights Ensemble**: High-speed edge detection with NMS fusion across standard YOLO models (`yolo11n.pt`, `yolov8x.pt`) or user-provided custom weights (`.pt`/`.onnx`).
-    - **Florence-2 VLM Detector**: Dense proposal generation via Florence-2 `<OD>` vision-language tasks.
-    - **Locate Anything 3B**: NVIDIA prompt-based localization, available alone or in the ensemble, with optional SAM 2 masks. See the [setup and model terms](docs/locate-anything.md).
-  - **Semantic Verification & Hallucination Filter**:
-    - **Florence-2 VLM Verification**: Crops proposed bounding boxes and verifies semantic content against prompts to eliminate false positives.
-  - **Sub-Pixel Mask Segmentation**:
-    - **SAM 2 (Segment Anything Model 2)**: Predicts fine boundary polygon contours from bounding box prompts for instant instance segmentation masks.
-- **Target Semantic Classes Editor**:
-  - Define any arbitrary class names and descriptive visual prompts (e.g. `object, visual entity`).
-  - **Auto-Refine**: Uses AI to automatically expand class names into rich visual descriptions.
-- **Batch Verification & Execution**:
-  - Preview detections live on sample frames before launching batch inference across the entire dataset.
-
----
-
-### 3. Dataset Management & Export Hub
-
-![Dataset Export Hub](docs/images/03_dataset_hub_export.png)
-
-The **Export Hub** (`E`) allows exporting annotated datasets into standard computer vision training formats:
-
-- **SQLite Dataset Index Status**: Displays overall counts for total indexed frames, unreviewed, reviewed, AI-labeled, and per-class distribution histograms.
-- **Supported Export Formats**:
-  - **YOLO PyTorch (Recommended)**: Exports `data.yaml` manifest and normalized bounding box `.txt` coordinates formatted for Ultralytics YOLOv8 / YOLOv11 / YOLOv26 training.
-  - **COCO JSON**: Standard `annotations.json` with segmentation polygons and bounding boxes.
-  - **Pascal VOC**: Classic XML annotations for legacy pipelines.
-  - **Google Colab Package**: 1-click standalone `.zip` archive containing `data.yaml`, `images/`, and `labels/` ready for immediate Colab GPU training.
-- **Interactive Dataset Split Stratification**:
-  - Interactive dual-handled slider for configuring reproducible **Train / Validation / Test** percentage splits (e.g. 70% / 20% / 10%).
-- **Roboflow Cloud Sync & Deduplication**:
-  - Direct synchronization with Roboflow workspaces.
-  - Automated NMS and IoU-based deduplication to prune redundant duplicate photos and overlapping boxes.
-
----
-
-### 4. Dataset Import & Directory Management
-
-![Dataset Import Hub](docs/images/04_dataset_hub_import.png)
-
-The **Import Hub** (`I`) allows loading new image collections and third-party datasets into Anotara:
-
-- **Active Dataset Directory**:
-  - Browse and select any local folder containing images or datasets.
-  - Automatically scans and builds an ultra-fast SQLite index of all images and labels.
-- **Import New Image Files**:
-  - Drag and drop or browse JPG, PNG, and WebP images.
-  - Automatically copies and registers incoming files into the workspace.
-- **Dataset Compatibility**:
-  - Seamlessly imports existing YOLO `data.yaml` projects, COCO `annotations.json` datasets, and Roboflow Universe exports.
-
----
-
-### 5. High-Velocity Keyboard Shortcuts
-
-![Keyboard Shortcuts Reference](docs/images/05_keyboard_shortcuts.png)
-
-Anotara is built for maximum annotation speed with extensive hotkeys (`?` or `F1`):
-
-| Category | Shortcut | Action |
-| :--- | :--- | :--- |
-| **Tools** | `V` | Select & Transform tool |
-| | `B` | 2D Bounding Box drawing tool |
-| | `H` | Hand / Pan Canvas tool |
-| | `P` | Polygon Segmentation tool |
-| **Navigation** | `A` / `[` / `←` | Previous image in queue |
-| | `D` / `]` / `→` | Next image in queue |
-| | `Home` | Jump to first image |
-| | `End` | Jump to last image |
-| **Triage** | `Tab` | Cycle select next bounding box |
-| | `Shift + Tab` | Cycle select previous bounding box |
-| | `Enter` / `Space` | Accept / Validate selected box (100% confidence) |
-| | `Del` / `Backspace` | Delete selected bounding box |
-| | `Esc` | Deselect active box / Close open modal |
-| **Quick Classes** | `1` - `6` | Assign corresponding class 1 to 6 to selected object |
-| **AI Actions** | `R` / `Ctrl + Enter` | Run AI detection on active frame |
-| | `L` / `M` | Open Auto-Label AI Configuration modal |
-| **Project** | `Ctrl + S` | Save current annotations to disk |
-| | `I` | Open Dataset Import dialog |
-| | `E` | Open Dataset Export dialog |
-| | `?` | Toggle Shortcuts Guide |
-
----
+- `V`: select a box; `B`: draw a box; `P`: draw a polygon; `H`: pan.
+- `R`: run detection; `Q`: check annotation quality.
+- `Tab` / `Shift+Tab`: navigate boxes; `Enter`: accept a box; `Delete`: remove a box.
+- `Ctrl+S`: save and approve the image.
+- `L`: auto-label; `I`: import; `E`: export.
 
 ## Key Features
 
@@ -208,22 +88,22 @@ Anotara provides a single polyglot launcher ([`run.bat`](file:///home/marsel/Wor
 
 #### On Windows
 - **One-Click**: Simply double-click `run.bat` in Windows File Explorer.
-- **Terminal**: Run `run.bat` (or `run.bat --qt` for the standalone PySide6 Qt GUI) from CMD or PowerShell.
+- **Terminal**: Run `run.bat` from CMD or PowerShell.
 
 #### On Linux
 - **One-Click**: Double-click `run.bat` or `run.sh` in your desktop file manager (or right-click → *Run as a Program*).
 - **Terminal**:
   ```bash
   ./run.sh          # Launches Tauri Desktop Studio + AI Engine
-  ./run.sh --qt     # Launches standalone PySide6 Qt GUI
   ```
 
-#### How the Launcher Works (Zero-Friction Setup)
-1. **Self-Bootstrapping**: If `uv` is not installed, it automatically installs `uv`. If `.venv` does not exist, it runs `uv sync` to install all locked dependencies automatically on first run.
-2. **GPU & Display Telemetry**: On Linux, it automatically configures NVIDIA WebKitGTK and X11 display parameters.
-3. **Background AI Engine**: Starts the local FastAPI engine (`app.api.server`) on `http://127.0.0.1:8765`, polls its `/api/session` endpoint until online, and cleans up the background server upon exit.
-4. **Desktop Studio Interface**: Installs npm dependencies in `desktop/` if missing and opens the high-performance Tauri v2 + React 19 studio window.
-5. **Persistent Error Reporting**: If a dependency or hardware issue occurs, the command prompt window stays open (`pause` on Windows / `read -p` on Linux) with error diagnostics instead of closing abruptly.
+#### How the Launcher Works
+
+1. Require uv and use `uv sync --locked` if the Python environment is missing.
+2. Require the current desktop sources, Node.js/npm, Rust/Cargo, and the native Tauri prerequisites.
+3. Start the FastAPI engine on `http://127.0.0.1:8765` if needed and wait for its session endpoint.
+4. Launch the Anotara Tauri studio. Stop only a backend started by this launcher when the window closes.
+5. Report startup failures in the application log directory; backend output is in `backend.log`.
 
 ---
 
@@ -232,7 +112,8 @@ Anotara provides a single polyglot launcher ([`run.bat`](file:///home/marsel/Wor
 #### Prerequisites
 - [uv](https://github.com/astral-sh/uv) (ultra-fast Python package installer)
 - Python 3.12+
-- Node.js 20+ & npm
+- Node.js & npm (compatible with the locked Vite version)
+- Rust/Cargo and the platform Tauri development prerequisites
 
 #### 1. Setup Backend
 ```bash
@@ -263,7 +144,7 @@ The web studio is accessible at `http://localhost:1420`, connecting to the Pytho
 
 ### Annotation storage and compatibility
 
-Both the Qt and web studios use `AnnotationRepository`. Its authoritative files live at
+Anotara uses `AnnotationRepository`. Its authoritative files live at
 `<dataset>/.visionlab/annotations/<relative image path including extension>.json`.
 For example, `images/train/sample.jpg` becomes
 `.visionlab/annotations/images/train/sample.jpg.json`. Documents retain object IDs,
@@ -316,12 +197,13 @@ and real GPU model accuracy still require validation on their target platforms.
 ## Standalone Distribution & Packaging
 
 ### Windows Executable (.exe)
-To compile a fully self-contained portable Windows distribution (no Python installation required):
+To compile a portable Windows distribution, install Node.js/npm, Rust/Cargo, the Tauri build prerequisites, and the Python development dependencies. The build compiles the current Tauri frontend and packages it alongside the frozen Python launcher/API; no Python installation is needed on the target machine. The system webview runtime is still required:
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scriptsuild_windows_exe.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1
 ```
 Output:
-- `dist/VisionLab/VisionLab.exe`: Standalone portable distribution folder.
+- `dist/VisionLab/VisionLab.exe`: launcher that starts the local API and current studio.
+- `dist/VisionLab/Anotara.exe`: current Tauri frontend; keep it beside the launcher.
 - `dist/VisionLab-windows-x64.zip`: Portable ZIP release package.
 
 ### Windows Setup Wizard (.exe)

@@ -54,6 +54,8 @@ done
 
 [[ "${EUID}" -ne 0 ]] || die "run this installer as your normal user, not root"
 command -v python3 >/dev/null || die "python3 is required"
+command -v npm >/dev/null || die "Anotara requires Node.js and npm"
+command -v cargo >/dev/null || die "Anotara requires Rust and Cargo"
 PYTHON_BIN="$(command -v python3)"
 PYTHON_VERSION="$(${PYTHON_BIN} -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 PYTHON_MAJOR="${PYTHON_VERSION%%.*}"
@@ -67,7 +69,7 @@ if [[ "${SKIP_SYSTEM_DEPS}" -eq 0 ]]; then
     printf 'Installing desktop and Python runtime packages...\n'
     sudo apt-get update
     sudo apt-get install -y curl python3-venv python3-dev libgl1 libglib2.0-0 \
-        libxkbcommon-x11-0 libxcb-cursor0
+        build-essential pkg-config
 fi
 
 if ! command -v uv >/dev/null; then
@@ -160,7 +162,7 @@ else
     if ! "${INSTALL_DIR}/.venv/bin/python" -c 'import torch' >/dev/null 2>&1; then
         die "PyTorch is not importable in ${INSTALL_DIR}/.venv"
     fi
-    "${INSTALL_DIR}/.venv/bin/python" -c 'import PySide6, torch; print(f"PySide6 {PySide6.__version__}; PyTorch {torch.__version__}; CUDA {torch.cuda.is_available()}")'
+    "${INSTALL_DIR}/.venv/bin/python" -c 'import torch; print(f"PyTorch {torch.__version__}; CUDA {torch.cuda.is_available()}")'
 fi
 
 mkdir -p "${BIN_DIR}" "${APPLICATIONS_DIR}"
@@ -168,19 +170,18 @@ cp -- "${SOURCE_DIR}/uninstall.sh" "${INSTALL_DIR}/uninstall.sh"
 chmod 755 "${INSTALL_DIR}/uninstall.sh"
 cat > "${BIN_DIR}/${APP_NAME}" <<EOF
 #!/usr/bin/env bash
-exec "${INSTALL_DIR}/.venv/bin/traffic-annotator" "\$@"
+exec "${INSTALL_DIR}/.venv/bin/visionlab" "\$@"
 EOF
 chmod 755 "${BIN_DIR}/${APP_NAME}"
 cat > "${DESKTOP_FILE}" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Traffic Annotator
-Comment=AI-assisted traffic image annotation
+Name=Anotara
+Comment=AI-assisted visual annotation
 Exec=${BIN_DIR}/${APP_NAME}
 Icon=applications-graphics
 Terminal=false
 Categories=Graphics;Education;
-StartupWMClass=traffic-annotator
 EOF
 chmod 644 "${DESKTOP_FILE}"
 

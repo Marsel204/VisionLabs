@@ -14,8 +14,7 @@ polygon masks.
    verification is an optional additional model.
 4. Run a test preview, then start the batch after inspecting the results.
 
-The Qt interface also offers Locate Anything in its model dropdown and detector
-checkboxes. Existing model defaults are unchanged.
+Locate Anything is available in the Anotara auto-label page. Existing model defaults are unchanged.
 
 The first selected run downloads the weights (approximately 7.7 GB) and the
 checkpoint's custom Transformers code from Hugging Face. Anotara pins both to

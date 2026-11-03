@@ -3,7 +3,6 @@
 from __future__ import annotations
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -416,24 +415,15 @@ def test_coco_rejects_escape_and_imports_equal_basenames(tmp_path):
     )
 
 
-def test_qt_arbitrary_class_save_and_folder_reopen(tmp_path, qapp):
-    from app.ui.main_window import MainWindow
-    from app.configs.settings import AppSettings
-
+def test_arbitrary_class_save_and_folder_reopen(tmp_path):
     path = image(tmp_path / "cat.jpg")
     doc = AnnotationDocument(
         path, 100, 80, (Annotation("cat", BoundingBox(0.1, 0.1, 0.3, 0.3), occluded=True),)
     )
-    first = MainWindow(AppSettings())
-    first._document = doc
-    first._save_annotations()
-    first.close()
-    second = MainWindow(AppSettings())
-    with patch("app.ui.main_window.QFileDialog.getExistingDirectory", return_value=str(tmp_path)):
-        second._import_folder()
-    assert second._project_documents[path].annotations[0].class_name == "cat"
-    assert second._project_documents[path].annotations[0].occluded is True
-    second.close()
+    AnnotationRepository(tmp_path).save_document(doc)
+    restored = AnnotationRepository(tmp_path).document(path)
+    assert restored.annotations[0].class_name == "cat"
+    assert restored.annotations[0].occluded is True
 
 
 def test_projection_failure_acknowledges_canonical_commit(dataset, monkeypatch):
@@ -497,21 +487,15 @@ except RevisionConflict:
                 worker.wait()
 
 
-def test_qt_rejects_changes_made_since_its_document_loaded(dataset, qapp):
-    from app.ui.main_window import MainWindow
-    from app.configs.settings import AppSettings
-
+def test_repository_rejects_changes_made_since_its_document_loaded(dataset):
+    from app.services.dataset.repository import RevisionConflict
     root, path, _, _ = dataset
-    window = MainWindow(AppSettings())
-    with patch("app.ui.main_window.QFileDialog.getExistingDirectory", return_value=str(root)):
-        window._import_folder()
     repo = AnnotationRepository(root)
+    loaded = repo.read(path)
     repo.save(path, [box()], expected_revision=0)
-    with patch("app.ui.main_window.QMessageBox.critical") as error:
-        window._save_annotations()
-    assert error.called
+    with pytest.raises(RevisionConflict):
+        repo.save(path, loaded["boxes"], expected_revision=loaded["revision"])
     assert repo.read(path)["boxes"][0]["id"] == "one"
-    window.close()
 
 
 def test_changed_image_dimensions_and_review_status_are_revalidated(dataset):

@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo =======================================================
-echo   Traffic Annotator - Windows Executable Builder
+echo   Anotara - Windows Executable Builder
 echo =======================================================
 echo.
 

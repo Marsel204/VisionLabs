@@ -1,8 +1,7 @@
 """Florence-2 Vision-Language Model (VLM) execution helper, verification, and annotation generation.
 
 This module integrates existing image loading utilities across VisionLab:
-- PIL Image loading (pipeline_bridge.py, app/ui/main_window.py,
-  app/services/inference/dense_motorcycle.py)
+- PIL Image loading (pipeline_bridge.py, app/services/inference/dense_motorcycle.py)
 - OpenCV image loading and slicing (app/services/crop_assisted/crop_generator.py)
 - Domain bounding boxes and target classes (app/services/annotation/domain.py)
 

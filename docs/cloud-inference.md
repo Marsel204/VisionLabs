@@ -58,7 +58,7 @@ dataset browsing or saving endpoints.
 
 ## Install the lightweight laptop backend
 
-This install needs no PyTorch, CUDA, Transformers, Ultralytics, or Qt.
+This install needs no PyTorch, CUDA, Transformers, or Ultralytics.
 On a new checkout, with Python 3.12 or later:
 
 ```sh
@@ -139,5 +139,5 @@ failures, Quick Detect, preview, and batch persistence:
 uv run --no-project --python 3.12 --with pytest --with httpx --with fastapi --with python-multipart --with numpy --with pillow --with PyYAML python -m pytest --noconftest tests/test_cloud_inference.py -q
 ```
 
-Full project checks also require the regular development/Qt dependencies. These
+Full project checks also require the regular development dependencies. These
 tests do not validate a paid deployment or real model accuracy.

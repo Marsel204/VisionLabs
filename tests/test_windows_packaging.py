@@ -45,4 +45,37 @@ def test_spec_uses_pyinstaller_directory_without_dunder_file(tmp_path, monkeypat
     assert any(Path(source).name == "visionlab_colab_batch.ipynb" for source, _ in options["datas"])
     assert "pipeline_bridge" in options["hiddenimports"]
     assert "src.vlm_helper" in options["hiddenimports"]
+    assert not any(
+        name.startswith("app.ui") or name.startswith("PySide6") for name in options["hiddenimports"]
+    )
+    assert "app.api.server" in options["hiddenimports"]
     assert collect.call_args.kwargs["name"] == "VisionLab"
+
+
+def test_distribution_includes_the_current_desktop_binary(tmp_path, monkeypatch):
+    from scripts import build_windows_exe as build
+
+    frontend = tmp_path / "current-ui"
+    frontend.write_bytes(b"anotara-native")
+    distribution = tmp_path / "dist" / "VisionLab"
+    distribution.mkdir(parents=True)
+    (distribution / ("VisionLab.exe" if build.sys.platform == "win32" else "VisionLab")).touch()
+    monkeypatch.setattr(build, "DIST_DIR", distribution.parent)
+    monkeypatch.setattr(build, "build_frontend", lambda: frontend)
+    monkeypatch.setattr(build.subprocess, "check_call", Mock())
+    assert build.run_build() == distribution
+    native = distribution / ("Anotara.exe" if build.os.name == "nt" else "Anotara")
+    assert native.read_bytes() == b"anotara-native"
+
+
+def test_packaged_api_keeps_dataset_state_outside_the_installation(tmp_path, monkeypatch):
+    from app.api import server
+
+    user = tmp_path / "user"
+    monkeypatch.setattr(server.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(server, "PathSettings", lambda: SimpleNamespace(
+        dataset_root=user / "datasets", cache_root=user / "cache"
+    ))
+    dataset, config = server.dataset_state_paths(tmp_path / "readonly-installation")
+    assert dataset == user / "datasets"
+    assert config == user / "cache" / "active_dataset_config.json"

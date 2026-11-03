@@ -1,4 +1,4 @@
-# PowerShell installer for Traffic Annotator on Windows
+# PowerShell source installer for Anotara on Windows
 # Counterpart to install.sh on Linux
 [CmdletBinding()]
 param (
@@ -12,7 +12,7 @@ if ($Help) {
     Write-Host @"
 Usage: .\install.ps1 [options]
 
-Installs Traffic Annotator for the current Windows user.
+Installs Anotara for the current Windows user.
 
 Options:
   -CpuOnly          Force standard CPU-only installation even if CUDA GPU is present.
@@ -24,9 +24,15 @@ Options:
 }
 
 $ErrorActionPreference = "Stop"
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    throw "Anotara requires Node.js and npm."
+}
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    throw "Anotara requires Rust and Cargo."
+}
 
 Write-Host "=======================================================" -ForegroundColor Cyan
-Write-Host "     Traffic Annotator - Windows User Installer" -ForegroundColor Cyan
+Write-Host "     Anotara - Windows User Installer" -ForegroundColor Cyan
 Write-Host "=======================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -103,8 +109,8 @@ if ($CpuOnly) {
 }
 
 # Verify imports
-Write-Host "      Verifying PySide6 and PyTorch installation..." -ForegroundColor Cyan
-& uv run --directory $InstallDir python -c "import PySide6, torch; print(f'PySide6 {PySide6.__version__}; PyTorch {torch.__version__}; CUDA available: {torch.cuda.is_available()}')"
+Write-Host "      Verifying PyTorch installation..." -ForegroundColor Cyan
+& uv run --directory $InstallDir python -c "import torch; print(f'PyTorch {torch.__version__}; CUDA available: {torch.cuda.is_available()}')"
 
 # 5. Create Launchers and Shortcuts
 Write-Host "[5/5] Configuring Windows launchers and shortcuts..." -ForegroundColor Yellow
@@ -118,7 +124,7 @@ if (-not (Test-Path $BinDir)) {
 $CmdLauncher = Join-Path $BinDir "traffic-annotator.cmd"
 @"
 @echo off
-uv run --directory "$InstallDir" traffic-annotator %*
+uv run --directory "$InstallDir" visionlab %*
 "@ | Set-Content -Path $CmdLauncher -Encoding Ascii
 
 # Desktop runner script inside InstallDir
@@ -126,7 +132,7 @@ $LocalRunner = Join-Path $InstallDir "run.bat"
 @"
 @echo off
 cd /d "%~dp0"
-start "" uv run traffic-annotator %*
+uv run visionlab %*
 "@ | Set-Content -Path $LocalRunner -Encoding Ascii
 
 # Create Windows Shortcuts (.lnk) via WScript.Shell
@@ -136,24 +142,24 @@ if (-not $NoShortcuts) {
         
         # Start Menu Shortcut
         $ProgramsDir = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)
-        $StartMenuShortcut = Join-Path $ProgramsDir "Traffic Annotator.lnk"
+        $StartMenuShortcut = Join-Path $ProgramsDir "Anotara.lnk"
         $Shortcut = $WshShell.CreateShortcut($StartMenuShortcut)
         $Shortcut.TargetPath = "cmd.exe"
         $Shortcut.Arguments = "/c start `"`" `"$LocalRunner`""
         $Shortcut.WorkingDirectory = $InstallDir
-        $Shortcut.Description = "AI-assisted traffic annotation application"
+        $Shortcut.Description = "Anotara AI annotation studio"
         $Shortcut.WindowStyle = 7 # Minimized
         $Shortcut.Save()
         Write-Host "      Created Start Menu shortcut: $StartMenuShortcut" -ForegroundColor Green
 
         # Desktop Shortcut
         $DesktopDir = [Environment]::GetFolderPath([Environment+SpecialFolder]::Desktop)
-        $DesktopShortcut = Join-Path $DesktopDir "Traffic Annotator.lnk"
+        $DesktopShortcut = Join-Path $DesktopDir "Anotara.lnk"
         $DShortcut = $WshShell.CreateShortcut($DesktopShortcut)
         $DShortcut.TargetPath = "cmd.exe"
         $DShortcut.Arguments = "/c start `"`" `"$LocalRunner`""
         $DShortcut.WorkingDirectory = $InstallDir
-        $DShortcut.Description = "AI-assisted traffic annotation application"
+        $DShortcut.Description = "Anotara AI annotation studio"
         $DShortcut.WindowStyle = 7 # Minimized
         $DShortcut.Save()
         Write-Host "      Created Desktop shortcut: $DesktopShortcut" -ForegroundColor Green
@@ -164,10 +170,10 @@ if (-not $NoShortcuts) {
 
 Write-Host ""
 Write-Host "=======================================================" -ForegroundColor Green
-Write-Host "  Traffic Annotator installed successfully on Windows! " -ForegroundColor Green
+Write-Host "  Anotara installed successfully on Windows! " -ForegroundColor Green
 Write-Host "=======================================================" -ForegroundColor Green
 Write-Host "Launch with:"
-Write-Host "  - Double-click the Desktop or Start Menu shortcut 'Traffic Annotator'"
+Write-Host "  - Double-click the Desktop or Start Menu shortcut 'Anotara'"
 Write-Host "  - Or run: & `"$LocalRunner`""
 Write-Host "  - Or run command: traffic-annotator (if ~/.local/bin is in PATH)"
 Write-Host ""

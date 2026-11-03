@@ -1,4 +1,4 @@
-# PowerShell uninstaller for Traffic Annotator on Windows
+# PowerShell uninstaller for Anotara on Windows
 # Counterpart to uninstall.sh on Linux
 [CmdletBinding()]
 param (
@@ -8,20 +8,20 @@ param (
 $ErrorActionPreference = "Continue"
 
 Write-Host "=======================================================" -ForegroundColor Cyan
-Write-Host "     Traffic Annotator - Windows Uninstaller" -ForegroundColor Cyan
+Write-Host "     Anotara - Windows Uninstaller" -ForegroundColor Cyan
 Write-Host "=======================================================" -ForegroundColor Cyan
 Write-Host ""
 
 # 1. Remove Shortcuts
 $ProgramsDir = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)
-$StartMenuShortcut = Join-Path $ProgramsDir "Traffic Annotator.lnk"
+$StartMenuShortcut = Join-Path $ProgramsDir "Anotara.lnk"
 if (Test-Path $StartMenuShortcut) {
     Remove-Item -Path $StartMenuShortcut -Force
     Write-Host "Removed Start Menu shortcut: $StartMenuShortcut" -ForegroundColor Green
 }
 
 $DesktopDir = [Environment]::GetFolderPath([Environment+SpecialFolder]::Desktop)
-$DesktopShortcut = Join-Path $DesktopDir "Traffic Annotator.lnk"
+$DesktopShortcut = Join-Path $DesktopDir "Anotara.lnk"
 if (Test-Path $DesktopShortcut) {
     Remove-Item -Path $DesktopShortcut -Force
     Write-Host "Removed Desktop shortcut: $DesktopShortcut" -ForegroundColor Green
@@ -41,6 +41,6 @@ if (Test-Path $InstallDir) {
 }
 
 Write-Host ""
-Write-Host "Traffic Annotator uninstalled successfully." -ForegroundColor Green
+Write-Host "Anotara uninstalled successfully." -ForegroundColor Green
 Write-Host "Note: User datasets (%USERPROFILE%\TrafficAnnotator\datasets), logs, and cache were preserved." -ForegroundColor Yellow
 Write-Host ""
