@@ -1781,7 +1781,7 @@ def manage_class(req: ClassChangeRequest):
 def rescan_dataset():
     """Rescan the active dataset directory and reindex all images."""
     index_db = get_dataset_index()
-    count = index_db.scan(ACTIVE_DATASET_DIR)
+    count = index_db.scan(ACTIVE_DATASET_DIR, refresh_annotations=True)
     return {"status": "ok", "indexed_count": count, "directory": str(ACTIVE_DATASET_DIR)}
 
 

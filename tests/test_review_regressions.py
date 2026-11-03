@@ -337,10 +337,43 @@ def test_rescan_refreshes_external_labels_including_empty_images(dataset):
     assert client.post("/api/dataset/rescan").status_code == 200
     assert s.get_dataset_stats()["class_counts"]["car"] == 1
     path.with_suffix(".txt").write_text("2 .2 .2 .2 .2\n")
-    index.scan(root)
+    index.scan(root, refresh_annotations=True)
     result = s.get_dataset_stats()
     assert result["class_counts"]["car"] == 0
     assert result["class_counts"]["bus"] == 1
+
+
+@pytest.mark.parametrize("canonical", [False, True])
+def test_reopening_dataset_preserves_annotation_caches(dataset, monkeypatch, canonical):
+    root, path, index, client = dataset
+    path.with_suffix(".txt").write_text("1 .2 .2 .2 .2\n")
+    if canonical:
+        AnnotationRepository(root).save(path, [box()])
+    listing = client.get("/api/images").json()
+    stats = s.get_dataset_stats()
+    generation = index.annotation_generation()
+    index.close()
+    monkeypatch.setattr(s, "DATASET_INDEX", None)
+    monkeypatch.setattr(AnnotationRepository, "read", lambda *a, **k: pytest.fail("Reopen read annotations"))
+    assert client.get("/api/images").json() == listing
+    assert s.get_dataset_stats() == stats
+    assert s.DATASET_INDEX.annotation_generation() == generation
+
+
+def test_unchanged_scan_preserves_generation_but_image_changes_advance_it(dataset):
+    root, path, index, _ = dataset
+    generation = index.annotation_generation()
+    index.scan(root)
+    assert index.annotation_generation() == generation
+    image(path, (317, 127))
+    index.scan(root)
+    assert index.annotation_generation() == generation + 1
+    added = image(root / "added.png")
+    index.scan(root)
+    assert index.annotation_generation() == generation + 2
+    added.unlink()
+    index.scan(root)
+    assert index.annotation_generation() == generation + 3
 
 
 def test_external_image_change_invalidates_histogram_and_review(dataset):
@@ -446,7 +479,7 @@ def test_stats_rejects_concurrent_rescan(dataset, monkeypatch):
         (root / "sample.txt").write_text("2 .2 .2 .2 .2\n")
         # A separate handle also covers invalidation from another worker/process.
         with DatasetIndex(index._database_path) as other:
-            other.scan(root)
+            other.scan(root, refresh_annotations=True)
         return data
 
     with monkeypatch.context() as patch:

@@ -77,8 +77,12 @@ class DatasetIndex:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def scan(self, root: Path) -> int:
-        """Incrementally index supported images under ``root``."""
+    def scan(self, root: Path, *, refresh_annotations: bool = False) -> int:
+        """Index changed images, preserving persisted annotation caches on open.
+
+        Explicit refresh also invalidates label-derived caches and in-flight fills,
+        because label files can change independently of their images.
+        """
         if not root.is_dir():
             raise NotADirectoryError(root)
         resolved_root = root.resolve()
@@ -124,12 +128,10 @@ class DatasetIndex:
             if prune_paths:
                 self._connection.executemany("DELETE FROM images WHERE path=?", prune_paths)
 
-            # A rescan also discovers external label edits, including formerly empty
-            # images. Keep review priority, but rebuild all annotation-derived counts.
-            self._connection.execute("UPDATE images SET annotation_count=-1, class_histogram=NULL")
-            self._bump_annotation_generation()
+            if refresh_annotations:
+                self._connection.execute("UPDATE images SET annotation_count=-1, class_histogram=NULL")
 
-            self._connection.executemany(
+            cursor = self._connection.executemany(
                 "INSERT INTO images(path, modified_ns, size_bytes) VALUES(?, ?, ?) "
                 "ON CONFLICT(path) DO UPDATE SET "
                 "width=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN NULL ELSE images.width END, "
@@ -138,9 +140,12 @@ class DatasetIndex:
                 "annotation_count=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN -1 ELSE images.annotation_count END, "
                 "class_histogram=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN NULL ELSE images.class_histogram END, "
                 "difficulty=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN 0 ELSE images.difficulty END, "
-                "modified_ns=excluded.modified_ns, size_bytes=excluded.size_bytes",
+                "modified_ns=excluded.modified_ns, size_bytes=excluded.size_bytes "
+                "WHERE images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes",
                 rows,
             )
+            if refresh_annotations or prune_paths or cursor.rowcount:
+                self._bump_annotation_generation()
             self._connection.commit()
             LOGGER.info("indexed %d image paths under %s (pruned %d)", len(rows), resolved_root, len(prune_paths))
             return len(rows)
