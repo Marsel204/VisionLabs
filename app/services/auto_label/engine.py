@@ -150,6 +150,19 @@ class AutoLabelEngine:
             self._yolo_detectors[target_name] = detector
             return detector
 
+    def _get_yolo_device(self) -> int | str:
+        """Use the same device for preparation and real YOLO inference."""
+        from app.core.runtime import detect_gpu
+
+        return (
+            0
+            if (
+                self._device in ("cuda", "gpu")
+                or (self._device == "auto" and detect_gpu().device == "cuda")
+            )
+            else "cpu"
+        )
+
     @property
     def yolo_model_name(self) -> str:
         return self._yolo_model_name
@@ -418,16 +431,7 @@ class AutoLabelEngine:
                 if config.yolo_models
                 else [config.yolo_model_name]
             )[:3]
-            from app.core.runtime import detect_gpu
-
-            yolo_device = (
-                0
-                if (
-                    self._device in ("cuda", "gpu")
-                    or (self._device == "auto" and detect_gpu().device == "cuda")
-                )
-                else "cpu"
-            )
+            yolo_device = self._get_yolo_device()
 
             from app.services.preprocess import (
                 apply_view,

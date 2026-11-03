@@ -450,6 +450,21 @@ test('model download failures explain recovery and retry unlocks labeling',async
   assert.ok(!content(r.tree).includes('Connection interrupted'));
 });
 
+test('warmup failure shows a warning while the loaded model stays usable',async()=>{
+  const snapshot={...readyModels,models:{...readyModels.models,
+    'yolo:yolo11n.pt':{name:'yolo11n.pt',state:'ready',error:null,loaded:true,
+      inference_ready:false,warning:'Warmup failed; model loaded but not warmed: test failure'}}};
+  const h=harness('pages/AutoLabelPage.tsx',{
+    prepareAutoLabelModels:async()=>snapshot,
+  });
+  h.render(autoLabelProps).runEffects();await tick();
+  const r=h.render(autoLabelProps);
+  assert.ok(content(r.tree).includes('Dimuat; warmup belum berhasil'));
+  assert.ok(content(r.tree).includes(snapshot.models['yolo:yolo11n.pt'].warning));
+  assert.equal(previewButton(r.tree).props.disabled,false);
+  assert.equal(batchButton(r.tree).props.disabled,false);
+});
+
 test('a stale preparation response cannot unlock a newly selected model',async()=>{
   const first=deferred(),second=deferred();const calls=[];
   const h=harness('pages/AutoLabelPage.tsx',{

@@ -439,34 +439,15 @@ def get_dataset_class_names(dataset_dir: str | None = None) -> list[str]:
         return []
     return AnnotationRepository(Path(dataset_dir) if dataset_dir else ACTIVE_DATASET_DIR).classes()
 
-def _prewarm_yolo_model() -> None:
-    """Pre-warm the default YOLO model at startup in a background thread."""
-    if AUTOLABEL_ENGINE.uses_cloud:
-        return
-    try:
-        LOGGER.info("Pre-warming YOLO model in background…")
-        custom_path = Path("/home/marsel/Work/Models/Final.pt")
-        target_name = str(custom_path) if custom_path.is_file() else "yolo11n.pt"
-        with INFERENCE_LOCK:
-            model = AUTOLABEL_ENGINE._get_yolo_detector(target_name)
-        LOGGER.info("YOLO model pre-warmed: %s (%s)", type(model).__name__, target_name)
-    except Exception as err:
-        LOGGER.warning("YOLO pre-warm failed: %s", err)
-
-
 @app.on_event("startup")
 def on_startup() -> None:
-    """Server startup: pre-warm YOLO and initialize dataset index."""
+    """Initialize the dataset index; prepare models only after explicit selection."""
     # Initialize SQLite index immediately
     if ACTIVE_DATASET_DIR is not None:
         try:
             get_dataset_index()
         except Exception as err:
             LOGGER.warning("Could not initialize dataset index on startup: %s", err)
-    # Pre-warm YOLO in background so first user request is instant
-    if not AUTOLABEL_ENGINE.uses_cloud:
-        t = threading.Thread(target=_prewarm_yolo_model, daemon=True)
-        t.start()
 
 
 def resolve_annotation_path(img_path: Path) -> tuple[Optional[Path], str]:
