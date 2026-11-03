@@ -7,6 +7,7 @@ import pytest
 from PIL import Image
 from pathlib import Path
 from types import SimpleNamespace
+import errno
 from app.services.dataset.index import DatasetIndex
 from app.services.auto_label.models import AutoLabelResult, AutoLabelDetection
 from app.services.annotation.domain import BoundingBox
@@ -47,6 +48,88 @@ def test_health():
     assert "motorcycle" in data["classes"]
     assert "database_connected" in data
     assert data["database_connected"] is True
+
+
+@pytest.mark.parametrize("code", [errno.EPERM, errno.ENOTSUP, errno.EXDEV, errno.ENOSYS, errno.EMLINK, "windows"])
+def test_upload_without_hard_links(tmp_path, monkeypatch, code):
+    payload = (tmp_path / "sample.jpg").read_bytes()
+
+    def unsupported(*args):
+        error = OSError(code if code != "windows" else errno.EINVAL, "hard links unavailable")
+        if code == "windows":
+            error.winerror = 50
+        raise error
+
+    monkeypatch.setattr(server.os, "link", unsupported)
+    response = client.post("/api/dataset/upload", files={"files": ("new.jpg", payload, "image/jpeg")})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"saved": ["new.jpg"], "count": 1, "total_indexed": 2}
+    assert (tmp_path / "new.jpg").read_bytes() == payload
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_upload_link_collision_rolls_back_batch(tmp_path, monkeypatch, fallback):
+    payload = (tmp_path / "sample.jpg").read_bytes()
+    link = server.os.link
+
+    def collide(source, target):
+        if target.name == "second.jpg":
+            target.write_bytes(b"other writer")
+            if fallback:
+                raise OSError(errno.EPERM, "hard links unavailable")
+            raise FileExistsError(target)
+        link(source, target)
+
+    monkeypatch.setattr(server.os, "link", collide)
+    response = client.post("/api/dataset/upload", files=[
+        ("files", (name, payload, "image/jpeg")) for name in ("first.jpg", "second.jpg")
+    ])
+    assert response.status_code == 409
+    assert not (tmp_path / "first.jpg").exists()
+    assert (tmp_path / "second.jpg").read_bytes() == b"other writer"
+    assert server.DATASET_INDEX.count() == 1
+
+
+def test_upload_fallback_partial_write_rolls_back_batch(tmp_path, monkeypatch):
+    payload = (tmp_path / "sample.jpg").read_bytes()
+    link = server.os.link
+    open_path = Path.open
+    written = []
+
+    def unsupported_second(source, target):
+        if target.name == "second.jpg":
+            raise OSError(errno.EPERM, "hard links unavailable")
+        link(source, target)
+
+    class FailingWriter:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.stream.close()
+
+        def write(self, chunk):
+            self.stream.write(chunk[:10])
+            written.append(chunk[:10])
+            raise OSError(errno.ENOSPC, "disk full")
+
+    def fail_write(path, mode="r", *args, **kwargs):
+        stream = open_path(path, mode, *args, **kwargs)
+        return FailingWriter(stream) if path == tmp_path / "second.jpg" and mode == "xb" else stream
+
+    monkeypatch.setattr(server.os, "link", unsupported_second)
+    monkeypatch.setattr(Path, "open", fail_write)
+    response = client.post("/api/dataset/upload", files=[
+        ("files", (name, payload, "image/jpeg")) for name in ("first.jpg", "second.jpg")
+    ])
+    assert response.status_code == 409
+    assert written == [payload[:10]]
+    assert not (tmp_path / "first.jpg").exists()
+    assert not (tmp_path / "second.jpg").exists()
+    assert server.DATASET_INDEX.count() == 1
 
 
 @pytest.mark.parametrize("limit", ["file", "batch"])

@@ -8,6 +8,7 @@ the SQLite DatasetIndex database, Active Learning engine, and dataset exporters.
 from __future__ import annotations
 
 import io
+import errno
 import json
 import logging
 import os
@@ -1620,8 +1621,25 @@ def _commit_uploads(root: Path, staged: list[tuple[str, Path, int, int]]) -> dic
                 target = root / name
                 # Same-filesystem hard links publish the complete staged file atomically,
                 # and unlike rename(), fail if any other writer created the target.
-                os.link(source, target)
-                saved.append((target, width, height))
+                try:
+                    os.link(source, target)
+                except FileExistsError:
+                    raise
+                except OSError as error:
+                    if error.errno not in {
+                        errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP,
+                        errno.EXDEV, errno.ENOSYS, errno.EMLINK,
+                    } and getattr(error, "winerror", None) not in {1, 5, 17, 50, 1142, 1314}:
+                        raise
+                    # Some filesystems cannot link. Exclusive creation retains collision
+                    # protection; register ownership before copying for partial rollback.
+                    with target.open("xb") as destination:
+                        saved.append((target, width, height))
+                        with source.open("rb") as origin:
+                            while chunk := origin.read(UPLOAD_CHUNK_BYTES):
+                                destination.write(chunk)
+                else:
+                    saved.append((target, width, height))
             count = index.add_paths(saved)
         except Exception as err:
             for target, *_ in saved:
