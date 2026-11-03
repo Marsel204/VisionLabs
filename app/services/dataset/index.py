@@ -130,6 +130,30 @@ class DatasetIndex:
             LOGGER.info("indexed %d image paths under %s (pruned %d)", len(rows), resolved_root, len(prune_paths))
             return len(rows)
 
+    def add_paths(self, items: list[tuple[Path, int, int]]) -> int:
+        """Atomically upsert known image paths and dimensions; return the index total.
+
+        Unlike a scan, this does not traverse the dataset or prune unrelated rows.
+        Callers must supply verified, confined image paths and their dimensions.
+        """
+        rows = []
+        for path, width, height in items:
+            path = path.resolve()
+            stat = path.stat()
+            rows.append((str(path), stat.st_mtime_ns, stat.st_size, width, height))
+        with self._lock, self._connection:
+            self._connection.executemany(
+                "INSERT INTO images(path, modified_ns, size_bytes, width, height) "
+                "VALUES(?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET "
+                "width=excluded.width, height=excluded.height, "
+                "status=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN 'unreviewed' ELSE images.status END, "
+                "annotation_count=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN -1 ELSE images.annotation_count END, "
+                "difficulty=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN 0 ELSE images.difficulty END, "
+                "modified_ns=excluded.modified_ns, size_bytes=excluded.size_bytes",
+                rows,
+            )
+            return int(self._connection.execute("SELECT COUNT(*) FROM images").fetchone()[0])
+
     def iter_paths(self, page_size: int = 1000) -> Iterator[Path]:
         """Yield indexed image paths in stable pages."""
         if page_size < 1:

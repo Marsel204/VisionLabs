@@ -49,6 +49,37 @@ def test_health():
     assert data["database_connected"] is True
 
 
+@pytest.mark.parametrize("limit", ["file", "batch"])
+def test_upload_size_limits_leave_no_files(tmp_path, monkeypatch, limit):
+    payload = (tmp_path / "sample.jpg").read_bytes()
+    # For the batch limit, neither individual file exceeds its own cap.
+    monkeypatch.setattr(server, "MAX_IMAGE_BYTES", len(payload) - 1 if limit == "file" else len(payload))
+    monkeypatch.setattr(server, "MAX_TRANSFER_BYTES", len(payload) if limit == "batch" else 10 * len(payload))
+    response = client.post("/api/dataset/upload", files=[
+        ("files", ("first.jpg", payload, "image/jpeg")),
+        ("files", ("second.jpg", payload, "image/jpeg")),
+    ])
+    assert response.status_code == 413, response.text
+    assert {p.name for p in tmp_path.iterdir() if not p.name.startswith(".dataset_index.sqlite")} == {"sample.jpg"}
+    assert server.DATASET_INDEX.count() == 1
+
+
+def test_upload_at_size_limit_indexes_only_new_paths(tmp_path, monkeypatch):
+    payload = (tmp_path / "sample.jpg").read_bytes()
+    monkeypatch.setattr(server, "MAX_IMAGE_BYTES", len(payload))
+    monkeypatch.setattr(server, "MAX_TRANSFER_BYTES", len(payload))
+    monkeypatch.setattr(DatasetIndex, "scan", lambda *args: pytest.fail("Upload rescanned the dataset"))
+    response = client.post("/api/dataset/upload", files={
+        "files": ("../../new.JPG", payload, "image/jpeg"),
+    })
+    assert response.status_code == 200, response.text
+    assert response.json() == {"saved": ["new.JPG"], "count": 1, "total_indexed": 2}
+    record = server.DATASET_INDEX.get_image(tmp_path / "new.JPG")
+    assert (record["width"], record["height"]) == (100, 80)
+    assert (tmp_path / "new.JPG").read_bytes() == payload
+    assert not list(tmp_path.glob(".visionlab-upload-*"))
+
+
 def test_locate_anything_preview_and_batch_forward_selection(monkeypatch):
     from unittest.mock import Mock
 

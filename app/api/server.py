@@ -13,6 +13,7 @@ import logging
 import os
 import functools
 import threading
+import tempfile
 import time
 import secrets
 import sqlite3
@@ -27,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 from PIL import Image
+from anyio import CapacityLimiter, from_thread, to_thread
 
 from app.services.dataset.index import DatasetIndex, IMAGE_SUFFIXES
 from app.services.dataset.repository import AnnotationRepository, RepositoryError, RevisionConflict
@@ -43,14 +45,14 @@ from app.services.annotation.domain import (
 from app.services.auto_label.engine import AutoLabelEngine
 from app.configs.settings import PathSettings
 from app.api.colab_routes import ColabJobRequest, create_router as create_colab_router
-from app.services.colab_connection import ColabConnection
+from app.services.colab_connection import ColabConnection, MAX_TRANSFER_BYTES
 from app.services.auto_label.models import (
     AutoLabelClass,
     AutoLabelConfig,
     AutoLabelPipelineMode,
     DEFAULT_AUTO_LABEL_CLASSES,
 )
-from app.services.inference.cloud import CloudInferenceError
+from app.services.inference.cloud import CloudInferenceError, MAX_IMAGE_BYTES
 from app.services.inference.preparation import ModelPreparation
 from app.export.exporters import (
     CocoExporter,
@@ -1591,42 +1593,97 @@ def search_dataset_directories(query: str = ""):
     return {"directories": results}
 
 
-@app.post("/api/dataset/upload")
-async def upload_images(files: List[UploadFile] = File(...)):
-    """Upload one or more image files into active dataset directory and index them."""
+UPLOAD_CHUNK_BYTES = 1024 * 1024
+# Upload workers await UploadFile.read(), which can itself need the default thread
+# pool for disk-spooled multipart files. Keep a separate, bounded admission limit
+# so simultaneous uploads cannot occupy every token needed by their own readers.
+UPLOAD_WORKERS = CapacityLimiter(4)
+
+
+def _check_upload_collisions(root: Path, names: list[str]) -> None:
+    """Check case-insensitive collisions, including directories and dangling symlinks."""
+    existing = {path.name.casefold() for path in root.iterdir()}
+    for name in names:
+        if name.casefold() in existing:
+            raise HTTPException(409, f"Image already exists: {name}")
+
+
+def _commit_uploads(root: Path, staged: list[tuple[str, Path, int, int]]) -> dict:
+    """Publish verified files exclusively and index them as one batch, in a worker."""
+    with DATASET_STATE_LOCK:
+        check_dataset(str(root))
+        _check_upload_collisions(root, [name for name, *_ in staged])
+        index = get_dataset_index()
+        saved = []
+        try:
+            for name, source, width, height in staged:
+                target = root / name
+                # Same-filesystem hard links publish the complete staged file atomically,
+                # and unlike rename(), fail if any other writer created the target.
+                os.link(source, target)
+                saved.append((target, width, height))
+            count = index.add_paths(saved)
+        except Exception as err:
+            for target, *_ in saved:
+                target.unlink(missing_ok=True)
+            raise HTTPException(409, "Upload could not be committed") from err
+        names = [target.name for target, *_ in saved]
+        return {"saved": names, "count": len(names), "total_indexed": count}
+
+
+def _stage_and_upload_images(files: List[UploadFile]) -> dict:
+    """Bound memory and disk use; all filesystem, Pillow, and lock work stays here."""
     with DATASET_STATE_LOCK:
         check_dataset(None)
         root = ACTIVE_DATASET_DIR.resolve()
-    staged = []
-    names = set()
+
+    names = []
+    seen = set()
     for upload in files:
         name = Path(upload.filename or "").name
         if not name or Path(name).suffix.lower() not in IMAGE_SUFFIXES:
             raise HTTPException(422, "Upload must be a supported image")
-        if name.casefold() in names or (root / name).exists():
+        if name.casefold() in seen:
             raise HTTPException(409, f"Image already exists: {name}")
-        names.add(name.casefold())
-        content = await upload.read()
-        try:
-            with Image.open(io.BytesIO(content)) as image:
-                image.verify()
-        except Exception as err:
-            raise HTTPException(422, f"Invalid image: {name}") from err
-        staged.append((name, content))
-    saved = []
-    try:
-        for name, content in staged:
-            # Exclusive creation prevents a collision between simultaneous uploads.
-            with (root / name).open("xb") as stream:
-                saved.append(name)
-                stream.write(content)
-    except Exception as err:
-        for name in saved:
-            (root / name).unlink(missing_ok=True)
-        raise HTTPException(409, "Upload could not be committed") from err
-    with DatasetIndex(root / ".dataset_index.sqlite") as index:
-        count = index.scan(root)
-    return {"saved": saved, "count": len(saved), "total_indexed": count}
+        names.append(name)
+        seen.add(name.casefold())
+
+    with DATASET_STATE_LOCK:
+        check_dataset(str(root))
+        _check_upload_collisions(root, names)
+        # Initialize the index before publishing new files if this dataset is cold.
+        get_dataset_index()
+
+    # Hidden staging is excluded from scans and lives on the target filesystem.
+    # TemporaryDirectory also cleans partial writes, read failures, and invalid batches.
+    with tempfile.TemporaryDirectory(prefix=".visionlab-upload-", dir=root) as directory:
+        staged = []
+        total_bytes = 0
+        for number, (upload, name) in enumerate(zip(files, names)):
+            source = Path(directory) / str(number)
+            file_bytes = 0
+            with source.open("xb") as stream:
+                while chunk := from_thread.run(upload.read, UPLOAD_CHUNK_BYTES):
+                    file_bytes += len(chunk)
+                    total_bytes += len(chunk)
+                    # Share the existing image (20 MiB) and transfer (50 MiB) caps.
+                    if file_bytes > MAX_IMAGE_BYTES or total_bytes > MAX_TRANSFER_BYTES:
+                        raise HTTPException(413, "Upload exceeds image or batch size limit")
+                    stream.write(chunk)
+            try:
+                with Image.open(source) as image:
+                    width, height = image.size
+                    image.verify()
+            except Exception as err:
+                raise HTTPException(422, f"Invalid image: {name}") from err
+            staged.append((name, source, width, height))
+        return _commit_uploads(root, staged)
+
+
+@app.post("/api/dataset/upload")
+async def upload_images(files: List[UploadFile] = File(...)):
+    """Stream images through a worker; only bounded async reads run on the event loop."""
+    return await to_thread.run_sync(_stage_and_upload_images, files, limiter=UPLOAD_WORKERS)
 
 
 @app.post("/api/dataset/classes")

@@ -1,12 +1,17 @@
 """Regression coverage for annotation ownership, persistence and review findings."""
 
 from __future__ import annotations
+import asyncio
+import io
 import json
+import tempfile
+import threading
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
+from starlette.datastructures import UploadFile
 from app.api import server as s
 from app.export.exporters import CocoExporter, YoloExporter
 from app.services.annotation.domain import Annotation, AnnotationDocument, BoundingBox
@@ -245,6 +250,264 @@ def test_upload_collision_and_invalid_content(dataset):
         == 422
     )
     assert not (root / "new.jpg").exists()
+
+
+def assert_no_upload_staging(root):
+    assert not list(root.glob(".visionlab-upload-*"))
+
+
+def test_upload_invalid_mid_batch_rolls_back(dataset):
+    root, path, index, client = dataset
+    response = client.post("/api/dataset/upload", files=[
+        ("files", ("first.jpg", path.read_bytes(), "image/jpeg")),
+        ("files", ("invalid.jpg", b"invalid image", "image/jpeg")),
+    ])
+    assert response.status_code == 422
+    assert list(root.glob("*.jpg")) == [path]
+    assert index.count() == 1
+    assert_no_upload_staging(root)
+
+
+@pytest.mark.parametrize("names", [("new.jpg", "NEW.JPG"), ("SAMPLE.JPG",)])
+def test_upload_case_insensitive_collisions(dataset, names):
+    root, path, index, client = dataset
+    response = client.post("/api/dataset/upload", files=[
+        ("files", (name, path.read_bytes(), "image/jpeg")) for name in names
+    ])
+    assert response.status_code == 409
+    assert list(root.glob("*.jpg")) == [path]
+    assert index.count() == 1
+    assert_no_upload_staging(root)
+
+
+def test_upload_unsupported_suffix_cleans_staging(dataset):
+    root, path, _, client = dataset
+    response = client.post("/api/dataset/upload", files=[
+        ("files", ("valid.jpg", path.read_bytes(), "image/jpeg")),
+        ("files", ("invalid.txt", path.read_bytes(), "image/jpeg")),
+    ])
+    assert response.status_code == 422
+    assert not (root / "valid.jpg").exists()
+    assert_no_upload_staging(root)
+
+
+@pytest.mark.parametrize("second_name", ["same.jpg", "SAME.JPG"])
+def test_upload_concurrent_same_name_has_one_winner(dataset, monkeypatch, second_name):
+    root, path, index, _ = dataset
+    commit = s._commit_uploads
+    barrier = threading.Barrier(2)
+
+    def concurrent_commit(*args):
+        barrier.wait(timeout=5)
+        return commit(*args)
+
+    monkeypatch.setattr(s, "_commit_uploads", concurrent_commit)
+
+    async def run():
+        async def attempt(name):
+            try:
+                return await s.upload_images([UploadFile(filename=name, file=io.BytesIO(path.read_bytes()))])
+            except s.HTTPException as error:
+                return error.status_code
+        return await asyncio.gather(attempt("same.jpg"), attempt(second_name))
+
+    results = asyncio.run(run())
+    assert sum(isinstance(result, dict) for result in results) == 1
+    assert 409 in results
+    saved = next(result for result in results if isinstance(result, dict))
+    assert saved["total_indexed"] == 2
+    assert index.count() == 2
+    assert len([p for p in root.iterdir() if p.name.casefold() == "same.jpg"]) == 1
+    assert_no_upload_staging(root)
+
+
+def test_upload_commit_keeps_event_loop_responsive(dataset, monkeypatch):
+    root, path, _, _ = dataset
+    release = threading.Event()
+    commit = s._commit_uploads
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        entered = asyncio.Event()
+
+        def blocked_commit(*args):
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(timeout=5), "event loop did not release commit worker"
+            return commit(*args)
+
+        monkeypatch.setattr(s, "_commit_uploads", blocked_commit)
+        task = asyncio.create_task(s.upload_images([
+            UploadFile(filename="new.jpg", file=io.BytesIO(path.read_bytes()))
+        ]))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=2)
+            assert not task.done()
+            # This separate task must tick while the synchronous commit is blocked.
+            ticked = asyncio.Event()
+            async def tick():
+                await asyncio.sleep(0)
+                ticked.set()
+            await asyncio.wait_for(asyncio.create_task(tick()), timeout=1)
+            assert ticked.is_set() and not release.is_set()
+        finally:
+            release.set()
+            await task
+
+    asyncio.run(run())
+    assert_no_upload_staging(root)
+
+
+def test_upload_reads_bounded_chunks_on_event_loop(dataset):
+    root, path, _, _ = dataset
+    payload = path.read_bytes() + b"\0" * (2 * 1024 * 1024)
+
+    class ChunkedUpload:
+        filename = "chunked.jpg"
+
+        def __init__(self):
+            self.stream = io.BytesIO(payload)
+            self.read_sizes = []
+
+        async def read(self, size=-1):
+            asyncio.get_running_loop()  # The async reader must stay on the event loop.
+            assert 0 < size <= 1024 * 1024, "Upload attempted whole-file buffering"
+            self.read_sizes.append(size)
+            return self.stream.read(size)
+
+    upload = ChunkedUpload()
+    result = asyncio.run(s.upload_images([upload]))
+    assert result["count"] == 1 and len(upload.read_sizes) >= 4
+    assert (root / upload.filename).read_bytes() == payload
+    assert_no_upload_staging(root)
+
+
+def test_upload_read_failure_cleans_partial_staging(dataset):
+    root, path, index, _ = dataset
+
+    class BrokenUpload:
+        filename = "broken.jpg"
+        reads = 0
+
+        async def read(self, size=-1):
+            self.reads += 1
+            if self.reads == 1:
+                return path.read_bytes()
+            raise OSError("disconnected")
+
+    with pytest.raises(OSError, match="disconnected"):
+        asyncio.run(s.upload_images([BrokenUpload()]))
+    assert not (root / "broken.jpg").exists()
+    assert index.count() == 1
+    assert_no_upload_staging(root)
+
+
+def test_upload_spooled_reads_do_not_exhaust_worker_pool(dataset):
+    from anyio import to_thread
+
+    root, path, _, _ = dataset
+
+    async def run():
+        limiter = to_thread.current_default_thread_limiter()
+        previous_tokens = limiter.total_tokens
+        limiter.total_tokens = 1
+        try:
+            with tempfile.SpooledTemporaryFile(max_size=1) as stream:
+                stream.write(path.read_bytes())
+                stream.seek(0)
+                upload = UploadFile(filename="spooled.jpg", file=stream)
+                return await asyncio.wait_for(s.upload_images([upload]), timeout=5)
+        finally:
+            limiter.total_tokens = previous_tokens
+
+    assert asyncio.run(run())["total_indexed"] == 2
+    assert_no_upload_staging(root)
+
+
+def test_upload_partial_write_failure_cleans_staging(dataset, monkeypatch):
+    root, path, index, _ = dataset
+    open_path = Path.open
+
+    class BrokenWriter:
+        def __enter__(self):
+            self.stream = open_path(self.path, "xb")
+            return self
+
+        def write(self, chunk):
+            self.stream.write(chunk[:10])
+            raise OSError("disk full")
+
+        def __exit__(self, *args):
+            self.stream.close()
+
+    def fail_staging_write(target, mode="r", *args, **kwargs):
+        if target.parent.name.startswith(".visionlab-upload-") and mode == "xb":
+            writer = BrokenWriter()
+            writer.path = target
+            return writer
+        return open_path(target, mode, *args, **kwargs)
+
+    payload = path.read_bytes()
+    monkeypatch.setattr(Path, "open", fail_staging_write)
+    with pytest.raises(OSError, match="disk full"):
+        asyncio.run(s.upload_images([UploadFile(filename="new.jpg", file=io.BytesIO(payload))]))
+    assert not (root / "new.jpg").exists()
+    assert index.count() == 1
+    assert_no_upload_staging(root)
+
+
+def test_upload_dataset_switch_rejects_commit(dataset, tmp_path, monkeypatch):
+    root, path, index, _ = dataset
+    other = tmp_path / "other"
+    other.mkdir()
+    commit = s._commit_uploads
+
+    def switch_then_commit(*args):
+        s.select_folder(str(other))
+        return commit(*args)
+
+    monkeypatch.setattr(s, "_commit_uploads", switch_then_commit)
+    with pytest.raises(s.HTTPException) as error:
+        asyncio.run(s.upload_images([UploadFile(filename="new.jpg", file=io.BytesIO(path.read_bytes()))]))
+    assert error.value.status_code == 409
+    assert not (root / "new.jpg").exists() and not (other / "new.jpg").exists()
+    assert_no_upload_staging(root)
+
+
+def test_upload_partial_publication_rolls_back_without_overwriting(dataset, monkeypatch):
+    root, path, index, client = dataset
+    link = s.os.link
+
+    def race(source, target):
+        if target.name == "second.jpg":
+            target.write_bytes(b"concurrent writer")
+        return link(source, target)
+
+    monkeypatch.setattr(s.os, "link", race)
+    response = client.post("/api/dataset/upload", files=[
+        ("files", (name, path.read_bytes(), "image/jpeg")) for name in ["first.jpg", "second.jpg"]
+    ])
+    assert response.status_code == 409
+    assert not (root / "first.jpg").exists()
+    assert (root / "second.jpg").read_bytes() == b"concurrent writer"
+    assert index.count() == 1
+    assert_no_upload_staging(root)
+
+
+def test_upload_index_failure_rolls_back_files_and_rows(dataset):
+    root, path, index, client = dataset
+    # Fail the second insert, after the first row has been added to the transaction.
+    index._connection.execute("""
+        CREATE TRIGGER fail_upload BEFORE INSERT ON images
+        WHEN NEW.path LIKE '%/second.jpg'
+        BEGIN SELECT RAISE(ABORT, 'injected index failure'); END
+    """)
+    response = client.post("/api/dataset/upload", files=[
+        ("files", (name, path.read_bytes(), "image/jpeg")) for name in ["first.jpg", "second.jpg"]
+    ])
+    assert response.status_code == 409
+    assert list(root.glob("*.jpg")) == [path]
+    assert index.count() == 1
+    assert_no_upload_staging(root)
 
 
 def test_class_registry_is_persistent_and_consistent(dataset):
