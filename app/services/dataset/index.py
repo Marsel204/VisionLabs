@@ -11,8 +11,11 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from app.services.dataset.cache import (
+    IMAGE_SUFFIXES, invalidate_image_catalog, invalidate_image_catalog_for_paths,
+)
+
 LOGGER = logging.getLogger(__name__)
-IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"})
 EXCLUDE_DIRS = frozenset({"exports", "labels", ".git", ".cache", "__pycache__"})
 
 
@@ -86,6 +89,7 @@ class DatasetIndex:
         if not root.is_dir():
             raise NotADirectoryError(root)
         resolved_root = root.resolve()
+        invalidate_image_catalog(resolved_root)
         rows = []
         for path in resolved_root.rglob("*"):
             if not (path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES):
@@ -156,6 +160,7 @@ class DatasetIndex:
         Unlike a scan, this does not traverse the dataset or prune unrelated rows.
         Callers must supply verified, confined image paths and their dimensions.
         """
+        invalidate_image_catalog_for_paths([path.resolve() for path, _, _ in items])
         rows = []
         for path, width, height in items:
             path = path.resolve()
@@ -210,6 +215,28 @@ class DatasetIndex:
             )
             self._connection.commit()
 
+    def set_listing_cache_batch(
+        self, metadata: list[tuple[Path, int, int]],
+        annotations: list[tuple[Path, str, int, float, dict[str, int]]],
+        *, expected_generation: int,
+    ) -> bool:
+        """Publish a page's read results in one transaction, rejecting stale fills."""
+        if not metadata and not annotations:
+            return True
+        guard = " AND (SELECT generation FROM annotation_cache_state WHERE id=1)=?"
+        with self._lock, self._connection:
+            dimensions = self._connection.executemany(
+                "UPDATE images SET width=?, height=? WHERE path=?" + guard,
+                [(w, h, str(path), expected_generation) for path, w, h in metadata],
+            )
+            counts = self._connection.executemany(
+                "UPDATE images SET status=?, annotation_count=?, difficulty=?, class_histogram=? "
+                "WHERE path=?" + guard,
+                [(status, count, difficulty, json.dumps(histogram), str(path), expected_generation)
+                 for path, status, count, difficulty, histogram in annotations],
+            )
+            return dimensions.rowcount == len(metadata) and counts.rowcount == len(annotations)
+
     def set_difficulty(self, path: Path, difficulty: float, status: str = "unreviewed") -> None:
         """Persist a validated difficulty score used by the review queue."""
         if not 0.0 <= difficulty <= 1.0:
@@ -222,6 +249,7 @@ class DatasetIndex:
 
     def delete(self, path: Path) -> bool:
         """Remove one image path from the database index."""
+        invalidate_image_catalog_for_paths([path.resolve()])
         with self._lock:
             cursor = self._connection.execute(
                 "DELETE FROM images WHERE path=?", (str(path),)

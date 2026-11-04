@@ -492,6 +492,233 @@ def test_stats_rejects_concurrent_rescan(dataset, monkeypatch):
     assert result["class_counts"]["bus"] == 1
 
 
+def test_listing_batches_one_commit_and_reuses_dimensions_and_registry(dataset, monkeypatch):
+    import yaml
+
+    root, path, index, client = dataset
+    (root / "data.yaml").write_text("names: [car]\n")
+    paths = [path, image(root / "nested/second.png"), image(root / "third.jpg")]
+    for item in paths:
+        item.with_suffix(".txt").write_text("0 .2 .2 .2 .2\n")
+    index.scan(root)
+    counts = dict(opens=0, yaml=0, commits=0)
+    opened, loaded = Image.open, yaml.safe_load
+
+    def counted_open(*a, **k):
+        counts["opens"] += 1
+        return opened(*a, **k)
+
+    def counted_yaml(*a, **k):
+        counts["yaml"] += 1
+        return loaded(*a, **k)
+
+    monkeypatch.setattr(Image, "open", counted_open)
+    monkeypatch.setattr(yaml, "safe_load", counted_yaml)
+    index._connection.set_trace_callback(
+        lambda sql: counts.__setitem__("commits", counts["commits"] + 1) if sql == "COMMIT" else None
+    )
+    try:
+        first = client.get("/api/images")
+        assert first.status_code == 200, first.text
+        assert counts == dict(opens=3, yaml=1, commits=1)
+        assert all(row["annotation_count"] == 1 for row in first.json()["images"])
+        assert index.class_counts() == {"car": 3}
+        counts.update(opens=0, yaml=0, commits=0)
+        assert client.get("/api/images").json() == first.json()
+        assert counts == dict(opens=0, yaml=0, commits=0)
+    finally:
+        index._connection.set_trace_callback(None)
+
+
+def test_listing_does_not_open_images_when_only_counts_are_unknown(dataset, monkeypatch):
+    _, path, index, client = dataset
+    index.set_metadata(path, 100, 80)
+    path.with_suffix(".txt").write_text("1 .2 .2 .2 .2\n")
+    monkeypatch.setattr(Image, "open", lambda *a, **k: pytest.fail("Dimensions already cached"))
+    response = client.get("/api/images")
+    assert response.status_code == 200, response.text
+    assert response.json()["images"][0]["annotation_count"] == 1
+
+
+def test_listing_rejects_stale_page_fills_after_external_rescan(dataset, monkeypatch):
+    root, path, index, client = dataset
+    path.with_suffix(".txt").write_text("1 .2 .2 .2 .2\n")
+    read = AnnotationRepository.read
+
+    def rescan_after_read(*a, **k):
+        data = read(*a, **k)
+        path.with_suffix(".txt").write_text("2 .2 .2 .2 .2\n")
+        with DatasetIndex(index._database_path) as other:
+            other.scan(root, refresh_annotations=True)
+        return data
+
+    with monkeypatch.context() as patch:
+        patch.setattr(AnnotationRepository, "read", rescan_after_read)
+        assert client.get("/api/images").status_code == 409
+    assert index.get_image(path)["annotation_count"] == -1
+    assert index.get_image(path)["width"] is None
+    assert client.get("/api/images").status_code == 200
+    assert index.class_counts() == {"bus": 1}
+
+
+@pytest.mark.parametrize("label", ["99 .2 .2 .2 .2\n", "bad label", "{invalid json"])
+def test_listing_unreadable_labels_return_422_without_caching(dataset, label):
+    _, path, index, client = dataset
+    path.with_suffix(".json" if label.startswith("{") else ".txt").write_text(label)
+    assert client.get("/api/images").status_code == 422
+    assert index.get_image(path)["annotation_count"] == -1
+    assert index.get_image(path)["width"] is None
+
+
+def test_listing_unreadable_image_uses_cached_fallback_but_validates_labels(dataset, monkeypatch):
+    _, path, index, client = dataset
+    path.write_bytes(b"unreadable image")
+    path.with_suffix(".txt").write_text("1 .2 .2 .2 .2\n")
+    first = client.get("/api/images")
+    assert first.status_code == 200, first.text
+    row = first.json()["images"][0]
+    assert (row["width"], row["height"], row["annotation_count"]) == (640, 640, 1)
+    monkeypatch.setattr(Image, "open", lambda *a, **k: pytest.fail("Fallback should be cached"))
+    assert client.get("/api/images").json() == first.json()
+    path.with_suffix(".txt").write_text("99 .2 .2 .2 .2\n")
+    index.invalidate_annotations()
+    assert client.get("/api/images").status_code == 422
+
+
+def test_fresh_repositories_reuse_stem_catalog_and_yaml(dataset, monkeypatch):
+    import os
+    import yaml
+
+    root, path, _, _ = dataset
+    (root / "data.yaml").write_text("names: [car]\n")
+    path.with_suffix(".txt").write_text("0 .2 .2 .2 .2\n")
+    assert AnnotationRepository(root).read(path)["boxes"][0]["class_name"] == "car"
+    monkeypatch.setattr(os, "scandir", lambda *a, **k: pytest.fail("Unchanged catalog walked"))
+    monkeypatch.setattr(Path, "glob", lambda *a, **k: pytest.fail("Stem glob enumerates directory"))
+    monkeypatch.setattr(yaml, "safe_load", lambda *a, **k: pytest.fail("Unchanged YAML parsed"))
+    for _ in range(3):
+        assert AnnotationRepository(root).read(path)["boxes"][0]["class_name"] == "car"
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_shared_catalog_detects_external_duplicate_stems(dataset, nested):
+    from app.services.dataset.repository import RepositoryError
+
+    root, path, _, _ = dataset
+    labels = root / "labels"
+    labels.mkdir()
+    (labels / "sample.txt").write_text("1 .2 .2 .2 .2\n")
+    # Warm with the future peer directory already present, so its own mtime
+    # (rather than just the root's) must reveal an external addition.
+    folder = root / "nested" if nested else root
+    folder.mkdir(exist_ok=True)
+    AnnotationRepository(root).read(path)
+    peer = image(folder / "sample.png")
+    with pytest.raises(RepositoryError, match="ambiguous"):
+        AnnotationRepository(root).read(path)
+    peer.unlink()
+    assert len(AnnotationRepository(root).read(path)["boxes"]) == 1
+
+
+def test_nested_legacy_paths_and_confinement_survive_catalog_reuse(dataset, tmp_path):
+    from app.services.dataset.repository import RepositoryError
+
+    root, _, index, client = dataset
+    first = image(root / "images/a/equal.jpg")
+    second = image(root / "images/b/equal.png")
+    for name, cls in (("a", 1), ("b", 2)):
+        label = root / f"labels/{name}/equal.txt"
+        label.parent.mkdir(parents=True)
+        label.write_text(f"{cls} .2 .2 .2 .2\n")
+    index.scan(root)
+    assert AnnotationRepository(root).read(first)["boxes"][0]["class_name"] == "car"
+    assert AnnotationRepository(root).read(second)["boxes"][0]["class_name"] == "bus"
+    assert client.get("/api/images").status_code == 200
+    outside = tmp_path / "outside.txt"
+    outside.write_text("1 .2 .2 .2 .2\n")
+    label = root / "labels/a/equal.txt"
+    label.unlink()
+    label.symlink_to(outside)
+    with pytest.raises(RepositoryError, match="escapes"):
+        AnnotationRepository(root).read(first)
+
+
+def test_registry_cache_refreshes_external_change_and_does_not_leak_mutations(dataset):
+    root, path, _, _ = dataset
+    registry = root / "data.yaml"
+    registry.write_text("names: [car]\n")
+    path.with_suffix(".txt").write_text("0 .2 .2 .2 .2\n")
+    repo = AnnotationRepository(root)
+    repo.classes().append("local change")
+    assert AnnotationRepository(root).classes() == ["car"]
+    assert repo.read(path)["boxes"][0]["class_name"] == "car"
+    registry.write_text("names: [renamed car]\n")
+    assert AnnotationRepository(root).read(path)["boxes"][0]["class_name"] == "renamed car"
+
+
+def test_listing_after_class_rename_and_dataset_switch(dataset, tmp_path):
+    root, path, _, client = dataset
+    (root / "data.yaml").write_text("names: [car]\n")
+    path.with_suffix(".txt").write_text("0 .2 .2 .2 .2\n")
+    assert client.get("/api/images").json()["images"][0]["annotation_count"] == 1
+    result = client.patch("/api/dataset/classes", json=dict(
+        dataset_id=str(root), expected_classes=["car"], action="rename", name="car", target="taxi",
+    ))
+    assert result.status_code == 200, result.text
+    assert client.get("/api/images").json()["images"][0]["annotation_count"] == 1
+    assert client.get("/api/annotations/sample.jpg").json()["boxes"][0]["class_name"] == "taxi"
+    other = tmp_path / "other"
+    image(other / "sample.jpg", (207, 109))
+    (other / "data.yaml").write_text("names: [bus]\n")
+    (other / "sample.txt").write_text("0 .2 .2 .2 .2\n")
+    assert client.post("/api/dataset/select-folder", params={"path": str(other)}).status_code == 200
+    listing = client.get("/api/images").json()["images"][0]
+    assert (listing["dataset_id"], listing["width"], listing["height"]) == (str(other), 207, 109)
+    assert client.get("/api/annotations/sample.jpg").json()["boxes"][0]["class_name"] == "bus"
+    assert client.post("/api/dataset/select-folder", params={"path": str(root)}).status_code == 200
+    assert client.get("/api/annotations/sample.jpg").json()["boxes"][0]["class_name"] == "taxi"
+
+
+def test_upload_then_listing_invalidates_duplicate_stem_catalog(dataset):
+    root, path, index, client = dataset
+    path.with_suffix(".txt").write_text("1 .2 .2 .2 .2\n")
+    assert client.get("/api/images").status_code == 200
+    payload = io.BytesIO()
+    Image.new("RGB", (222, 111)).save(payload, "PNG")
+    response = client.post("/api/dataset/upload", files={"files": ("sample.png", payload.getvalue(), "image/png")})
+    assert response.status_code == 200, response.text
+    assert client.get("/api/images").status_code == 422  # legacy label now ambiguous
+    path.with_suffix(".txt").unlink()
+    response = client.get("/api/images")
+    assert response.status_code == 200, response.text
+    added = next(row for row in response.json()["images"] if row["filename"] == "sample.png")
+    assert (added["width"], added["height"], added["annotation_count"]) == (222, 111, 0)
+    assert index.count() == 2
+
+
+@pytest.mark.parametrize("folder", ["exports", "labels", ".hidden"])
+def test_direct_repository_reads_keep_duplicate_extension_guard_in_excluded_folders(dataset, folder):
+    from app.services.dataset.repository import RepositoryError
+
+    root, _, _, _ = dataset
+    path = image(root / folder / "direct.jpg")
+    image(root / folder / "direct.png")
+    path.with_suffix(".txt").write_text("1 .2 .2 .2 .2\n")
+    with pytest.raises(RepositoryError, match="ambiguous"):
+        AnnotationRepository(root).read(path)
+
+
+def test_scan_add_and_delete_explicitly_invalidate_catalog(dataset):
+    root, path, index, _ = dataset
+    repo = AnnotationRepository(root)
+    path.with_suffix(".txt").write_text("1 .2 .2 .2 .2\n")
+    for mutation in (lambda: index.scan(root), lambda: index.add_paths([(path, 100, 80)]), lambda: index.delete(path)):
+        repo.read(path)
+        assert repo._cache.directories is not None
+        mutation()
+        assert repo._cache.directories is None
+
+
 def test_changed_image_dimensions(dataset):
     root, path, index, client = dataset
     assert client.get("/api/images").json()["images"][0]["width"] == 100

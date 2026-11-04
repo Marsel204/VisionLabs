@@ -20,6 +20,7 @@ import secrets
 import sqlite3
 import sys
 import yaml
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Union
@@ -31,6 +32,7 @@ from pydantic import BaseModel, Field, ConfigDict, model_validator
 from PIL import Image
 from anyio import CapacityLimiter, from_thread, to_thread
 
+from app.services.dataset.cache import invalidate_image_catalog
 from app.services.dataset.index import DatasetIndex, IMAGE_SUFFIXES
 from app.services.dataset.repository import AnnotationRepository, RepositoryError, RevisionConflict
 from app.services.dataset.class_management import change_class
@@ -205,6 +207,7 @@ def get_dataset_index() -> DatasetIndex:
     db_path = ACTIVE_DATASET_DIR / ".dataset_index.sqlite"
     if DATASET_INDEX is None or DATASET_INDEX._database_path != db_path:
         if DATASET_INDEX is not None:
+            invalidate_image_catalog(DATASET_INDEX._database_path.parent)
             try:
                 DATASET_INDEX.close()
             except Exception:
@@ -614,10 +617,13 @@ def list_images(
     if ACTIVE_DATASET_DIR is None:
         return {"images": [], "total": 0, "directory": ""}
     index_db = get_dataset_index()
+    generation = index_db.annotation_generation()
     records = index_db.list_records(status=status, order_by=order_by, limit=limit, offset=offset)
     images = []
     repo = AnnotationRepository(ACTIVE_DATASET_DIR)
     dataset_root = ACTIVE_DATASET_DIR.resolve()
+    metadata_updates = []
+    annotation_updates = []
 
     for r in records:
         path_val = r.get("path") if r else None
@@ -639,22 +645,21 @@ def list_images(
             try:
                 with Image.open(img_path) as img:
                     w, h = img.size
-                    index_db.set_metadata(img_path, w, h)
             except Exception:
                 w, h = 640, 640
+            metadata_updates.append((img_path, w, h))
 
         cached_count = r.get("annotation_count", -1)
         if cached_count == -1:
             try:
                 with repo.lock, repo._write_lock():
-                    generation = index_db.annotation_generation()
-                    data = repo.read(img_path)
+                    data = repo.read(img_path, dimensions=(w, h))
                     ann_count = len(data["boxes"])
                     current_status = data["status"]
-                    index_db.set_status_and_count(
+                    annotation_updates.append((
                         img_path, current_status, ann_count, r.get("difficulty") or 0,
-                        boxes=data["boxes"], expected_generation=generation,
-                    )
+                        Counter(box["class_name"] for box in data["boxes"]),
+                    ))
             except Exception as err:
                 raise HTTPException(422, f"Cannot load labels for {img_path.name}: {err}") from err
         else:
@@ -673,6 +678,12 @@ def list_images(
             "status": current_status,
         })
 
+    if metadata_updates or annotation_updates:
+        with repo.lock, repo._write_lock():
+            if not index_db.set_listing_cache_batch(
+                metadata_updates, annotation_updates, expected_generation=generation,
+            ):
+                raise HTTPException(409, "Dataset annotations changed; reload before continuing")
     return {
         "images": images,
         "total": index_db.count(),
@@ -1474,6 +1485,7 @@ def close_project(req: CloseProjectRequest):
     if DATASET_INDEX is not None:
         DATASET_INDEX.close()
         DATASET_INDEX = None
+    invalidate_image_catalog(ACTIVE_DATASET_DIR)
     ACTIVE_DATASET_DIR = None
     return {"status": "closed", "dataset_id": req.dataset_id}
 
@@ -1487,6 +1499,8 @@ def select_folder(path: str = Query(..., description="Absolute path to image dir
     if not p.is_dir():
         raise HTTPException(status_code=400, detail=f"Directory does not exist: {path}")
 
+    if ACTIVE_DATASET_DIR is not None:
+        invalidate_image_catalog(ACTIVE_DATASET_DIR)
     ACTIVE_DATASET_DIR = p
     persist_active_dataset_dir(p)
     if DATASET_INDEX is not None:
