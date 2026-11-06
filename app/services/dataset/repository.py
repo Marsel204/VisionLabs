@@ -8,9 +8,10 @@ relative image path and extension, so equal basenames and stems cannot collide.
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import math
 import os
+import sqlite3
 import tempfile
 import threading
 from pathlib import Path
@@ -27,11 +28,10 @@ from app.services.annotation.domain import (
     BoundingBox,
     ReviewStatus,
 )
-from app.services.dataset.index import IMAGE_SUFFIXES
+from app.services.dataset.cache import dataset_cache
+from app.services.dataset.index import DatasetIndex, IMAGE_SUFFIXES
 
 DEFAULT_CLASSES = ("motorcycle", "car", "bus", "truck", "minivan", "person")
-_LOCKS: dict[Path, Any] = {}
-_LOCKS_GUARD = threading.Lock()
 _WRITE_STATE = threading.local()
 
 
@@ -59,9 +59,8 @@ def atomic_text(path: Path, value: str) -> None:
 class AnnotationRepository:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
-        with _LOCKS_GUARD:
-            self.lock = _LOCKS.setdefault(self.root, threading.RLock())
-        self._stem_counts: dict[str, int] | None = None
+        self._cache = dataset_cache(self.root)
+        self.lock = self._cache.lock
 
     @contextmanager
     def _write_lock(self):
@@ -138,7 +137,14 @@ class AnnotationRepository:
                 path = self.root / name
                 if path.is_file():
                     try:
-                        config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                        stat = path.stat()
+                        identity = (stat.st_mtime_ns, stat.st_size)
+                        cached = self._cache.registries.get(path)
+                        if cached is not None and cached[0] == identity:
+                            config = cached[1]
+                        else:
+                            config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                            self._cache.registries[path] = (identity, config)
                         names = config.get("names", [])
                         if isinstance(names, dict):
                             keys = sorted(names, key=lambda k: int(k))
@@ -205,24 +211,9 @@ class AnnotationRepository:
                 if not path.resolve().is_relative_to(self.root):
                     raise RepositoryError("label path escapes dataset")
                 # A legacy stem-only path cannot identify two images reliably.
-                if self._stem_counts is None:
-                    self._stem_counts = {}
-                    for peer in self.root.rglob("*"):
-                        if (
-                            peer.suffix.lower() in IMAGE_SUFFIXES
-                            and peer.is_file()
-                            and peer.resolve().is_relative_to(self.root)
-                            and not any(
-                                part in {"exports", "labels"} or part.startswith(".")
-                                for part in peer.relative_to(self.root).parts[:-1]
-                            )
-                        ):
-                            self._stem_counts[peer.stem] = self._stem_counts.get(peer.stem, 0) + 1
-                same_parent = sum(
-                    p.suffix.lower() in IMAGE_SUFFIXES for p in image.parent.glob(image.stem + ".*")
-                )
+                stem_count, same_parent = self._cache.image_counts(self.root, image)
                 if (
-                    self._stem_counts.get(image.stem, 0) > 1 and path.parent == self.root / "labels"
+                    stem_count > 1 and path.parent == self.root / "labels"
                 ) or same_parent > 1:
                     raise RepositoryError(
                         f"ambiguous legacy labels for {relative}; migrate each image explicitly"
@@ -230,11 +221,17 @@ class AnnotationRepository:
                 return path, "json" if path.suffix == ".json" else "yolo"
         return None, ""
 
-    def read(self, image: Path) -> dict[str, Any]:
+    def read(
+        self, image: Path, *, classes: list[str] | None = None,
+        dimensions: tuple[int, int] | None = None,
+    ) -> dict[str, Any]:
         with self.lock:
             image = self.image_path(image)
-            with Image.open(image) as source:
-                width, height = source.size
+            if dimensions is None:
+                with Image.open(image) as source:
+                    width, height = source.size
+            else:
+                width, height = dimensions
             path, kind = self.resolve(image)
             data: dict[str, Any] = {"boxes": [], "revision": 0, "status": "unreviewed"}
             if path and kind == "json":
@@ -246,7 +243,7 @@ class AnnotationRepository:
                 if "status" not in loaded:
                     data["status"] = "ai_labeled" if data.get("auto_labeled") else "reviewed"
             elif path:
-                classes = self.classes()
+                classes = self.classes() if classes is None else classes
                 for i, line in enumerate(path.read_text(encoding="utf-8").splitlines()):
                     if not line.strip():
                         continue
@@ -286,7 +283,7 @@ class AnnotationRepository:
                 or data.get("image_size_bytes", stat.st_size) != stat.st_size
             ):
                 data["status"] = "unreviewed"
-            data["boxes"] = self.validate_boxes(data["boxes"], width, height)
+            data["boxes"] = self.validate_boxes(data["boxes"], width, height, classes=classes)
             data.update(
                 image_name=str(image.relative_to(self.root)),
                 width=width,
@@ -295,8 +292,11 @@ class AnnotationRepository:
             )
             return data
 
-    def validate_boxes(self, boxes: list[dict], width: int, height: int) -> list[dict]:
-        classes = self.classes()
+    def validate_boxes(
+        self, boxes: list[dict], width: int, height: int,
+        *, classes: list[str] | None = None,
+    ) -> list[dict]:
+        classes = self.classes() if classes is None else classes
         result = []
         ids = set()
         for value in boxes:
@@ -356,7 +356,7 @@ class AnnotationRepository:
         status: str = "reviewed",
         expected_revision: int | None = None,
     ) -> dict[str, Any]:
-        with self.lock, self._write_lock():
+        with self.lock, self._write_lock(), ExitStack() as stack:
             image = self.image_path(image)
             with Image.open(image) as source:
                 width, height = source.size
@@ -382,23 +382,34 @@ class AnnotationRepository:
                 projection = self.root.joinpath(*parts).with_suffix(".txt")
             else:
                 projection = image.with_suffix(".txt")
-            peers = [
-                p
-                for p in image.parent.glob(image.stem + ".*")
-                if p.suffix.lower() in IMAGE_SUFFIXES
-            ]
-            if len(peers) == 1:
+            _, peer_count = self._cache.image_counts(self.root, image)
+            if peer_count == 1:
                 if not projection.resolve().is_relative_to(self.root):
                     raise RepositoryError("training label path escapes dataset")
+            # Invalidate before the authoritative write: interruption or a cache
+            # refresh failure must leave an unknown row, never stale statistics.
+            cache_path = self.root / ".dataset_index.sqlite"
+            index = stack.enter_context(DatasetIndex(cache_path)) if cache_path.is_file() else None
+            if index is not None:
+                index.set_annotation_count(image, -1)
             atomic_text(path, json.dumps(data, indent=2))
             # A derived-label failure must not misreport an already committed edit.
-            targets = [path.with_suffix(".txt")] + ([projection] if len(peers) == 1 else [])
+            targets = [path.with_suffix(".txt")] + ([projection] if peer_count == 1 else [])
             warnings = []
             for target in targets:
                 try:
                     atomic_text(target, self.yolo(data["boxes"]))
                 except OSError as err:
                     warnings.append(f"Cannot refresh training labels at {target}: {err}")
+            if index is not None:
+                try:
+                    record = index.get_image(image) or {}
+                    index.set_status_and_count(
+                        image, status, len(data["boxes"]), record.get("difficulty") or 0,
+                        boxes=data["boxes"],
+                    )
+                except (sqlite3.Error, OSError) as err:
+                    warnings.append(f"Cannot refresh annotation cache: {err}")
             if warnings:
                 data["projection_warning"] = "; ".join(warnings)
             return data

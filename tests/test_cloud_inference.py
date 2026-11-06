@@ -19,6 +19,7 @@ from app.services.auto_label.models import (
     AutoLabelClass,
     AutoLabelConfig,
     AutoLabelDetection,
+    AutoLabelPipelineMode,
     AutoLabelResult,
 )
 from app.services.inference.cloud import (
@@ -188,6 +189,48 @@ def test_cloud_engine_never_initializes_local_models(monkeypatch, image_path, se
     payload["detections"] = []
     install_response(monkeypatch, payload)
     assert engine.run_preview(image_path, config).count == 0
+
+
+def test_cloud_engine_does_not_decode_pixels_locally(monkeypatch, image_path, settings, config):
+    install_response(monkeypatch, response_payload())
+    engine = AutoLabelEngine(cloud_settings=settings)
+    monkeypatch.setattr(Image.Image, "convert", Mock(side_effect=AssertionError("RGB decode")))
+    monkeypatch.setattr(Image.Image, "load", Mock(side_effect=AssertionError("pixel decode")))
+    result = engine.run_preview(image_path, config)
+    assert (result.image_width, result.image_height) == (100, 80)
+    assert result.detections[0].box == BoundingBox(0.1, 0.2, 0.7, 0.8)
+
+
+@pytest.mark.parametrize("mode, color, rgb", [("RGB", (12, 34, 56), (12, 34, 56)), ("L", 42, (42, 42, 42))])
+def test_local_engine_preserves_rgb_pixels_and_results(tmp_path, mode, color, rgb):
+    from types import SimpleNamespace
+
+    path = tmp_path / "image.png"
+    Image.new(mode, (100, 80), color).save(path)
+    detector = Mock()
+    detector.detect.return_value = [
+        ("car", 0, 0.9, SimpleNamespace(xmin=10, ymin=16, xmax=70, ymax=64))
+    ]
+    engine = AutoLabelEngine(grounding_detector=detector, allow_cloud=False)
+    options = AutoLabelConfig(
+        mode=AutoLabelPipelineMode.DINO_BOXES,
+        classes=[AutoLabelClass("car", color="#112233")],
+        enable_yolo=False,
+        enable_sam2_masks=False,
+    )
+    result = engine.run_preview(path, options)
+    image = detector.detect.call_args.kwargs["image"]
+    assert image.mode == "RGB" and image.getpixel((0, 0)) == rgb
+    assert (result.image_width, result.image_height) == (100, 80)
+    assert result.detections == [AutoLabelDetection("car", 0.9, BoundingBox(0.1, 0.2, 0.7, 0.8), "#112233")]
+
+
+def test_cloud_engine_with_no_active_classes_still_returns_empty_result(image_path, settings):
+    engine = AutoLabelEngine(cloud_settings=settings)
+    engine._cloud_client.predict = Mock(side_effect=AssertionError("Unexpected cloud request"))
+    result = engine.run_preview(image_path, AutoLabelConfig(classes=[]))
+    assert (result.image_width, result.image_height) == (100, 80)
+    assert result.detections == []
 
 
 def test_worker_authentication_and_full_client_round_trip(

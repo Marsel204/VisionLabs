@@ -63,6 +63,9 @@ export interface ModelPreparationStatus {
     name: string;
     state: 'queued' | 'preparing' | 'ready' | 'error';
     error: string | null;
+    loaded?: boolean;
+    inference_ready?: boolean | null;
+    warning?: string | null;
   }>;
 }
 

@@ -185,6 +185,32 @@ def test_api_refreshes_cached_counts_after_annotation_deletion(api):
     assert client.get("/api/images").json()["images"][0]["annotation_count"] == 1
 
 
+@pytest.mark.parametrize("action,target,delete_annotations,expected", [
+    ("rename", "motorbike", False, {"motorbike": 1, "car": 0, "bus": 1}),
+    ("delete", "car", False, {"car": 1, "bus": 1}),
+    ("delete", None, True, {"car": 0, "bus": 1}),
+])
+def test_class_migration_invalidates_histograms(api, dataset, monkeypatch, action, target, delete_annotations, expected):
+    from app.api import server
+
+    repo, _ = dataset
+    client, _ = api
+    assert client.get("/api/dataset/stats").json()["total_annotations"] == 2
+    # Exercise the service directly as well as the API's separate invalidation.
+    change_class(repo, action, "motorcycle", target, repo.classes(), delete_annotations=delete_annotations)
+    assert client.get("/api/dataset/stats").json()["class_counts"] == expected
+    monkeypatch.setattr(AnnotationRepository, "read", lambda *a, **k: pytest.fail("Migrated histogram not cached"))
+    assert client.get("/api/dataset/stats").json()["class_counts"] == expected
+
+
+def test_api_class_rename_rebuilds_histograms(api):
+    client, payload = api
+    assert client.get("/api/dataset/stats").json()["class_counts"]["car"] == 0
+    assert client.patch("/api/dataset/classes", json=payload).status_code == 200
+    counts = client.get("/api/dataset/stats").json()["class_counts"]
+    assert counts == {"motorcycle": 1, "taxi": 0, "bus": 1}
+
+
 def test_api_requires_session_and_correct_dataset(api):
     client, payload = api
     assert (

@@ -21,7 +21,7 @@ function loadPure(file) {
   }).outputText;
   const module={exports:{}};vm.runInNewContext(code,{module,exports:module.exports,crypto:webcrypto});return module.exports;
 }
-function harness(file, supplied = {}) {
+function harness(file, supplied = {}, helpers = {}) {
   const state=[], refs=[], effects=[], callbacks=[]; let cursor=0, pending=[];
   const same=(a,b)=>a && b && a.length===b.length && a.every((v,i)=>Object.is(v,b[i]));
   const React={
@@ -62,7 +62,7 @@ function harness(file, supplied = {}) {
     if (name.endsWith('/api')) return api;
     if (name.endsWith('/audit')) return {visibleFindings:()=>[],applyFinding:()=>null,applyOcclusionFlags:()=>null};
     // Pure helpers run for real; components stay as named placeholders.
-    if (name.endsWith('/datasetSummary')) return loadPure('pages/datasetSummary.ts');
+    if (name.endsWith('/datasetSummary')) return {...loadPure('pages/datasetSummary.ts'), ...helpers.datasetSummary};
     if (name.endsWith('/format')) return loadPure('format.ts');
     if (name.endsWith('/review')) return loadPure('review.ts');
     if (name.endsWith('/useAnnotationSources')) return load('pages/useAnnotationSources.ts');
@@ -92,6 +92,30 @@ const boxed=id=>({id,class_name:'cat',class_id:1,x:10,y:10,width:20,height:20,
 function setup(supplied={}) { const h=harness('App.tsx',supplied);
   find(h.render().tree,'Sidebar').props.onNavigate('review');h.state[1]=images;
   h.render().runEffects();return h; }
+
+test('dataset summary only recomputes when images change',()=>{
+  const {summarizeDataset}=loadPure('pages/datasetSummary.ts');
+  let calls=0;
+  const h=harness('App.tsx',{}, {datasetSummary:{summarizeDataset(value){
+    calls++;return summarizeDataset(value);
+  }}});
+  h.render(); // Initialize hooks without running effects or any network actions.
+  h.state[1]=images.map(image=>({...image,status:'unreviewed',annotation_count:0}));
+  let r=h.render();
+  const initialCalls=calls;
+  assert.equal(find(r.tree,'Sidebar').props.reviewCount,2);
+  find(r.tree,'Sidebar').props.onNavigate('review');
+  r=h.render();
+  find(r.tree,'AnnotationCanvas').props.onSelectBox('box-1');
+  h.state[2]=1; // Selecting another image keeps the image catalog unchanged.
+  h.render();
+  assert.equal(calls,initialCalls);
+  h.state[1]=h.state[1].map((image,index)=>index===0
+    ? {...image,status:'reviewed',annotation_count:1}:image);
+  r=h.render();
+  assert.equal(calls,initialCalls+1);
+  assert.equal(find(r.tree,'Sidebar').props.reviewCount,1);
+});
 
 test('late image response cannot replace the selected document',async()=>{
   const a=deferred(),b=deferred();const h=setup({fetchAnnotations:n=>n.endsWith('a.jpg')?a.promise:b.promise});
@@ -424,6 +448,21 @@ test('model download failures explain recovery and retry unlocks labeling',async
   assert.equal(attempts,2);
   assert.equal(batchButton(r.tree).props.disabled,false);
   assert.ok(!content(r.tree).includes('Connection interrupted'));
+});
+
+test('warmup failure shows a warning while the loaded model stays usable',async()=>{
+  const snapshot={...readyModels,models:{...readyModels.models,
+    'yolo:yolo11n.pt':{name:'yolo11n.pt',state:'ready',error:null,loaded:true,
+      inference_ready:false,warning:'Warmup failed; model loaded but not warmed: test failure'}}};
+  const h=harness('pages/AutoLabelPage.tsx',{
+    prepareAutoLabelModels:async()=>snapshot,
+  });
+  h.render(autoLabelProps).runEffects();await tick();
+  const r=h.render(autoLabelProps);
+  assert.ok(content(r.tree).includes('Dimuat; warmup belum berhasil'));
+  assert.ok(content(r.tree).includes(snapshot.models['yolo:yolo11n.pt'].warning));
+  assert.equal(previewButton(r.tree).props.disabled,false);
+  assert.equal(batchButton(r.tree).props.disabled,false);
 });
 
 test('a stale preparation response cannot unlock a newly selected model',async()=>{

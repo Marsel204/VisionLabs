@@ -150,6 +150,19 @@ class AutoLabelEngine:
             self._yolo_detectors[target_name] = detector
             return detector
 
+    def _get_yolo_device(self) -> int | str:
+        """Use the same device for preparation and real YOLO inference."""
+        from app.core.runtime import detect_gpu
+
+        return (
+            0
+            if (
+                self._device in ("cuda", "gpu")
+                or (self._device == "auto" and detect_gpu().device == "cuda")
+            )
+            else "cpu"
+        )
+
     @property
     def yolo_model_name(self) -> str:
         return self._yolo_model_name
@@ -310,10 +323,13 @@ class AutoLabelEngine:
         if not path.is_file():
             raise FileNotFoundError(f"Image not found: {path}")
 
+        active_classes = [c for c in config.classes if c.enabled and c.name.strip()]
+        if self._cloud_client is not None and active_classes:
+            return self._cloud_client.predict(path, config)
+
         image = Image.open(path).convert("RGB")
         width, height = image.width, image.height
 
-        active_classes = [c for c in config.classes if c.enabled and c.name.strip()]
         if not active_classes:
             return AutoLabelResult(
                 image_path=path,
@@ -322,9 +338,6 @@ class AutoLabelEngine:
                 detections=[],
                 elapsed_seconds=time.perf_counter() - start_time,
             )
-
-        if self._cloud_client is not None:
-            return self._cloud_client.predict(path, config)
 
         color_map = {c.name: c.color for c in active_classes}
 
@@ -418,16 +431,7 @@ class AutoLabelEngine:
                 if config.yolo_models
                 else [config.yolo_model_name]
             )[:3]
-            from app.core.runtime import detect_gpu
-
-            yolo_device = (
-                0
-                if (
-                    self._device in ("cuda", "gpu")
-                    or (self._device == "auto" and detect_gpu().device == "cuda")
-                )
-                else "cpu"
-            )
+            yolo_device = self._get_yolo_device()
 
             from app.services.preprocess import (
                 apply_view,
@@ -736,14 +740,6 @@ class AutoLabelEngine:
                 )
 
         elapsed = time.perf_counter() - start_time
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
-
         return AutoLabelResult(
             image_path=path,
             image_width=width,

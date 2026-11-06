@@ -546,7 +546,12 @@ class ColabConnection:
                     "size": size,
                     "data": repo.read(path),
                 }
-                archive.writestr(key, data)
+                compression = (
+                    zipfile.ZIP_STORED
+                    if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+                    else zipfile.ZIP_DEFLATED
+                )
+                archive.writestr(key, data, compress_type=compression)
                 request["images"].append({"key": key, "sha256": checksum})
             serialized = json.dumps(request)
             archive.writestr("request.json", serialized)
@@ -625,22 +630,23 @@ class ColabConnection:
                     }
                 )
             try:
-                repo.save(
-                    image,
-                    boxes,
-                    status="ai_labeled",
-                    expected_revision=snapshot["data"]["revision"],
-                )
-                self._job["saved"] += 1
-                try:
-                    index = DatasetIndex(root / ".dataset_index.sqlite")
-                    try:
-                        index.set_status_and_count(image, "ai_labeled", len(boxes), 0.0)
-                    finally:
-                        index.close()
-                except (sqlite3.Error, OSError):
-                    self._error = (
-                        "Annotations were saved. Reopen the dataset to refresh its image queue."
+                with repo.lock, repo._write_lock():
+                    repo.save(
+                        image,
+                        boxes,
+                        status="ai_labeled",
+                        expected_revision=snapshot["data"]["revision"],
                     )
+                    self._job["saved"] += 1
+                    try:
+                        index = DatasetIndex(root / ".dataset_index.sqlite")
+                        try:
+                            index.set_status_and_count(image, "ai_labeled", len(boxes), 0.0, boxes=boxes)
+                        finally:
+                            index.close()
+                    except (sqlite3.Error, OSError):
+                        self._error = (
+                            "Annotations were saved. Reopen the dataset to refresh its image queue."
+                        )
             except RevisionConflict:
                 self._job["conflicts"] += 1

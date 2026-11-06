@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -173,6 +175,31 @@ def test_auto_label_engine_run_preview_dino_sam2(sample_image: Path) -> None:
     assert "truck" in result.counts_by_class
     assert "car" in result.counts_by_class
     assert len(result.detections[0].polygon_pixels) >= 3
+
+
+@pytest.mark.parametrize("oom", [False, True])
+def test_cuda_cache_is_only_flushed_for_recovery(sample_image, monkeypatch, oom):
+    cuda = SimpleNamespace(is_available=lambda: True, empty_cache=MagicMock())
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda))
+    detections = [("car", 0, 0.9, BoxPixel(64, 48, 320, 240))]
+    detector = MagicMock()
+    detector.detect.side_effect = (
+        [RuntimeError("CUDA out of memory"), detections] if oom else [detections]
+    )
+    engine = AutoLabelEngine(grounding_detector=detector, allow_cloud=False)
+    config = AutoLabelConfig(
+        mode=AutoLabelPipelineMode.DINO_BOXES,
+        classes=[AutoLabelClass(name="car")],
+        enable_yolo=False,
+        enable_sam2_masks=False,
+    )
+    if oom:
+        assert engine.run_preview(sample_image, config).detections == []
+        cuda.empty_cache.assert_called_once_with()
+    result = engine.run_preview(sample_image, config)
+    assert result.count == 1
+    assert result.detections[0].box == BoundingBox(0.1, 0.1, 0.5, 0.5)
+    assert cuda.empty_cache.call_count == int(oom)
 
 
 def test_auto_label_engine_florence2_vlm_localization(sample_image: Path) -> None:

@@ -670,8 +670,11 @@ export const AutoLabelPage: React.FC<Props> = ({
               const state = modelPreparation?.models[model.id]?.state;
               return <li key={model.id} className="min-w-0 break-all">
                 {model.name}: <span className={state === 'ready' ? 'text-ok-600' : state === 'error' ? 'text-danger-600' : 'text-brand-600'}>
-                  {state === 'ready' ? 'Siap' : state === 'error' ? 'Gagal' : state === 'preparing' ? 'Mengunduh / memuat…' : state === 'queued' ? 'Menunggu' : 'Mengecek…'}
+                  {state === 'ready' ? (modelPreparation?.models[model.id]?.inference_ready === false ? 'Dimuat; warmup belum berhasil' : 'Siap') : state === 'error' ? 'Gagal' : state === 'preparing' ? 'Mengunduh / memuat / warmup…' : state === 'queued' ? 'Menunggu' : 'Mengecek…'}
                 </span>
+                {modelPreparation?.models[model.id]?.warning && (
+                  <span className="block text-ink-500">{modelPreparation.models[model.id].warning}</span>
+                )}
               </li>;
             })}
           </ul>

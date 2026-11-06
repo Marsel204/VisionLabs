@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import threading
+from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from app.services.dataset.cache import (
+    IMAGE_SUFFIXES, invalidate_image_catalog, invalidate_image_catalog_for_paths,
+)
+
 LOGGER = logging.getLogger(__name__)
-IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"})
 EXCLUDE_DIRS = frozenset({"exports", "labels", ".git", ".cache", "__pycache__"})
 
 
@@ -39,14 +44,21 @@ class DatasetIndex:
                     height INTEGER,
                     difficulty REAL NOT NULL DEFAULT 0,
                     status TEXT NOT NULL DEFAULT 'unreviewed',
-                    annotation_count INTEGER NOT NULL DEFAULT -1
+                    annotation_count INTEGER NOT NULL DEFAULT -1,
+                    class_histogram TEXT
                 )"""
             )
             columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(images)")}
             for column, declaration in (("annotation_count", "INTEGER NOT NULL DEFAULT -1"),
-                                        ("size_bytes", "INTEGER NOT NULL DEFAULT -1")):
+                                        ("size_bytes", "INTEGER NOT NULL DEFAULT -1"),
+                                        ("class_histogram", "TEXT")):
                 if column not in columns:
                     self._connection.execute(f"ALTER TABLE images ADD COLUMN {column} {declaration}")
+            self._connection.execute(
+                "CREATE TABLE IF NOT EXISTS annotation_cache_state ("
+                "id INTEGER PRIMARY KEY CHECK(id=1), generation INTEGER NOT NULL)"
+            )
+            self._connection.execute("INSERT OR IGNORE INTO annotation_cache_state VALUES(1, 0)")
             # Create indexes for fast filtering and sorting
             self._connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_images_status ON images(status)"
@@ -68,11 +80,16 @@ class DatasetIndex:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def scan(self, root: Path) -> int:
-        """Incrementally index supported images under ``root``."""
+    def scan(self, root: Path, *, refresh_annotations: bool = False) -> int:
+        """Index changed images, preserving persisted annotation caches on open.
+
+        Explicit refresh also invalidates label-derived caches and in-flight fills,
+        because label files can change independently of their images.
+        """
         if not root.is_dir():
             raise NotADirectoryError(root)
         resolved_root = root.resolve()
+        invalidate_image_catalog(resolved_root)
         rows = []
         for path in resolved_root.rglob("*"):
             if not (path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES):
@@ -115,20 +132,54 @@ class DatasetIndex:
             if prune_paths:
                 self._connection.executemany("DELETE FROM images WHERE path=?", prune_paths)
 
-            self._connection.executemany(
+            if refresh_annotations:
+                self._connection.execute("UPDATE images SET annotation_count=-1, class_histogram=NULL")
+
+            cursor = self._connection.executemany(
                 "INSERT INTO images(path, modified_ns, size_bytes) VALUES(?, ?, ?) "
                 "ON CONFLICT(path) DO UPDATE SET "
                 "width=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN NULL ELSE images.width END, "
                 "height=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN NULL ELSE images.height END, "
                 "status=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN 'unreviewed' ELSE images.status END, "
                 "annotation_count=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN -1 ELSE images.annotation_count END, "
+                "class_histogram=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN NULL ELSE images.class_histogram END, "
+                "difficulty=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN 0 ELSE images.difficulty END, "
+                "modified_ns=excluded.modified_ns, size_bytes=excluded.size_bytes "
+                "WHERE images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes",
+                rows,
+            )
+            if refresh_annotations or prune_paths or cursor.rowcount:
+                self._bump_annotation_generation()
+            self._connection.commit()
+            LOGGER.info("indexed %d image paths under %s (pruned %d)", len(rows), resolved_root, len(prune_paths))
+            return len(rows)
+
+    def add_paths(self, items: list[tuple[Path, int, int]]) -> int:
+        """Atomically upsert known image paths and dimensions; return the index total.
+
+        Unlike a scan, this does not traverse the dataset or prune unrelated rows.
+        Callers must supply verified, confined image paths and their dimensions.
+        """
+        invalidate_image_catalog_for_paths([path.resolve() for path, _, _ in items])
+        rows = []
+        for path, width, height in items:
+            path = path.resolve()
+            stat = path.stat()
+            rows.append((str(path), stat.st_mtime_ns, stat.st_size, width, height))
+        with self._lock, self._connection:
+            self._connection.executemany(
+                "INSERT INTO images(path, modified_ns, size_bytes, width, height) "
+                "VALUES(?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET "
+                "width=excluded.width, height=excluded.height, "
+                "status=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN 'unreviewed' ELSE images.status END, "
+                "annotation_count=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN -1 ELSE images.annotation_count END, "
+                "class_histogram=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN NULL ELSE images.class_histogram END, "
                 "difficulty=CASE WHEN (images.modified_ns != excluded.modified_ns OR images.size_bytes != excluded.size_bytes) THEN 0 ELSE images.difficulty END, "
                 "modified_ns=excluded.modified_ns, size_bytes=excluded.size_bytes",
                 rows,
             )
-            self._connection.commit()
-            LOGGER.info("indexed %d image paths under %s (pruned %d)", len(rows), resolved_root, len(prune_paths))
-            return len(rows)
+            self._bump_annotation_generation()
+            return int(self._connection.execute("SELECT COUNT(*) FROM images").fetchone()[0])
 
     def iter_paths(self, page_size: int = 1000) -> Iterator[Path]:
         """Yield indexed image paths in stable pages."""
@@ -164,6 +215,28 @@ class DatasetIndex:
             )
             self._connection.commit()
 
+    def set_listing_cache_batch(
+        self, metadata: list[tuple[Path, int, int]],
+        annotations: list[tuple[Path, str, int, float, dict[str, int]]],
+        *, expected_generation: int,
+    ) -> bool:
+        """Publish a page's read results in one transaction, rejecting stale fills."""
+        if not metadata and not annotations:
+            return True
+        guard = " AND (SELECT generation FROM annotation_cache_state WHERE id=1)=?"
+        with self._lock, self._connection:
+            dimensions = self._connection.executemany(
+                "UPDATE images SET width=?, height=? WHERE path=?" + guard,
+                [(w, h, str(path), expected_generation) for path, w, h in metadata],
+            )
+            counts = self._connection.executemany(
+                "UPDATE images SET status=?, annotation_count=?, difficulty=?, class_histogram=? "
+                "WHERE path=?" + guard,
+                [(status, count, difficulty, json.dumps(histogram), str(path), expected_generation)
+                 for path, status, count, difficulty, histogram in annotations],
+            )
+            return dimensions.rowcount == len(metadata) and counts.rowcount == len(annotations)
+
     def set_difficulty(self, path: Path, difficulty: float, status: str = "unreviewed") -> None:
         """Persist a validated difficulty score used by the review queue."""
         if not 0.0 <= difficulty <= 1.0:
@@ -176,10 +249,13 @@ class DatasetIndex:
 
     def delete(self, path: Path) -> bool:
         """Remove one image path from the database index."""
+        invalidate_image_catalog_for_paths([path.resolve()])
         with self._lock:
             cursor = self._connection.execute(
                 "DELETE FROM images WHERE path=?", (str(path),)
             )
+            if cursor.rowcount:
+                self._bump_annotation_generation()
             self._connection.commit()
             return cursor.rowcount > 0
 
@@ -221,36 +297,96 @@ class DatasetIndex:
 
     def invalidate_annotations(self) -> None:
         with self._lock:
-            self._connection.execute("UPDATE images SET annotation_count = -1, difficulty = 0")
+            self._connection.execute(
+                "UPDATE images SET annotation_count=-1, class_histogram=NULL, difficulty=0"
+            )
+            self._bump_annotation_generation()
             self._connection.commit()
 
     def set_annotation_count(self, path: Path, count: int) -> None:
         """Cache the number of annotations for an image to avoid repeated filesystem probes."""
         with self._lock:
             self._connection.execute(
-                "UPDATE images SET annotation_count=? WHERE path=?", (count, str(path))
+                "UPDATE images SET annotation_count=?, class_histogram=? WHERE path=?",
+                (count, "{}" if count == 0 else None, str(path)),
             )
+            self._bump_annotation_generation()
             self._connection.commit()
 
     def set_annotation_counts_batch(self, items: list[tuple[Path, int]]) -> None:
         """Batch-persist annotation counts in a single locked transaction."""
         if not items:
             return
-        rows = [(cnt, str(p)) for p, cnt in items]
+        rows = [(cnt, "{}" if cnt == 0 else None, str(p)) for p, cnt in items]
         with self._lock:
             self._connection.executemany(
-                "UPDATE images SET annotation_count=? WHERE path=?", rows
+                "UPDATE images SET annotation_count=?, class_histogram=? WHERE path=?", rows
             )
+            self._bump_annotation_generation()
             self._connection.commit()
 
-    def set_status_and_count(self, path: Path, status: str, count: int, difficulty: float = 0.0) -> None:
-        """Atomic update of status, annotation count, and difficulty in a single write."""
+    def set_status_and_count(
+        self, path: Path, status: str, count: int, difficulty: float = 0.0,
+        *, boxes: list[dict[str, Any]] | None = None,
+        expected_generation: int | None = None,
+    ) -> bool:
+        """Persist read/save results together; absent boxes invalidate a positive histogram."""
+        histogram = (
+            json.dumps(Counter(box["class_name"] for box in boxes))
+            if boxes is not None else ("{}" if count == 0 else None)
+        )
         with self._lock:
-            self._connection.execute(
-                "UPDATE images SET status=?, annotation_count=?, difficulty=? WHERE path=?",
-                (status, count, difficulty, str(path)),
-            )
+            query = ("UPDATE images SET status=?, annotation_count=?, difficulty=?, "
+                     "class_histogram=? WHERE path=?")
+            params = (status, count, difficulty, histogram, str(path))
+            if expected_generation is not None:
+                query += " AND (SELECT generation FROM annotation_cache_state WHERE id=1)=?"
+                params += (expected_generation,)
+            cursor = self._connection.execute(query, params)
+            if boxes is None:
+                self._bump_annotation_generation()
             self._connection.commit()
+            return cursor.rowcount > 0
+
+    def _bump_annotation_generation(self) -> None:
+        """Called inside the same transaction as an invalidation."""
+        self._connection.execute(
+            "UPDATE annotation_cache_state SET generation=generation+1 WHERE id=1"
+        )
+
+    def annotation_generation(self) -> int:
+        """Detect invalidation/rescan races across handles and processes."""
+        with self._lock:
+            return int(self._connection.execute(
+                "SELECT generation FROM annotation_cache_state WHERE id=1"
+            ).fetchone()[0])
+
+    def unknown_histograms(self, page_size: int = 1000) -> Iterator[dict[str, Any]]:
+        """Yield only rows needing annotation reads, skipping known empty images.
+
+        Use a path cursor because filling a page removes it from this query.
+        """
+        after = ""
+        while True:
+            with self._lock:
+                rows = self._connection.execute(
+                    "SELECT path, difficulty FROM images WHERE class_histogram IS NULL "
+                    "AND COALESCE(annotation_count, -1) != 0 AND path > ? ORDER BY path LIMIT ?",
+                    (after, page_size),
+                ).fetchall()
+            if not rows:
+                return
+            yield from (dict(row) for row in rows)
+            after = rows[-1]["path"]
+
+    def class_counts(self) -> dict[str, int]:
+        """Aggregate rebuildable per-image histograms entirely in SQLite."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT entry.key AS name, SUM(entry.value) AS count "
+                "FROM images, json_each(images.class_histogram) AS entry GROUP BY entry.key"
+            ).fetchall()
+            return {row["name"]: int(row["count"]) for row in rows}
 
     def list_records(
         self,
