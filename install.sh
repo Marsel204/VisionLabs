@@ -55,7 +55,6 @@ done
 [[ "${EUID}" -ne 0 ]] || die "run this installer as your normal user, not root"
 command -v python3 >/dev/null || die "python3 is required"
 command -v npm >/dev/null || die "Anotara requires Node.js and npm"
-command -v cargo >/dev/null || die "Anotara requires Rust and Cargo"
 PYTHON_BIN="$(command -v python3)"
 PYTHON_VERSION="$(${PYTHON_BIN} -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 PYTHON_MAJOR="${PYTHON_VERSION%%.*}"

@@ -1,7 +1,7 @@
 """PyInstaller build specification for Anotara.
 
-Produces the Anotara launcher and Python API runtime. The build script adds the
-current Tauri desktop executable to the same distribution directory.
+Produces the frozen Python engine (``dist/visionlab-backend``). The Electron app bundles that
+directory as ``resources/backend`` and starts it with ``--backend``; see scripts/build_backend.py.
 """
 
 import os
@@ -134,7 +134,7 @@ for pkg in ("ultralytics", "timm", "optuna"):
         pass
 
 # Optional icon
-icon_file = PROJECT_ROOT / "desktop" / "src-tauri" / "icons" / "icon.ico"
+icon_file = PROJECT_ROOT / "desktop" / "build" / "icon.ico"
 icon_path = str(icon_file) if icon_file.is_file() else None
 
 a = Analysis(
@@ -168,7 +168,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="VisionLab",
+    name="visionlab-backend",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -189,5 +189,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="VisionLab",
+    name="visionlab-backend",
 )

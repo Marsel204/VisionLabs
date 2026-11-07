@@ -1,0 +1,59 @@
+# Packaging for the Anotara desktop app. The frozen Python engine is built first by
+# `python scripts/build_backend.py` and bundled as resources/backend.
+appId: com.visionlabs.anotara
+productName: Anotara
+copyright: Copyright © VisionLabs
+artifactName: Anotara-${version}-${os}-${arch}.${ext}
+
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - dist/**
+  - electron/**
+  - package.json
+
+extraResources:
+  - from: ../dist/visionlab-backend
+    to: backend
+
+# Updates come from GitHub Releases of this repository (see electron/updater.mjs).
+publish:
+  provider: github
+  owner: Marsel204
+  repo: VisionLabs
+  releaseType: release
+
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+
+nsis:
+  oneClick: true
+  perMachine: false
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  differentialPackage: true
+
+linux:
+  icon: build/icon.png
+  category: Graphics
+  # AppImage is the format that can replace itself in place; a .deb cannot self-update.
+  target:
+    - target: AppImage
+      arch: [x64]
+  maintainer: VisionLabs
+  synopsis: AI-assisted annotation studio
+
+appImage:
+  artifactName: Anotara-${version}-linux-${arch}.${ext}
+
+mac:
+  icon: build/icon.icns
+  category: public.app-category.graphics-design
+  target:
+    - dmg
+    - zip

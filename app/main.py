@@ -1,4 +1,4 @@
-"""Launch the Anotara desktop studio and its local Python API."""
+"""Run the Anotara local Python API, or launch the Electron studio from a source checkout."""
 
 from __future__ import annotations
 
@@ -38,22 +38,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def frontend_command(root: Path) -> tuple[list[str], Path]:
+    """Command that opens the Electron desktop shell from a source checkout."""
     if getattr(sys, "frozen", False):
-        directory = Path(sys.executable).resolve().parent
-        executable = directory / ("Anotara.exe" if os.name == "nt" else "Anotara")
-        if not executable.is_file():
-            raise RuntimeError(f"Anotara desktop executable is missing: {executable}")
-        return [str(executable)], directory
+        raise RuntimeError(
+            "The packaged engine has no window of its own; start the Anotara desktop app instead."
+        )
     desktop = root / "desktop"
     npm = shutil.which("npm")
-    if not (desktop / "package.json").is_file() or not npm or not shutil.which("cargo"):
-        raise RuntimeError("Anotara requires its desktop sources, Node.js/npm, and Rust/Cargo.")
+    if not (desktop / "package.json").is_file() or not npm:
+        raise RuntimeError("Anotara requires its desktop sources and Node.js/npm.")
     command = [npm]
     if os.name == "nt":
         command = [os.environ.get("COMSPEC", "cmd.exe"), "/c", npm]
     if not (desktop / "node_modules").is_dir():
         subprocess.run([*command, "ci"], cwd=desktop, check=True)
-    return [*command, "run", "tauri", "dev"], desktop
+    return [*command, "run", "electron:dev"], desktop
 
 
 def session_ready() -> bool:
@@ -83,7 +82,6 @@ def wait_for_backend(process: subprocess.Popen, timeout: float = 60) -> None:
 def launch_studio(root: Path, log_root: Path, config: Path | None = None) -> int:
     command, directory = frontend_command(root)
     environment = os.environ.copy()
-    environment.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
     backend = None
     log_root.mkdir(parents=True, exist_ok=True)
     with (log_root / "backend.log").open("a", encoding="utf-8") as log:
@@ -124,7 +122,8 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_settings(args.config)
         settings.ensure_directories()
         configure_logging(settings.paths.log_root, settings.log_level)
-        if args.backend:
+        # A frozen build only ever ships the engine; the Electron app owns the window.
+        if args.backend or getattr(sys, "frozen", False):
             import uvicorn
 
             uvicorn.run("app.api.server:app", host="127.0.0.1", port=8765, log_level="warning")

@@ -1,6 +1,7 @@
 import React from 'react';
 import type { SystemHealth } from '../../types';
 import { Icon } from '../ui';
+import { UpdateIndicator } from './UpdateIndicator';
 
 interface Props {
   crumb: string;
@@ -25,6 +26,7 @@ export const Topbar: React.FC<Props> = ({ crumb, health, onOpenShortcuts, onOpen
           {status}
         </span>
         <span className="h-6 w-px bg-line" />
+        <UpdateIndicator />
         <button
           type="button"
           onClick={onOpenColab}

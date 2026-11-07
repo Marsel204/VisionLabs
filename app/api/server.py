@@ -1,6 +1,6 @@
 """FastAPI backend for the Anotara annotation studio.
 
-Provides full-stack REST endpoints connecting the Tauri/React desktop UI
+Provides full-stack REST endpoints connecting the Electron/React desktop UI
 with the PyTorch/YOLO/SAM-2/Grounding DINO computer vision pipeline,
 the SQLite DatasetIndex database, Active Learning engine, and dataset exporters.
 """
@@ -74,10 +74,19 @@ app = FastAPI(
     description="Backend AI API for the Anotara desktop annotation app with SQLite database & active learning",
 )
 
-# Enable CORS for Tauri desktop and web dev server
+# Origins allowed to call the API: the packaged Electron UI (app://anotara) and the Vite dev server.
+ALLOWED_ORIGINS = {
+    "app://anotara",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:1420",
+    "http://127.0.0.1:1420",
+}
+
+# Enable CORS for the Electron desktop app and web dev server
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:1420", "http://127.0.0.1:1420", "http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"],
+    allow_origins=sorted(ALLOWED_ORIGINS),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -140,7 +149,6 @@ DATASET_STATE_LOCK = threading.RLock()
 INFERENCE_LOCK = threading.RLock()
 MODEL_PREPARATION = ModelPreparation(AUTOLABEL_ENGINE, INFERENCE_LOCK)
 SESSION_TOKEN = secrets.token_urlsafe(32)
-ALLOWED_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:1420", "http://127.0.0.1:1420", "http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"}
 
 
 @app.exception_handler(CloudInferenceError)
