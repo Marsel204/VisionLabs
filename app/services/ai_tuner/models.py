@@ -41,6 +41,9 @@ def load_env_vars() -> dict[str, str]:
     return loaded
 
 
+THRESHOLD_SEARCH_MODES: tuple[str, ...] = ("auto", "grid", "optuna")
+
+
 @dataclass(frozen=True, slots=True)
 class TunerConfig:
     """Settings controlling the AI Tuner optimization loop."""
@@ -54,6 +57,21 @@ class TunerConfig:
     optimize_prompts: bool = True
     optimize_thresholds: bool = True
     max_error_crops_per_class: int = 2
+    # Threshold search strategy: "grid" (fixed sweep), "optuna" (TPE, requires the
+    # optional `optuna` package) or "auto" (Optuna when installed, else grid).
+    threshold_search: str = "auto"
+    optuna_trials: int = 60
+    optuna_seed: int | None = 42
+    optuna_timeout_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.threshold_search not in THRESHOLD_SEARCH_MODES:
+            raise ValueError(
+                f"threshold_search must be one of {THRESHOLD_SEARCH_MODES}, "
+                f"got {self.threshold_search!r}"
+            )
+        if self.optuna_trials < 1:
+            raise ValueError("optuna_trials must be at least 1")
 
     @classmethod
     def from_env(cls, **overrides: Any) -> TunerConfig:
@@ -92,6 +110,20 @@ class TunerConfig:
             optimize_prompts=overrides.get("optimize_prompts", True),
             optimize_thresholds=overrides.get("optimize_thresholds", True),
             max_error_crops_per_class=overrides.get("max_error_crops_per_class", 2),
+            threshold_search=(
+                overrides.get("threshold_search")
+                or os.getenv("VISIONLAB_TUNER_SEARCH")
+                or env_file_vars.get("VISIONLAB_TUNER_SEARCH")
+                or "auto"
+            ).strip().lower(),
+            optuna_trials=int(
+                overrides.get("optuna_trials")
+                or os.getenv("VISIONLAB_OPTUNA_TRIALS")
+                or env_file_vars.get("VISIONLAB_OPTUNA_TRIALS")
+                or 60
+            ),
+            optuna_seed=overrides.get("optuna_seed", 42),
+            optuna_timeout_seconds=overrides.get("optuna_timeout_seconds"),
         )
 
 

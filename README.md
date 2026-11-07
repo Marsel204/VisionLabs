@@ -124,6 +124,9 @@ cd VisionLabs
 # Sync locked Python dependencies
 uv sync --extra dev
 
+# Optional: Optuna (Bayesian) threshold search for the AI Auto-Tuner
+uv sync --extra dev --extra tuning
+
 # Run test suite
 uv run pytest
 ```
@@ -238,6 +241,24 @@ ranked_images = engine.score_many(analyses, max_workers=8)
 for item in ranked_images[:10]:
     print(item.image_path, item.difficulty_score, item.recommended_action)
 engine.close()
+```
+
+### AI Auto-Tuner (Optuna hyperparameter search)
+The AI Auto-Tuner calibrates the confidence and IoU thresholds against your
+ground-truth images. It also refines the class prompts. Thresholds are searched
+over cached predictions, so inference does not run again. With the optional
+`tuning` extra installed, the search uses Optuna's TPE sampler over continuous
+ranges. Without it, the tuner falls back to a fixed 48-combination grid sweep.
+The search always starts from your current thresholds and never returns a worse
+result. Set `VISIONLAB_TUNER_SEARCH=auto|grid|optuna` in `.env` or configure it
+in code:
+
+```python
+from app.services.ai_tuner import AITunerEngine, TunerConfig
+
+config = TunerConfig.from_env(threshold_search="optuna", optuna_trials=100, optuna_seed=42)
+result = AITunerEngine().run_tuning(samples, ground_truth, auto_label_config, config)
+print(result.final_config.confidence_threshold, result.final_config.box_iou_threshold)
 ```
 
 ### Dataset Exporter

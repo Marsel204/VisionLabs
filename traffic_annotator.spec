@@ -126,7 +126,8 @@ hidden_imports = [
 ]
 
 # Additional submodules for ultralytics and timm
-for pkg in ("ultralytics", "timm"):
+# optuna is optional and imported lazily, so it is only bundled when installed.
+for pkg in ("ultralytics", "timm", "optuna"):
     try:
         hidden_imports.extend(collect_submodules(pkg))
     except Exception:
