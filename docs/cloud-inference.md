@@ -103,9 +103,9 @@ npm run dev
 
 Open `http://localhost:1420`. The header shows **Cloud inference / Configured**.
 This means configuration is loaded, not that a cloud request has succeeded. Select
-a dataset and try one Auto-Label preview before starting a batch. With an existing
-Tauri development installation, `npm run tauri dev` can replace the browser studio
-after the local backend is running.
+a dataset and try one Auto-Label preview before starting a batch. From a source
+checkout, `npm run electron:dev` in `desktop/` opens the same studio in the desktop app
+and starts the local backend for you.
 
 ## Behavior and limits
 

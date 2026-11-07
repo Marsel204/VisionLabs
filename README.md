@@ -2,7 +2,7 @@
 
 > Universal AI-assisted visual annotation studio and computer vision dataset curation platform.
 
-Anotara is a general-purpose, high-performance visual annotation platform designed to annotate **anything**—from everyday objects, people, and retail products to specialized industrial, biomedical, robotic, and agricultural imagery. Built with a modern desktop interface (Tauri v2 + React 19) backed by a local GPU-accelerated Python AI engine (YOLO11, SAM 2, Grounding DINO, and Florence-2 VLM).
+Anotara is a general-purpose, high-performance visual annotation platform designed to annotate **anything**—from everyday objects, people, and retail products to specialized industrial, biomedical, robotic, and agricultural imagery. Built with a modern desktop interface (Electron + React 19) backed by a local GPU-accelerated Python AI engine (YOLO11, SAM 2, Grounding DINO, and Florence-2 VLM).
 
 ---
 
@@ -19,7 +19,7 @@ automatic annotation on a remote GPU with a lightweight local studio/backend.
 Review, saving, and exports remain local. Cloud deployment requires a separate
 provider account and configuration.
 
-Anotara has one desktop interface: the Tauri/React studio. Source launches require Python 3.12+, uv, Node.js/npm, Rust/Cargo, and the platform's Tauri system dependencies.
+Anotara has one desktop interface: the Electron/React studio. Source launches require Python 3.12+, uv, and Node.js/npm.
 
 | Platform | Launch |
 | :--- | :--- |
@@ -94,15 +94,15 @@ Anotara provides a single polyglot launcher ([`run.bat`](file:///home/marsel/Wor
 - **One-Click**: Double-click `run.bat` or `run.sh` in your desktop file manager (or right-click → *Run as a Program*).
 - **Terminal**:
   ```bash
-  ./run.sh          # Launches Tauri Desktop Studio + AI Engine
+  ./run.sh          # Launches the Electron desktop studio + AI engine
   ```
 
 #### How the Launcher Works
 
 1. Require uv and use `uv sync --locked` if the Python environment is missing.
-2. Require the current desktop sources, Node.js/npm, Rust/Cargo, and the native Tauri prerequisites.
+2. Require the current desktop sources and Node.js/npm.
 3. Start the FastAPI engine on `http://127.0.0.1:8765` if needed and wait for its session endpoint.
-4. Launch the Anotara Tauri studio. Stop only a backend started by this launcher when the window closes.
+4. Launch the Anotara Electron studio. Stop only a backend started by this launcher when the window closes.
 5. Report startup failures in the application log directory; backend output is in `backend.log`.
 
 ---
@@ -113,7 +113,6 @@ Anotara provides a single polyglot launcher ([`run.bat`](file:///home/marsel/Wor
 - [uv](https://github.com/astral-sh/uv) (ultra-fast Python package installer)
 - Python 3.12+
 - Node.js & npm (compatible with the locked Vite version)
-- Rust/Cargo and the platform Tauri development prerequisites
 
 #### 1. Setup Backend
 ```bash
@@ -183,7 +182,7 @@ Keep the engine bound to `127.0.0.1`. The studio obtains a session token from
 `GET /api/session`; API requests require the `X-VisionLab-Token` header. Image URLs
 also accept the token query parameter. Tokens change when the backend restarts,
 and the web client renews its session after a 401 response. CORS allows the local
-studio development and Tauri origins. Image paths must resolve inside the active
+studio development server and the packaged desktop app's `app://anotara` origin. Image paths must resolve inside the active
 dataset, including after symlink resolution.
 
 Annotation clients should send `dataset_id` and `expected_revision` from their
@@ -197,24 +196,22 @@ and real GPU model accuracy still require validation on their target platforms.
 
 ---
 
-## Standalone Distribution & Packaging
+## Install & Updates
 
-### Windows Executable (.exe)
-To compile a portable Windows distribution, install Node.js/npm, Rust/Cargo, the Tauri build prerequisites, and the Python development dependencies. The build compiles the current Tauri frontend and packages it alongside the frozen Python launcher/API; no Python installation is needed on the target machine. The system webview runtime is still required:
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1
-```
-Output:
-- `dist/VisionLab/VisionLab.exe`: launcher that starts the local API and current studio.
-- `dist/VisionLab/Anotara.exe`: current Tauri frontend; keep it beside the launcher.
-- `dist/VisionLab-windows-x64.zip`: Portable ZIP release package.
+Download the latest installer from the [Releases page](https://github.com/Marsel204/VisionLabs/releases/latest):
 
-### Windows Setup Wizard (.exe)
-Compile `installer.iss` with [Inno Setup](https://jrsoftware.org/isinfo.php):
-```cmd
-"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
-```
-Output: `dist/VisionLab-Setup.exe`.
+| Platform | File |
+| :--- | :--- |
+| **Windows** | `Anotara-<version>-win-x64.exe` (per-user installer, no admin needed) |
+| **Linux** | `Anotara-<version>-linux-x86_64.AppImage` (`chmod +x`, then run) |
+
+The installers bundle the Python engine; no Python or Node.js is needed on the target
+machine. Once installed, Anotara updates itself: it checks GitHub Releases on startup, the top bar
+offers **Pembaruan vX.Y.Z**, and one click downloads and restarts into the new version.
+
+Linux release builds ship CPU PyTorch (GitHub release files are limited to 2 GiB); use a source
+install for CUDA. Maintainers: building and publishing a release is described in
+[`desktop/README.md`](desktop/README.md#packaging-and-releasing).
 
 ---
 

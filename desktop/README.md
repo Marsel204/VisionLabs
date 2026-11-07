@@ -27,6 +27,41 @@ on the test machine or set `CHROMIUM_BIN` to its executable path; no dataset or 
 
 ## Development
 
-From the repository root, run `./run.sh` (Linux) or `run.bat` (Windows) to start the current desktop and local API together. All launcher aliases use `app.main`; there is no alternate desktop implementation.
+The desktop app is an Electron shell (`electron/`) around this React UI. The main process opens
+the window, starts the Python API (`electron/backend.mjs`), serves the built UI from the
+`app://anotara` origin, and checks GitHub Releases for updates (`electron/updater.mjs`).
 
-For browser-only development, start `python -m app.main --backend` in the project's virtual environment and run `npm run dev` here. The current pages live in `src/pages/`, shared studio components in `src/components/`, and bundled fonts in `public/fonts/`. Native application icons are generated from `public/favicon.svg` with `npm run tauri -- icon public/favicon.svg`.
+From the repository root, run `./run.sh` (Linux) or `run.bat` (Windows) to start the desktop and
+local API together, or run `npm run electron:dev` here (Vite hot reload; the API is started for you
+from the project's `.venv` unless one is already running on port 8765).
+
+For browser-only development, start `python -m app.main --backend` and run `npm run dev` here.
+The pages live in `src/pages/`, shared studio components in `src/components/`, and bundled fonts
+in `public/fonts/`. App icons for the installers are in `build/` (`icon.png` 512px, `icon.ico`,
+`icon.icns`).
+
+## Packaging and releasing
+
+```bash
+# 1. Freeze the Python engine to ../dist/visionlab-backend (needs `uv sync --extra dev`)
+uv run python scripts/build_backend.py
+# 2. Build the UI and the installer for this OS into desktop/release/
+npm ci && npm run package        # Windows: NSIS .exe, Linux: AppImage
+```
+
+`npm run package:dir` builds an unpacked app for quick checks. Installers are built per OS, so run
+the steps on the OS you target (CI does this for Windows and Linux).
+
+### Shipping an update
+
+1. Push a version tag: `git tag v1.1.0 && git push origin v1.1.0`.
+2. `.github/workflows/release.yml` tests, freezes the engine, builds the installers, sets the app
+   version from the tag and publishes them with `latest.yml` / `latest-linux.yml` to the GitHub Release.
+3. Installed apps check on startup and every 4 hours. The top bar shows **Pembaruan vX.Y.Z**; one
+   click downloads it, then **Mulai ulang untuk memperbarui** restarts into the new version. A
+   downloaded update also installs when the app is next quit. Help → *Periksa pembaruan…* checks on demand.
+
+Updates only work in an installed app (Windows installer, Linux AppImage); development runs and
+`.deb` installs show only the version. Set `ANOTARA_DISABLE_UPDATES=1` to turn updates off, or
+`ANOTARA_UPDATE_FEED=<url>` to read `latest*.yml` from a staging or mirror server instead of GitHub.
+Releases are not code-signed yet, so Windows SmartScreen warns on first install.

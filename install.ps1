@@ -27,9 +27,6 @@ $ErrorActionPreference = "Stop"
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     throw "Anotara requires Node.js and npm."
 }
-if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-    throw "Anotara requires Rust and Cargo."
-}
 
 Write-Host "=======================================================" -ForegroundColor Cyan
 Write-Host "     Anotara - Windows User Installer" -ForegroundColor Cyan
@@ -65,7 +62,7 @@ if (-not $UvCmd) {
     Write-Host "      uv is not installed. Installing uv for Windows..." -ForegroundColor Cyan
     try {
         Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
-        $Env:PATH = "$env:USERPROFILE\.local\bin;$env:USERPROFILE\.cargo\bin;$Env:PATH"
+        $Env:PATH = "$env:USERPROFILE\.local\bin;$Env:PATH"
         $UvCmd = Get-Command uv -ErrorAction SilentlyContinue
     } catch {
         Write-Host "      Could not automatically download uv via web script." -ForegroundColor Yellow
