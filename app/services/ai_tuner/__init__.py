@@ -10,6 +10,7 @@ from app.services.ai_tuner.models import (
     TunerIteration,
     TunerResult,
 )
+from app.services.ai_tuner.optuna_solver import OptunaParametricSolver, optuna_available
 from app.services.ai_tuner.parametric_solver import FastParametricSolver
 from app.services.ai_tuner.tuner_engine import AITunerEngine
 
@@ -21,7 +22,9 @@ __all__ = [
     "FastParametricSolver",
     "GroundTruthEvaluator",
     "OpenRouterVisionClient",
+    "OptunaParametricSolver",
     "TunerConfig",
     "TunerIteration",
     "TunerResult",
+    "optuna_available",
 ]

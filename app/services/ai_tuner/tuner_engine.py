@@ -2,20 +2,35 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol
 
 from app.services.ai_tuner.evaluator import GroundTruthEvaluator
 from app.services.ai_tuner.llm_client import OpenRouterVisionClient
 from app.services.ai_tuner.models import EvaluationReport, TunerConfig, TunerIteration, TunerResult
+from app.services.ai_tuner.optuna_solver import OptunaParametricSolver, optuna_available
 from app.services.ai_tuner.parametric_solver import FastParametricSolver
 from app.services.annotation.domain import AnnotationDocument
 from app.services.auto_label.engine import AutoLabelEngine
 from app.services.auto_label.models import AutoLabelClass, AutoLabelConfig, AutoLabelResult
 
 LOGGER = logging.getLogger(__name__)
+
+
+class ThresholdSolver(Protocol):
+    """Anything that can pick confidence/IoU thresholds from cached predictions."""
+
+    def optimize_thresholds(
+        self,
+        raw_predictions: dict[Path, AutoLabelResult],
+        ground_truth: dict[Path, AnnotationDocument],
+        initial_conf: float = ...,
+        initial_iou: float = ...,
+    ) -> tuple[float, float, EvaluationReport]: ...
 
 
 class AITunerEngine:
@@ -25,13 +40,44 @@ class AITunerEngine:
         self,
         auto_label_engine: AutoLabelEngine | None = None,
         evaluator: GroundTruthEvaluator | None = None,
-        parametric_solver: FastParametricSolver | None = None,
+        parametric_solver: ThresholdSolver | None = None,
         llm_client: OpenRouterVisionClient | None = None,
     ) -> None:
         self.auto_label_engine = auto_label_engine or AutoLabelEngine()
         self.evaluator = evaluator or GroundTruthEvaluator()
-        self.parametric_solver = parametric_solver or FastParametricSolver(self.evaluator)
+        # An explicitly injected solver always wins; otherwise one is picked per run
+        # from TunerConfig.threshold_search.
+        self._injected_solver = parametric_solver
+        self.parametric_solver: ThresholdSolver = parametric_solver or FastParametricSolver(
+            self.evaluator
+        )
         self.llm_client = llm_client
+
+    def _resolve_threshold_solver(self, tuner_config: TunerConfig) -> ThresholdSolver:
+        """Pick the grid or Optuna solver according to the tuner configuration."""
+        if self._injected_solver is not None:
+            return self._injected_solver
+
+        mode = tuner_config.threshold_search
+        use_optuna = mode == "optuna" or (mode == "auto" and optuna_available())
+        if use_optuna:
+            if not optuna_available():
+                raise ImportError(
+                    "threshold_search='optuna' requires the optional `optuna` package. "
+                    "Install it with `pip install optuna` or `uv sync --extra tuning`."
+                )
+            return OptunaParametricSolver(
+                self.evaluator,
+                n_trials=tuner_config.optuna_trials,
+                seed=tuner_config.optuna_seed,
+                timeout_seconds=tuner_config.optuna_timeout_seconds,
+            )
+        return FastParametricSolver(self.evaluator)
+
+    def _search_note(self) -> str:
+        """Short description of the last threshold search, if the solver reports one."""
+        summary = getattr(self.parametric_solver, "last_summary", None)
+        return summary.text if summary is not None else ""
 
     def run_tuning(
         self,
@@ -62,6 +108,10 @@ class AITunerEngine:
         ]
 
         llm_client = self.llm_client or OpenRouterVisionClient(tuner_config)
+        self.parametric_solver = self._resolve_threshold_solver(tuner_config)
+        LOGGER.info(
+            "AI Tuner threshold search: %s", type(self.parametric_solver).__name__
+        )
 
         iterations: list[TunerIteration] = []
         best_f1 = 0.0
@@ -195,6 +245,9 @@ class AITunerEngine:
             reason_text = (
                 reasoning_summary or "Threshold and prompt parameters calibrated"
             )
+            search_note = self._search_note() if tuner_config.optimize_thresholds else ""
+            if search_note:
+                reason_text = f"{reason_text} ({search_note})"
             iter_record = TunerIteration(
                 iteration_index=iter_idx,
                 f1_score=report.overall_macro_f1,
@@ -254,38 +307,23 @@ class AITunerEngine:
         self, config: AutoLabelConfig, conf: float, iou: float
     ) -> AutoLabelConfig:
         """Return a copy of config with updated thresholds."""
-        return AutoLabelConfig(
-            mode=config.mode,
+        return dataclasses.replace(
+            config,
             confidence_threshold=conf,
             text_threshold=max(0.15, conf - 0.10),
             box_iou_threshold=iou,
-            classes=config.classes,
-            device=config.device,
-            yolo_model_name=config.yolo_model_name,
-            enable_grounding_dino=config.enable_grounding_dino,
-            enable_yolo=config.enable_yolo,
-            enable_florence2=config.enable_florence2,
-            enable_locate_anything=config.enable_locate_anything,
-            enable_sam2_masks=config.enable_sam2_masks,
         )
 
     def _update_config_classes(
         self, config: AutoLabelConfig, classes: list[AutoLabelClass]
     ) -> AutoLabelConfig:
-        """Return a copy of config with updated classes."""
-        return AutoLabelConfig(
-            mode=config.mode,
-            confidence_threshold=config.confidence_threshold,
-            text_threshold=config.text_threshold,
-            box_iou_threshold=config.box_iou_threshold,
-            classes=classes,
-            device=config.device,
-            yolo_model_name=config.yolo_model_name,
-            enable_grounding_dino=config.enable_grounding_dino,
-            enable_yolo=config.enable_yolo,
-            enable_florence2=config.enable_florence2,
-            enable_locate_anything=config.enable_locate_anything,
-            enable_sam2_masks=config.enable_sam2_masks,
+        """Return a copy of config with a snapshot of the classes.
+
+        The classes are copied because the tuning loop mutates prompts in place;
+        sharing them would silently rewrite the prompts of the tracked best config.
+        """
+        return dataclasses.replace(
+            config, classes=[dataclasses.replace(c) for c in classes]
         )
 
     DOMAIN_SYNONYMS: dict[str, list[str]] = {

@@ -32,6 +32,9 @@ dev = [
     "pyinstaller>=6.10",
     "httpx>=0.27",
 ]
+tuning = [
+    "optuna>=4.0",
+]
 
 
 [project.scripts]
