@@ -49,23 +49,31 @@ def test_spec_uses_pyinstaller_directory_without_dunder_file(tmp_path, monkeypat
         name.startswith("app.ui") or name.startswith("PySide6") for name in options["hiddenimports"]
     )
     assert "app.api.server" in options["hiddenimports"]
-    assert collect.call_args.kwargs["name"] == "VisionLab"
+    assert collect.call_args.kwargs["name"] == "visionlab-backend"
 
 
-def test_distribution_includes_the_current_desktop_binary(tmp_path, monkeypatch):
-    from scripts import build_windows_exe as build
+def test_backend_build_produces_the_directory_electron_bundles(tmp_path, monkeypatch):
+    from scripts import build_backend as build
 
-    frontend = tmp_path / "current-ui"
-    frontend.write_bytes(b"anotara-native")
-    distribution = tmp_path / "dist" / "VisionLab"
-    distribution.mkdir(parents=True)
-    (distribution / ("VisionLab.exe" if build.sys.platform == "win32" else "VisionLab")).touch()
-    monkeypatch.setattr(build, "DIST_DIR", distribution.parent)
-    monkeypatch.setattr(build, "build_frontend", lambda: frontend)
+    engine = tmp_path / "dist" / build.BACKEND_NAME
+    engine.mkdir(parents=True)
+    build.backend_executable(engine).touch()
+    monkeypatch.setattr(build, "DIST_DIR", engine.parent)
     monkeypatch.setattr(build.subprocess, "check_call", Mock())
-    assert build.run_build() == distribution
-    native = distribution / ("Anotara.exe" if build.os.name == "nt" else "Anotara")
-    assert native.read_bytes() == b"anotara-native"
+    assert build.run_build() == engine
+
+
+def test_electron_builder_bundles_the_engine_and_publishes_to_github():
+    import yaml
+
+    root = Path(__file__).resolve().parents[1]
+    config = yaml.safe_load((root / "desktop" / "electron-builder.yml").read_text())
+    assert {"from": "../dist/visionlab-backend", "to": "backend"} in config["extraResources"]
+    assert config["publish"]["provider"] == "github"
+    assert config["publish"]["repo"] == "VisionLabs"
+    # The updater needs an installer format that can replace itself.
+    assert config["win"]["target"][0]["target"] == "nsis"
+    assert config["linux"]["target"][0]["target"] == "AppImage"
 
 
 def test_packaged_api_keeps_dataset_state_outside_the_installation(tmp_path, monkeypatch):

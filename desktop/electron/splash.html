@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:" />
+  <title>Anotara</title>
+  <style>
+    :root { color-scheme: light; --ink: #15213b; --muted: #5f6e85; --brand: #2f6fe4; --danger: #c4493a; --line: #e4e9f1; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f3f7fd; color: var(--ink);
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    main { width: min(440px, calc(100vw - 48px)); text-align: center; }
+    h1 { margin: 20px 0 6px; font-size: 22px; letter-spacing: -0.01em; }
+    p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+    .mark { width: 56px; height: 56px; border-radius: 14px; background: var(--brand); margin: 0 auto; display: grid; place-items: center; }
+    .mark svg { width: 30px; height: 30px; }
+    .bar { height: 4px; margin: 24px auto 0; width: 180px; border-radius: 4px; background: var(--line); overflow: hidden; }
+    .bar i { display: block; height: 100%; width: 40%; background: var(--brand); border-radius: 4px; animation: slide 1.2s ease-in-out infinite; }
+    @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(350%); } }
+    @media (prefers-reduced-motion: reduce) { .bar i { animation: none; width: 100%; opacity: .5; } }
+    .error h1 { color: var(--danger); }
+    .error .bar { display: none; }
+    button { margin-top: 22px; height: 40px; padding: 0 18px; border: 0; border-radius: 8px; background: var(--brand);
+      color: #fff; font: 600 14px system-ui, sans-serif; cursor: pointer; }
+    button.secondary { background: #fff; color: var(--ink); border: 1px solid var(--line); margin-left: 8px; }
+    button:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+    .actions { display: none; }
+    .error .actions { display: block; }
+  </style>
+</head>
+<body>
+  <main id="root" role="status" aria-live="polite">
+    <div class="mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 4v16M4 9h16"/></svg>
+    </div>
+    <h1 id="title">Anotara</h1>
+    <p id="message">Menyalakan mesin AI lokal…</p>
+    <div class="bar" aria-hidden="true"><i></i></div>
+    <div class="actions">
+      <button id="retry" type="button">Coba lagi</button>
+      <button id="logs" type="button" class="secondary">Buka folder log</button>
+    </div>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const error = params.get('error');
+    if (error) {
+      document.getElementById('root').classList.add('error');
+      document.getElementById('title').textContent = 'Anotara tidak bisa dimulai';
+      document.getElementById('message').textContent = error;
+    }
+    document.getElementById('retry').addEventListener('click', () => window.anotara?.retryStart());
+    document.getElementById('logs').addEventListener('click', () => window.anotara?.openLogs());
+  </script>
+</body>
+</html>

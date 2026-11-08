@@ -1,34 +1,47 @@
 {
-  "name": "desktop",
+  "name": "anotara",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "tauri": "tauri",
-    "test": "node --test tests/*.cjs",
-    "test:canvas": "node --test tests/browser/canvas-layout.mjs",
     "dev": "vite",
+    "electron:dev": "node scripts/dev-electron.mjs",
+    "start": "npm run build && electron .",
     "build": "tsc -b && vite build",
+    "package": "npm run build && electron-builder",
+    "package:dir": "npm run build && electron-builder --dir",
+    "release": "npm run build && electron-builder --publish always",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test tests/*.cjs tests/*.test.mjs",
+    "test:canvas": "node --test tests/browser/canvas-layout.mjs"
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.3.3",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "electron-updater": "^6.8.11"
   },
   "devDependencies": {
-    "@tauri-apps/api": "^2.11.1",
-    "@tauri-apps/cli": "^2.11.4",
+    "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
     "autoprefixer": "^10.6.1",
+    "electron": "^45.2.3",
+    "electron-builder": "^26.18.0",
     "oxlint": "^1.81.0",
     "postcss": "^8.5.28",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
     "vite": "^8.3.0"
-  }
+  },
+  "description": "Anotara - AI-assisted annotation studio",
+  "author": {
+    "name": "VisionLabs",
+    "url": "https://github.com/Marsel204/VisionLabs"
+  },
+  "homepage": "https://github.com/Marsel204/VisionLabs",
+  "license": "UNLICENSED",
+  "main": "electron/main.mjs"
 }

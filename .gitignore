@@ -11,3 +11,7 @@ htmlcov/
 .active_dataset_config.json
 test_shot.png
 test image/labels/
+
+# PyInstaller output (frozen engine)
+/dist/
+/build/
